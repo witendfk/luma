@@ -1,0 +1,21 @@
+{
+  "description": "Luma 学生版",
+  "miniprogramRoot": "dist/dev/mp-weixin",
+  "compileType": "miniprogram",
+  "appid": "",
+  "projectname": "luma-miniapp",
+  "libVersion": "3.8.10",
+  "setting": {
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false,
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "ignoreUploadUnusedFiles": true
+  },
+  "editorSetting": {
+    "tabIndent": "insertSpaces",
+    "tabSize": 2
+  }
+}

@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+unpackage/
+.next/
+out/
+*.tsbuildinfo
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.pem
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# uni-app / 微信开发者工具
+project.private.config.json
+
+# Prisma
+apps/server/prisma/*.db

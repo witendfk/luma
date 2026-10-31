@@ -1,0 +1,66 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/index",
+      "style": { "navigationBarTitleText": "登录" }
+    },
+    {
+      "path": "pages/home/index",
+      "style": { "navigationBarTitleText": "Luma" }
+    },
+    {
+      "path": "pages/chat/index",
+      "style": { "navigationBarTitleText": "对话" }
+    },
+    {
+      "path": "pages/reader/index",
+      "style": { "navigationBarTitleText": "图文讲解" }
+    },
+    {
+      "path": "pages/practice/index",
+      "style": { "navigationBarTitleText": "练习" }
+    },
+    {
+      "path": "pages/notebook/index",
+      "style": { "navigationBarTitleText": "错题本" }
+    },
+    {
+      "path": "pages/notebook/detail",
+      "style": { "navigationBarTitleText": "错题详情" }
+    },
+    {
+      "path": "pages/archived/index",
+      "style": { "navigationBarTitleText": "已归档对话" }
+    },
+    {
+      "path": "pages/account/index",
+      "style": { "navigationBarTitleText": "账号" }
+    }
+  ],
+  "tabBar": {
+    "color": "#8a8f85",
+    "selectedColor": "#4f6652",
+    "backgroundColor": "#fffefa",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "text": "学习",
+        "iconPath": "static/tab/study.png",
+        "selectedIconPath": "static/tab/study-on.png"
+      },
+      {
+        "pagePath": "pages/notebook/index",
+        "text": "错题本",
+        "iconPath": "static/tab/book.png",
+        "selectedIconPath": "static/tab/book-on.png"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "Luma",
+    "navigationBarBackgroundColor": "#f8f7f2",
+    "backgroundColor": "#f8f7f2"
+  }
+}

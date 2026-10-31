@@ -1,0 +1,14 @@
+**/node_modules
+**/.git
+**/.next
+**/dist
+**/unpackage
+**/out
+**/*.tsbuildinfo
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/project.private.config.json
+.DS_Store

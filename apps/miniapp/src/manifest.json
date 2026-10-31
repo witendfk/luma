@@ -1,0 +1,23 @@
+{
+  "name": "Luma",
+  "appid": "",
+  "description": "Luma 学生版：拍题求助、启发式答疑、图文讲义、同类练习与错题本",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "vueVersion": "3",
+  "uniStatistics": {
+    "enable": false
+  },
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "es6": true,
+      "minified": true,
+      "urlCheck": false
+    },
+    "usingComponents": true,
+    "permission": {},
+    "requiredPrivateInfos": []
+  }
+}

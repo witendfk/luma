@@ -1,0 +1,409 @@
+// Luma 数据模型 —— 对应 [设计文档](../../../设计文档.md) §9。
+// 字段命名与文档术语一致；业务约束（版本唯一、收藏唯一、轮次+题目唯一等）见文件末尾。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubjectType {
+  question
+  knowledge
+}
+
+enum TeachingStage {
+  clarifying
+  guiding
+  explaining
+  practicing
+  reviewing
+}
+
+enum PracticeStage {
+  intro
+  doing
+  review
+  summary
+}
+
+enum JobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+  superseded
+}
+
+enum ArtifactType {
+  lesson
+  exercise_set
+}
+
+enum PublishStatus {
+  generating
+  published
+  failed
+}
+
+enum MessageRole {
+  user
+  assistant
+}
+
+enum MessageStatus {
+  complete
+  incomplete
+}
+
+enum SelfEval {
+  independent
+  partial
+  stuck
+}
+
+enum ReviewStatus {
+  to_review
+  reviewed
+}
+
+enum AttachmentPurpose {
+  question_origin
+  process_photo
+  answer_photo
+  lesson_illustration
+  knowledge_material
+}
+
+/// 微信身份用户（FR-01）；学习记录归属个人账号
+model User {
+  id        String   @id @default(cuid())
+  openid    String   @unique
+  nickname  String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  authSessions     AuthSession[]
+  conversations    Conversation[]
+  practiceAttempts PracticeAttempt[]
+  collections      CollectionEntry[]
+  attachments      Attachment[]
+}
+
+/// 应用会话凭据：库存摘要，撤销/过期即失效（设计文档 §11）
+model AuthSession {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// 会话：一次围绕一题或一个知识点的学习（FR-02 / FR-10）
+model Conversation {
+  id           String    @id @default(cuid())
+  userId       String
+  title        String    @default("新对话")
+  archivedAt   DateTime?
+  lastActiveAt DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subjectRevisions   SubjectRevision[]
+  processTranscripts ProcessTranscript[]
+  messages           Message[]
+  progress           LearningProgress?
+  artifacts          Artifact[]
+  runs               AgentRun[]
+  generationJobs     GenerationJob[]
+  collection         CollectionEntry?
+
+  @@index([userId, lastActiveAt])
+  @@index([userId, archivedAt])
+}
+
+/// 学习对象版本（设计文档 §3.1 / §9）：题目更新创建新版本，旧材料继续指向旧版本
+model SubjectRevision {
+  id                     String      @id @default(cuid())
+  conversationId         String
+  version                Int
+  type                   SubjectType
+  /// 题干或知识点内容（结构化 JSON：文本、LaTeX、图形条件、澄清范围）
+  content                Json
+  /// 关联知识点标签（可参与错题本搜索）
+  tags                   String[]    @default([])
+  /// 小问列表与当前选择的小问
+  subquestions           Json?
+  activeSubquestionIndex Int?
+  /// 学生对照原图确认的时间；确认前不按未核实条件生成解答（FR-03）
+  confirmedAt            DateTime?
+  originAttachmentId     String?
+  createdAt              DateTime    @default(now())
+
+  conversation     Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  originAttachment Attachment?         @relation("SubjectOrigin", fields: [originAttachmentId], references: [id])
+  artifacts        Artifact[]
+  transcripts      ProcessTranscript[]
+  messages         Message[]
+  runs             AgentRun[]
+  jobs             GenerationJob[]
+  progress         LearningProgress[]
+
+  @@unique([conversationId, version])
+}
+
+/// 解题过程转写：逐步确认后才作纠错依据（FR-04 / 设计文档 §3.1）
+model ProcessTranscript {
+  id                String   @id @default(cuid())
+  conversationId    String
+  subjectRevisionId String
+  attachmentId      String
+  /// 逐段转写步骤
+  steps             Json
+  /// 学生确认或修正后的步骤状态
+  confirmedSteps    Json?
+  /// pending | confirming | confirmed
+  status            String   @default("pending")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  conversation    Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision @relation(fields: [subjectRevisionId], references: [id])
+  attachment      Attachment      @relation(fields: [attachmentId], references: [id])
+
+  @@index([conversationId])
+}
+
+/// 消息：结构化内容；(会话, requestId) 唯一避免重试重复入库（设计文档 §9 数据约束）
+model Message {
+  id                String        @id @default(cuid())
+  conversationId    String
+  role              MessageRole
+  /// 结构化内容块（文本 / 核对卡 / 成果引用 / 失败说明）
+  content           Json
+  subjectRevisionId String?
+  requestId         String?
+  status            MessageStatus @default(complete)
+  runId             String?
+  createdAt         DateTime      @default(now())
+
+  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+
+  @@unique([conversationId, requestId])
+  @@index([conversationId, createdAt])
+}
+
+/// 学习进度：每会话一条（设计文档 §7.2）
+model LearningProgress {
+  id                String        @id @default(cuid())
+  conversationId    String        @unique
+  stage             TeachingStage @default(clarifying)
+  subjectRevisionId String?
+  currentArtifactId String?       @unique
+  currentSectionId  String?
+  currentAttemptId  String?
+  currentExerciseId String?
+  updatedAt         DateTime      @updatedAt
+
+  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+  currentArtifact Artifact?        @relation("CurrentArtifact", fields: [currentArtifactId], references: [id])
+}
+
+/// 成果材料：讲义或题组；发布后不修改，修订生成新版本（设计文档 §9 数据约束）
+model Artifact {
+  id                String        @id @default(cuid())
+  conversationId    String
+  subjectRevisionId String
+  type              ArtifactType
+  version           Int
+  /// 结构化讲义（章节/段落/配图引用）或题组说明
+  content           Json
+  publishStatus     PublishStatus @default(generating)
+  jobId             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  conversation    Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision   @relation(fields: [subjectRevisionId], references: [id])
+  currentProgress LearningProgress? @relation("CurrentArtifact")
+  exercises       Exercise[]
+  attempts        PracticeAttempt[]
+
+  @@unique([conversationId, subjectRevisionId, type, version])
+  @@index([conversationId])
+}
+
+/// 题组单题（FR-06）；题干侧与答案侧由接口分别投影，作答前不下发答案（设计文档 §8.2）
+model Exercise {
+  id         String @id @default(cuid())
+  artifactId String
+  order      Int
+  stem       String
+  topic      String
+  difficulty String
+  purpose    String
+  answer     String
+  analysis   String
+
+  artifact Artifact         @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  answers  PracticeAnswer[]
+
+  @@unique([artifactId, order])
+}
+
+/// 练习轮次（FR-07 / FR-08）：重做创建新轮次，历史轮次只读
+model PracticeAttempt {
+  id                String        @id @default(cuid())
+  artifactId        String
+  userId            String
+  /// 本轮所选题目（全部或需巩固题）
+  exerciseIds       Json
+  stage             PracticeStage @default(intro)
+  currentExerciseId String?
+  submittedAt       DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  artifact Artifact         @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers  PracticeAnswer[]
+
+  @@index([userId, createdAt])
+  @@index([artifactId, userId])
+}
+
+/// 逐题作答：(轮次, 题目) 唯一，草稿更新用该组合定位；重做不覆盖旧轮次
+model PracticeAnswer {
+  id               String    @id @default(cuid())
+  attemptId        String
+  exerciseId       String
+  textDraft        String?
+  photoIds         String[]  @default([])
+  markedUnknown    Boolean   @default(false)
+  hintsUsed        Int       @default(0)
+  solutionViewedAt DateTime?
+  selfEval         SelfEval?
+  /// 草稿递增版本：服务端拒绝旧草稿覆盖新草稿（设计文档 §10）
+  draftVersion     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  attempt  PracticeAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  exercise Exercise        @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, exerciseId])
+}
+
+/// 错题收藏：(用户, 会话) 唯一；重复保存恢复或更新原记录（FR-09）
+model CollectionEntry {
+  id             String       @id @default(cuid())
+  userId         String
+  conversationId String       @unique
+  note           String?
+  reviewStatus   ReviewStatus @default(to_review)
+  collectedAt    DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId])
+  @@index([userId, reviewStatus])
+}
+
+/// 附件：原图与压缩预览分别保留（设计文档 §4）
+model Attachment {
+  id               String            @id @default(cuid())
+  userId           String
+  objectKey        String
+  previewObjectKey String?
+  purpose          AttachmentPurpose
+  format           String
+  size             Int
+  createdAt        DateTime          @default(now())
+
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subjectRevisions SubjectRevision[]   @relation("SubjectOrigin")
+  transcripts      ProcessTranscript[]
+}
+
+/// 一次 Agent 运行（设计文档 §9）：耗时、消耗与所用提示词版本
+model AgentRun {
+  id                String    @id @default(cuid())
+  conversationId    String
+  subjectRevisionId String?
+  requestId         String?
+  /// running | completed | failed | cancelled
+  status            String    @default("running")
+  promptVersion     String
+  modelCalls        Int       @default(0)
+  toolCalls         Int       @default(0)
+  usage             Json?
+  error             Json?
+  startedAt         DateTime  @default(now())
+  finishedAt        DateTime?
+
+  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+  toolExecutions  ToolExecution[]
+
+  @@index([conversationId, startedAt])
+}
+
+/// 工具执行记录：参数摘要与结果引用，不落完整学生内容（设计文档 §11）
+model ToolExecution {
+  id           String   @id @default(cuid())
+  runId        String
+  tool         String
+  order        Int
+  paramsDigest Json?
+  resultRef    String?
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime @default(now())
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, order])
+}
+
+/// 长生成任务（讲义/题组/配图）：数据库原子领取 + 租约，支持离开页面后查询（设计文档 §8.3）
+model GenerationJob {
+  id                String    @id @default(cuid())
+  runId             String?
+  /// lesson | exercise_set | illustration
+  type              String
+  conversationId    String
+  subjectRevisionId String?
+  status            JobStatus @default(queued)
+  /// 当前步骤描述，如「生成正文」「生成配图」「复核」
+  step              String?
+  resultArtifactId  String?
+  /// 幂等标识唯一：重复操作不重复新增成果
+  idempotencyKey    String?   @unique
+  attempts          Int       @default(0)
+  error             Json?
+  leasedBy          String?
+  leasedUntil       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+
+  @@index([status, createdAt])
+}

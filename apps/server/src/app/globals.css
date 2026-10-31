@@ -1,0 +1,11 @@
+:root {
+  --paper: #f8f7f2;
+  --ink: #2f3b2f;
+  --moss: #4f6652;
+  --line: #dde2d4;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+}

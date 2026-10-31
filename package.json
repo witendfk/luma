@@ -1,0 +1,38 @@
+{
+  "name": "luma",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Luma 学生版：uni-app 微信小程序 + Next.js 服务端 + 教学 Agent",
+  "scripts": {
+    "test": "pnpm --filter @luma/server test",
+    "typecheck": "pnpm --filter @luma/shared typecheck && pnpm --filter @luma/server typecheck && pnpm --filter @luma/miniapp type-check",
+    "dev:server": "pnpm --filter @luma/server dev",
+    "dev:miniapp": "pnpm --filter @luma/miniapp dev:mp-weixin",
+    "build:server": "pnpm --filter @luma/server build",
+    "build:miniapp": "pnpm --filter @luma/miniapp build:mp-weixin",
+    "worker": "pnpm --filter @luma/server worker",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @luma/server prisma:migrate",
+    "db:generate": "pnpm --filter @luma/server prisma:generate",
+    "db:studio": "pnpm --filter @luma/server prisma:studio"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "esbuild",
+      "workerd",
+      "@parcel/watcher",
+      "vue-demi",
+      "@dcloudio/uni-cli-shared",
+      "@dcloudio/uni-mp-weixin",
+      "@dcloudio/uni-cli-i18n",
+      "simple-git-hooks"
+    ]
+  },
+  "engines": {
+    "node": ">=18.20.0"
+  }
+}
