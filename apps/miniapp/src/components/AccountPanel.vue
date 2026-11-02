@@ -25,10 +25,10 @@ function logout(): void {
     <view class="scrim" @tap="emit('close')" />
     <view class="panel">
       <view class="handle" />
-      <view class="panel-heading"><text>我的账号</text><button aria-label="关闭账号面板" @tap="emit('close')"><LumaIcon name="close" :size="18" /></button></view>
+      <view class="panel-heading"><text>我的账号</text><button class="panel-button close-account" aria-label="关闭账号面板" @tap="emit('close')"><LumaIcon name="close" :size="18" /></button></view>
       <view class="identity"><image v-if="auth.avatarUrl" class="avatar" :src="auth.avatarUrl" mode="aspectFill" /><view v-else class="avatar">{{ name.slice(0, 1) }}</view><view><text class="name">{{ name }}</text><text class="intro">在 Luma，留住每一次想明白。</text></view></view>
-      <view class="links"><button @tap="information('privacy')"><LumaIcon name="shield" :size="18" /><text>隐私政策</text></button><button @tap="information('help')"><LumaIcon name="help" :size="18" /><text>登录帮助</text></button></view>
-      <button class="logout" :disabled="leaving" @tap="logout"><LumaIcon name="logout" :size="16" /><text>{{ leaving ? '正在退出…' : '退出登录' }}</text></button>
+      <view class="links"><button class="panel-button policy-button" @tap="information('privacy')"><LumaIcon name="shield" :size="18" /><text>隐私政策</text></button><button class="panel-button policy-button" @tap="information('help')"><LumaIcon name="help" :size="18" /><text>登录帮助</text></button></view>
+      <button class="panel-button logout" :disabled="leaving" @tap="logout"><LumaIcon name="logout" :size="16" /><text>{{ leaving ? '正在退出…' : '退出登录' }}</text></button>
       <text class="caption">你的每一步思考，都值得留下。</text>
     </view>
   </view>
@@ -38,16 +38,16 @@ function logout(): void {
 .scrim { position:absolute; inset:0; background:rgba(38,51,40,.24); backdrop-filter:blur(3px); }
 .panel { position:absolute; bottom:0; left:0; right:0; padding:48rpx 46rpx max(42rpx,env(safe-area-inset-bottom)); border-radius:48rpx 48rpx 0 0; background:#fdfcf8; color:#3b4e3c; }
 .handle { position:absolute; top:18rpx; left:calc(50% - 28rpx); width:56rpx; height:6rpx; border-radius:6rpx; background:#d9e1cd; }
-.panel button { margin:0; padding:0; border:0; background:transparent; font-weight:400; }
-.panel button::after { border:0; }
+.panel .panel-button { margin:0; padding:0; border:0; background:transparent; font-weight:400; }
+.panel .panel-button::after { border:0; }
 .panel-heading { display:flex; align-items:center; justify-content:space-between; font-size:29rpx; }
-.panel-heading button { display:flex; align-items:center; justify-content:center; width:64rpx; height:64rpx; }
+.close-account { display:flex; align-items:center; justify-content:center; width:64rpx; height:64rpx; }
 .identity { display:flex; align-items:center; gap:28rpx; padding:38rpx 0 44rpx; border-bottom:1rpx solid #e7ebdf; }
 .avatar { display:flex; align-items:center; justify-content:center; width:100rpx; height:100rpx; border-radius:36rpx; flex-shrink:0; background:#e9efdf; color:#69805d; font-size:38rpx; font-family:'Songti SC',serif; }
 .name { display:block; font-size:36rpx; }
 .intro { display:block; margin-top:16rpx; font-size:20rpx; color:#96a08d; }
 .links { padding:14rpx 0; border-bottom:1rpx solid #e7ebdf; }
-.links button { display:flex; align-items:center; gap:24rpx; width:100%; min-height:100rpx; text-align:left; font-size:25rpx; color:#718363; }
+.links .policy-button { display:flex; align-items:center; gap:24rpx; width:100%; min-height:100rpx; text-align:left; font-size:25rpx; color:#718363; }
 .panel .logout { display:flex; align-items:center; justify-content:center; gap:14rpx; width:100%; min-height:104rpx; color:#a18d77; font-size:24rpx; }
 .caption { display:block; text-align:center; color:#b0b8a4; font-size:18rpx; padding-top:10rpx; }
 </style>

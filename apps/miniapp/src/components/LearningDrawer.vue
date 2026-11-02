@@ -28,35 +28,35 @@ function navigate(page: string, tab = false): void {
     <view class="scrim" aria-label="关闭学习菜单" @touchmove.stop.prevent @tap="emit('close')" />
     <view class="drawer">
       <view class="brand-row">
-        <view><view class="brand">Luma<text>.</text></view><text class="subtitle">留一点时间，想明白。</text></view>
-        <button class="close" aria-label="关闭学习菜单" @tap="emit('close')"><LumaIcon name="close" :size="18" /></button>
+        <view><view class="brand">Luma<text class="brand-dot">.</text></view><text class="subtitle">留一点时间，想明白。</text></view>
+        <button class="drawer-button close" aria-label="关闭学习菜单" @tap="emit('close')"><LumaIcon name="close" :size="18" /></button>
       </view>
-      <button class="nav-row" @tap="emit('new')"><LumaIcon name="plus" /><text>新建对话</text></button>
-      <button class="nav-row" @tap="navigate('/pages/notebook/index', true)"><LumaIcon name="bookmark" /><text>我的错题本</text></button>
+      <button class="drawer-button nav-row" @tap="emit('new')"><LumaIcon name="plus" /><text>新建对话</text></button>
+      <button class="drawer-button nav-row" @tap="navigate('/pages/notebook/index', true)"><LumaIcon name="bookmark" /><text>我的错题本</text></button>
       <view class="history-head">
         <text>最近学习</text>
-        <button class="fold" :aria-label="expanded ? '收起学习历史' : '展开学习历史'" @tap="expanded = !expanded"><LumaIcon :name="expanded ? 'chevron-up' : 'chevron-down'" :size="15" /></button>
+        <button class="drawer-button fold" :aria-label="expanded ? '收起学习历史' : '展开学习历史'" @tap="expanded = !expanded"><LumaIcon :name="expanded ? 'chevron-up' : 'chevron-down'" :size="15" /></button>
       </view>
       <view v-if="expanded" class="history-area">
         <scroll-view scroll-y class="history-list">
           <view class="history-content">
             <view v-if="history.loading && !history.items.length" class="list-state">正在找回你的学习记录…</view>
-            <view v-if="history.error" class="list-state error"><text>{{ history.error }}</text><button class="retry" :disabled="history.loading" @tap="history.load()">重新加载</button></view>
+            <view v-if="history.error" class="list-state error"><text>{{ history.error }}</text><button class="drawer-button retry" :disabled="history.loading" @tap="history.load()">重新加载</button></view>
             <view v-else-if="history.loaded && !history.items.length" class="list-state">还没有学习对话<text class="empty-note">新的问题，会在这里留下思路。</text></view>
             <view v-for="group in groups" :key="group.label">
               <view class="history-date">{{ group.label }}</view>
-              <button v-for="item in group.items" :key="item.id" class="history-item" @tap="emit('select', item.id)">
+              <button v-for="item in group.items" :key="item.id" class="drawer-button history-item" @tap="emit('select', item.id)">
                 <view class="history-title">{{ item.title }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
               </button>
             </view>
-            <button v-if="history.nextCursor" class="load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
+            <button v-if="history.nextCursor" class="drawer-button load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
           </view>
         </scroll-view>
       </view>
       <view v-else class="collapsed-space" />
       <view class="drawer-footer">
-        <button class="archive-row" @tap="navigate('/pages/archived/index')"><LumaIcon name="archive" :size="19" /><text>已归档对话</text></button>
-        <button class="profile" @tap="emit('close'); emit('account')">
+        <button class="drawer-button archive-row" @tap="navigate('/pages/archived/index')"><LumaIcon name="archive" :size="19" /><text>已归档对话</text></button>
+        <button class="drawer-button profile" @tap="emit('close'); emit('account')">
           <image v-if="auth.avatarUrl" class="avatar" :src="auth.avatarUrl" mode="aspectFill" />
           <view v-else class="avatar initial">{{ displayName.slice(0, 1) }}</view>
           <view class="profile-copy"><text class="nickname">{{ displayName }}</text><text class="account-label">我的账号</text></view>
@@ -69,11 +69,11 @@ function navigate(page: string, tab = false): void {
 .drawer-layer { position:fixed; inset:0; z-index:100; }
 .scrim { position:absolute; inset:0; background:rgba(38,51,40,.24); }
 .drawer { position:absolute; left:0; top:0; bottom:0; width:78%; max-width:600rpx; box-sizing:border-box; display:flex; flex-direction:column; padding:48rpx 38rpx max(36rpx, env(safe-area-inset-bottom)); background:#f7f8f2; box-shadow:20rpx 0 80rpx rgba(35,50,31,.04); }
-.drawer button { margin:0; padding:0; text-align:left; border:0; background:transparent; line-height:1.5; font-weight:400; }
-.drawer button::after { border:0; }
+.drawer .drawer-button { margin:0; padding:0; text-align:left; border:0; background:transparent; line-height:1.5; font-weight:400; }
+.drawer .drawer-button::after { border:0; }
 .brand-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16rpx; margin:0 4rpx 48rpx; flex-shrink:0; }
 .brand { font:58rpx/1 Georgia,serif; color:#304235; letter-spacing:-1.6rpx; }
-.brand text { color:#aa916d; }
+.brand-dot { color:#aa916d; }
 .subtitle { display:block; margin-top:18rpx; font-size:20rpx; letter-spacing:1rpx; color:#899180; }
 .drawer .close { display:flex; align-items:center; justify-content:center; width:72rpx; height:72rpx; margin-top:-14rpx; }
 .drawer .nav-row { display:flex; align-items:center; gap:26rpx; width:100%; min-height:96rpx; padding:0 20rpx; box-sizing:border-box; color:#405443; font-size:28rpx; flex-shrink:0; }

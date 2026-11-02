@@ -104,8 +104,9 @@ function openConversation(id: string): void {
         </view>
       </view>
       <view class="quick-entries">
-        <button class="quick-entry" :class="{ selected: scenario === 'knowledge' }" @tap="chooseScenario('knowledge')"><LumaIcon name="book" :size="16" /><text>讲知识点</text></button>
-        <button class="quick-entry" :class="{ selected: scenario === 'practice' }" @tap="chooseScenario('practice')"><LumaIcon name="practice" :size="16" /><text>出练习</text></button>
+        <button class="quick-entry" @tap="upload"><LumaIcon name="photo" :size="20" /><text>拍题求助</text></button>
+        <button class="quick-entry" :class="{ selected: scenario === 'knowledge' }" @tap="chooseScenario('knowledge')"><LumaIcon name="book" :size="20" /><text>讲知识点</text></button>
+        <button class="quick-entry" :class="{ selected: scenario === 'practice' }" @tap="chooseScenario('practice')"><LumaIcon name="practice" :size="20" /><text>出练习</text></button>
       </view>
       <view class="guidance"><view class="soft-dot" /><text>先给提示，陪你一步步想明白</text></view>
       <view v-if="history.latest" class="continue-card">
@@ -135,12 +136,12 @@ function openConversation(id: string): void {
 .home-page .upload { display:flex; align-items:center; gap:4rpx; min-height:72rpx; font-size:23rpx; color:#788674; }
 .home-page .send { display:flex; align-items:center; justify-content:center; width:72rpx; height:72rpx; border-radius:50%; background:#4f6652; flex-shrink:0; }
 .home-page .send[disabled] { background:#b9c4b2; }
-.quick-entries { display:flex; align-items:center; justify-content:center; gap:64rpx; margin-top:16rpx; }
-.home-page .quick-entry { display:flex; align-items:center; justify-content:center; gap:12rpx; min-height:88rpx; font-size:22rpx; color:#78886c; white-space:nowrap; }
+.quick-entries { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12rpx; margin-top:24rpx; }
+.home-page .quick-entry { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14rpx; min-width:0; min-height:116rpx; font-size:23rpx; color:#78886c; white-space:nowrap; }
 .home-page .quick-entry.selected { color:#405b3c; }
 .mode-row { display:flex; align-items:center; gap:14rpx; margin-bottom:12rpx; font-size:21rpx; color:#7c8b6d; }
 .mode-row button { display:flex; align-items:center; justify-content:center; width:44rpx; height:44rpx; }
-.guidance { display:flex; justify-content:center; align-items:center; gap:9rpx; margin-top:40rpx; color:#8b9a7e; font-size:20rpx; }
+.guidance { display:flex; justify-content:center; align-items:center; gap:9rpx; margin-top:24rpx; color:#8b9a7e; font-size:20rpx; }
 .soft-dot { width:8rpx; height:8rpx; border-radius:50%; background:#91a27c; }
 .continue-card { display:flex; align-items:center; gap:20rpx; border-top:1rpx solid #e3e9da; margin-top:38rpx; padding-top:40rpx; text-align:left; }
 .continue-icon { display:flex; align-items:center; justify-content:center; width:66rpx; height:66rpx; border-radius:50%; background:#edf1e4; flex-shrink:0; }
@@ -150,5 +151,5 @@ function openConversation(id: string): void {
 .home-page .continue-action { color:#627b52; font-size:22rpx; padding:20rpx 0 20rpx 6rpx; flex-shrink:0; }
 .history-error { display:flex; align-items:center; justify-content:center; gap:16rpx; padding-top:28rpx; font-size:22rpx; color:#9b8874; }
 .home-page .history-error button { color:#617754; padding:12rpx; font-size:22rpx; }
-@media(max-width:360px) { .hero { padding-left:36rpx; padding-right:36rpx; } .quick-entries { gap:8rpx; } .home-page .quick-entry { font-size:21rpx; gap:8rpx; } }
+@media(max-width:360px) { .hero { padding-left:36rpx; padding-right:36rpx; } .quick-entries { gap:8rpx; } .home-page .quick-entry { font-size:22rpx; gap:12rpx; } }
 </style>
