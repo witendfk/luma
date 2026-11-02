@@ -63,7 +63,7 @@ function chooseScenario(value: 'knowledge' | 'practice'): void {
   void nextTick(() => { focused.value = true; });
 }
 function upload(): void {
-  uni.showModal({ title: '拍题求助', content: '照片上传正在接入。现在可以先输入题目文字，或试一道示例题。', showCancel: false, confirmText: '知道了', confirmColor: '#4f6652' });
+  uni.showModal({ title: '拍题求助', content: '照片上传正在接入。现在可以先输入题目文字。', showCancel: false, confirmText: '知道了', confirmColor: '#4f6652' });
 }
 function send(): void {
   const text = draft.value.trim();
@@ -86,11 +86,6 @@ function openConversation(id: string): void {
   menuOpen.value = false;
   uni.navigateTo({ url: `/pages/chat/index?id=${id}`, fail: () => { navigating.value = false; uni.showToast({ title: '打开对话失败，请重试', icon: 'none' }); } });
 }
-function sample(): void {
-  scenario.value = 'question';
-  draft.value = '已知 f(x)=x²-2x+3，求 f(x) 的最小值。';
-  focused.value = false;
-}
 </script>
 
 <template>
@@ -109,12 +104,10 @@ function sample(): void {
         </view>
       </view>
       <view class="quick-entries">
-        <button class="quick-entry" @tap="upload"><LumaIcon name="photo" :size="16" /><text>拍题求助</text></button>
         <button class="quick-entry" :class="{ selected: scenario === 'knowledge' }" @tap="chooseScenario('knowledge')"><LumaIcon name="book" :size="16" /><text>讲知识点</text></button>
         <button class="quick-entry" :class="{ selected: scenario === 'practice' }" @tap="chooseScenario('practice')"><LumaIcon name="practice" :size="16" /><text>出练习</text></button>
       </view>
       <view class="guidance"><view class="soft-dot" /><text>先给提示，陪你一步步想明白</text></view>
-      <button class="sample-entry" @tap="sample"><text>试一道示例题，从这里开始</text><LumaIcon name="arrow-diagonal" :size="12" /></button>
       <view v-if="history.latest" class="continue-card">
         <view class="continue-icon"><LumaIcon name="arrow-diagonal" :size="20" /></view>
         <view class="continue-copy"><text class="continue-label">继续上次的学习</text><view class="continue-title">{{ history.latest.title }}</view></view>
@@ -142,14 +135,13 @@ function sample(): void {
 .home-page .upload { display:flex; align-items:center; gap:4rpx; min-height:72rpx; font-size:23rpx; color:#788674; }
 .home-page .send { display:flex; align-items:center; justify-content:center; width:72rpx; height:72rpx; border-radius:50%; background:#4f6652; flex-shrink:0; }
 .home-page .send[disabled] { background:#b9c4b2; }
-.quick-entries { display:flex; align-items:center; justify-content:space-around; gap:12rpx; margin-top:24rpx; }
+.quick-entries { display:flex; align-items:center; justify-content:center; gap:64rpx; margin-top:16rpx; }
 .home-page .quick-entry { display:flex; align-items:center; justify-content:center; gap:12rpx; min-height:88rpx; font-size:22rpx; color:#78886c; white-space:nowrap; }
 .home-page .quick-entry.selected { color:#405b3c; }
 .mode-row { display:flex; align-items:center; gap:14rpx; margin-bottom:12rpx; font-size:21rpx; color:#7c8b6d; }
 .mode-row button { display:flex; align-items:center; justify-content:center; width:44rpx; height:44rpx; }
 .guidance { display:flex; justify-content:center; align-items:center; gap:9rpx; margin-top:40rpx; color:#8b9a7e; font-size:20rpx; }
 .soft-dot { width:8rpx; height:8rpx; border-radius:50%; background:#91a27c; }
-.home-page .sample-entry { display:flex; align-items:center; justify-content:center; gap:22rpx; min-height:72rpx; color:#a0ad92; font-size:20rpx; }
 .continue-card { display:flex; align-items:center; gap:20rpx; border-top:1rpx solid #e3e9da; margin-top:38rpx; padding-top:40rpx; text-align:left; }
 .continue-icon { display:flex; align-items:center; justify-content:center; width:66rpx; height:66rpx; border-radius:50%; background:#edf1e4; flex-shrink:0; }
 .continue-copy { flex:1; min-width:0; }

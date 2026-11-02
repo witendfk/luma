@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 380" fill="none">
+<rect width="640" height="380" rx="20" fill="#f0f2e9"/>
+<path d="M58 308H592M188 336V42" stroke="#a7b49b" stroke-width="1.5"/>
+<path d="m580 302 12 6-12 6M182 54l6-12 6 12" stroke="#a7b49b" stroke-width="1.5"/>
+<path d="M76 152Q300 360 524 152" stroke="#5c7658" stroke-width="3"/>
+<path d="M300 256V308" stroke="#b39a77" stroke-dasharray="5 6"/>
+<circle cx="300" cy="256" r="5" fill="#a58b67"/>
+<g fill="#64775c" font-size="20" font-family="Georgia,serif"><text x="592" y="336">x</text><text x="205" y="50">y</text><text x="160" y="334">0</text><text x="294" y="334">1</text><text x="322" y="253">(1, 2)</text><text x="390" y="82">y = (x − 1)² + 2</text></g>
+</svg>

@@ -8,11 +8,13 @@ import LearningDrawer from '@/components/LearningDrawer.vue';
 import AccountPanel from '@/components/AccountPanel.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import SubjectEditor from '@/components/SubjectEditor.vue';
+import StudyDiscussion from '@/components/StudyDiscussion.vue';
 import type { SubjectEdit } from '@/api/conversations';
 import { saveCollection } from '@/api/collections';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
+const previewStudy = ref(false);
 const draft = ref('');
 const busy = ref(false);
 const menuOpen = ref(false);
@@ -38,8 +40,9 @@ const subquestions = computed(() => store.subject?.subquestions ?? []);
 const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
 const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
 const lastReply = computed(() => [...store.messages].reverse().find((message) => message.role === 'assistant'));
-onUnload(() => store.stopStream());
+onUnload(() => { if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
+  if (import.meta.env.DEV && query?.preview === 'study') { previewStudy.value = true; return; }
   try {
     if (query?.id) await store.open(query.id);
     else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
@@ -124,7 +127,8 @@ function openMaterial(type: 'lesson' | 'practice'): void {
 </script>
 
 <template>
-  <view class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
+  <StudyDiscussion v-if="previewStudy" />
+  <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
     <view class="task-toolbar">
       <text class="stage">{{ status }}</text>

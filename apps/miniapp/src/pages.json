@@ -1,4 +1,11 @@
 {
+  "condition": {
+    "current": 0,
+    "list": [
+      { "name": "阅读交互（开发示例）", "path": "pages/reader/index", "query": "preview=1" },
+      { "name": "练习交互（开发示例）", "path": "pages/practice/index", "query": "preview=1" }
+    ]
+  },
   "pages": [
     {
       "path": "pages/login/index",
