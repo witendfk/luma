@@ -1,57 +1,24 @@
 <script setup lang="ts">
-defineProps<{
-  role: 'user' | 'assistant';
-  text: string;
-  incomplete?: boolean;
-}>();
+defineProps<{ role: 'user' | 'assistant'; text: string; incomplete?: boolean }>();
 </script>
-
 <template>
-  <view class="row" :class="role">
+  <view class="message" :class="role">
+    <view v-if="role === 'assistant'" class="agent-avatar">✳</view>
     <view class="bubble">
-      <text class="text">{{ text }}</text>
-      <text v-if="incomplete" class="mark">（未生成完）</text>
+      <text v-if="role === 'assistant'" class="agent-name">Luma</text>
+      <text class="message-text" selectable>{{ text }}</text>
+      <text v-if="incomplete" class="incomplete">回复尚未完成</text>
     </view>
   </view>
 </template>
-
-<style scoped lang="scss">
-.row {
-  display: flex;
-  margin: 16rpx 0;
-
-  &.user {
-    justify-content: flex-end;
-
-    .bubble {
-      background: #4f6652;
-      color: #fffefa;
-    }
-  }
-
-  &.assistant {
-    justify-content: flex-start;
-
-    .bubble {
-      background: #fffefa;
-      color: #2f3b2f;
-      border: 1rpx solid #dde2d4;
-    }
-  }
-}
-
-.bubble {
-  max-width: 78%;
-  border-radius: 16rpx;
-  padding: 16rpx 24rpx;
-  font-size: 28rpx;
-  word-break: break-all;
-}
-
-.mark {
-  display: block;
-  margin-top: 8rpx;
-  font-size: 22rpx;
-  opacity: 0.6;
-}
+<style scoped>
+.message { display:flex; align-items:flex-start; gap:18rpx; margin-bottom:46rpx; }
+.user { justify-content:flex-end; }
+.bubble { min-width:0; }
+.user .bubble { max-width:86%; padding:24rpx 30rpx; border-radius:28rpx 28rpx 6rpx 28rpx; background:#e9ede3; color:#354633; }
+.assistant .bubble { flex:1; padding-top:1rpx; }
+.agent-avatar { display:flex; align-items:center; justify-content:center; width:50rpx; height:50rpx; flex-shrink:0; border-radius:50%; background:#e6eddb; color:#83996f; font-size:27rpx; line-height:1; }
+.agent-name { display:block; margin:0 0 16rpx; color:#677e58; font-size:24rpx; line-height:1.8; font-weight:500; }
+.message-text { display:block; color:#334032; font-size:28rpx; line-height:1.95; white-space:pre-wrap; overflow-wrap:anywhere; }
+.incomplete { display:block; margin-top:12rpx; color:#a08e77; font-size:20rpx; }
 </style>
