@@ -46,7 +46,7 @@ function navigate(page: string, tab = false): void {
             <view v-for="group in groups" :key="group.label">
               <view class="history-date">{{ group.label }}</view>
               <button v-for="item in group.items" :key="item.id" class="history-item" @tap="emit('select', item.id)">
-                <text class="history-title">{{ item.title }}</text><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
+                <view class="history-title">{{ item.title }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
               </button>
             </view>
             <button v-if="history.nextCursor" class="load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
@@ -68,7 +68,7 @@ function navigate(page: string, tab = false): void {
 <style scoped>
 .drawer-layer { position:fixed; inset:0; z-index:100; }
 .scrim { position:absolute; inset:0; background:rgba(38,51,40,.24); }
-.drawer { position:absolute; left:0; top:0; bottom:0; width:84%; max-width:648rpx; box-sizing:border-box; display:flex; flex-direction:column; padding:48rpx 38rpx max(36rpx, env(safe-area-inset-bottom)); background:#f7f8f2; box-shadow:20rpx 0 80rpx rgba(35,50,31,.04); }
+.drawer { position:absolute; left:0; top:0; bottom:0; width:78%; max-width:600rpx; box-sizing:border-box; display:flex; flex-direction:column; padding:48rpx 38rpx max(36rpx, env(safe-area-inset-bottom)); background:#f7f8f2; box-shadow:20rpx 0 80rpx rgba(35,50,31,.04); }
 .drawer button { margin:0; padding:0; text-align:left; border:0; background:transparent; line-height:1.5; font-weight:400; }
 .drawer button::after { border:0; }
 .brand-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16rpx; margin:0 4rpx 48rpx; flex-shrink:0; }
@@ -85,7 +85,7 @@ function navigate(page: string, tab = false): void {
 .history-content { display:flex; flex-direction:column; }
 .history-date { margin:26rpx 22rpx 10rpx; color:#a2aa98; font-size:18rpx; }
 .drawer .history-item { display:block; width:100%; padding:20rpx 22rpx; box-sizing:border-box; }
-.history-title { display:block; color:#54654d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.history-title { display:block; width:100%; min-width:0; color:#54654d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .history-time { display:block; margin-top:8rpx; font-size:18rpx; color:#a0aa95; }
 .list-state { padding:40rpx 22rpx; color:#8d9982; font-size:24rpx; line-height:1.8; }
 .empty-note { display:block; margin-top:12rpx; color:#a4ad9b; font-size:20rpx; }

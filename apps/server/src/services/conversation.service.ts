@@ -1,5 +1,6 @@
 import { db } from '../lib/db';
 import { invalidFormat, notFound } from '../lib/errors';
+import { createConversationTitle, restoreLegacyTitle } from '../lib/conversation-title';
 
 /** 会话与消息（FR-02 / FR-10 / 设计文档 §10）：真实实现 */
 
@@ -42,10 +43,16 @@ export const conversationService = {
       where,
       orderBy: [{ lastActiveAt: 'desc' }],
       take: opts.limit + 1,
-      select: listSelect,
+      select: {
+        ...listSelect,
+        subjectRevisions: { where: { version: 1 }, take: 1, select: { content: true } },
+      },
     });
     const hasMore = rows.length > opts.limit;
-    const items = hasMore ? rows.slice(0, opts.limit) : rows;
+    const items = (hasMore ? rows.slice(0, opts.limit) : rows).map(({ subjectRevisions, ...item }) => ({
+      ...item,
+      title: restoreLegacyTitle(item.title, subjectRevisions[0]?.content),
+    }));
     return {
       items,
       nextCursor:
@@ -60,7 +67,7 @@ export const conversationService = {
     const subjectType = input.subjectType === 'knowledge' ? 'knowledge' : 'question';
     const title =
       input.title?.trim() ||
-      (input.initialText ? input.initialText.trim().slice(0, 24) : '新对话');
+      createConversationTitle(input.initialText ?? '');
 
     const conversation = await db.conversation.create({
       data: {

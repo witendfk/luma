@@ -12,6 +12,7 @@ import { userTextMessage } from '../agent/protocol';
 import { PROMPT_VERSION } from '../agent/prompts';
 import type { TaskFrame, TaskFrameGoal } from '../agent/types';
 import { conversationService } from './conversation.service';
+import { createConversationTitle } from '../lib/conversation-title';
 
 /**
  * 运行服务（设计文档 §4.5 / §4.9 / §10）：
@@ -58,7 +59,7 @@ export const runService = {
           where: { conversationId }, update: { subjectRevisionId: subject.id, stage: 'clarifying' },
           create: { conversationId, subjectRevisionId: subject.id, stage: 'clarifying' },
         });
-        await tx.conversation.updateMany({ where: { id: conversationId, title: '新对话' }, data: { title: input.text.trim().slice(0, 24) } });
+        await tx.conversation.updateMany({ where: { id: conversationId, title: '新对话' }, data: { title: createConversationTitle(input.text) } });
       }
       const recent = await tx.message.findMany({
         where: { conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 12,

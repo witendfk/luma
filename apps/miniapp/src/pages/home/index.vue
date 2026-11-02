@@ -117,7 +117,7 @@ function sample(): void {
       <button class="sample-entry" @tap="sample"><text>试一道示例题，从这里开始</text><LumaIcon name="arrow-diagonal" :size="12" /></button>
       <view v-if="history.latest" class="continue-card">
         <view class="continue-icon"><LumaIcon name="arrow-diagonal" :size="20" /></view>
-        <view class="continue-copy"><text class="continue-label">继续上次的学习</text><text class="continue-title">{{ history.latest.title }}</text></view>
+        <view class="continue-copy"><text class="continue-label">继续上次的学习</text><view class="continue-title">{{ history.latest.title }}</view></view>
         <button class="continue-action" @tap="openConversation(history.latest.id)">继续学习</button>
       </view>
       <view v-if="history.error" class="history-error"><text>学习记录暂时未能加载</text><button :disabled="history.loading" @tap="history.load()">重试</button></view>
@@ -154,7 +154,7 @@ function sample(): void {
 .continue-icon { display:flex; align-items:center; justify-content:center; width:66rpx; height:66rpx; border-radius:50%; background:#edf1e4; flex-shrink:0; }
 .continue-copy { flex:1; min-width:0; }
 .continue-label { display:block; color:#939e87; font-size:19rpx; }
-.continue-title { display:block; margin-top:9rpx; color:#44543d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.continue-title { display:block; width:100%; min-width:0; margin-top:9rpx; color:#44543d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .home-page .continue-action { color:#627b52; font-size:22rpx; padding:20rpx 0 20rpx 6rpx; flex-shrink:0; }
 .history-error { display:flex; align-items:center; justify-content:center; gap:16rpx; padding-top:28rpx; font-size:22rpx; color:#9b8874; }
 .home-page .history-error button { color:#617754; padding:12rpx; font-size:22rpx; }
