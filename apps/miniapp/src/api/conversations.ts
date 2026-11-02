@@ -18,6 +18,7 @@ export interface MessageView {
   content: unknown;
   status: 'complete' | 'incomplete';
   createdAt: string;
+  subjectRevisionId?: string | null;
 }
 
 export interface Paged<T> {
@@ -33,8 +34,11 @@ export function listConversations(archived: boolean, cursor?: string): Promise<P
 export interface SubjectView {
   id: string;
   version: number;
-  content: { text?: string };
+  type: 'question' | 'knowledge';
+  content: { text?: string; intent?: LearningIntent; [key: string]: unknown };
   tags: string[];
+  subquestions?: string[] | null;
+  activeSubquestionIndex?: number | null;
   confirmedAt: string | null;
 }
 
@@ -42,11 +46,25 @@ export interface ConversationDetail {
   conversation: ConversationSummary;
   subject: SubjectView | null;
   progress: { stage: string } | null;
-  artifacts: Array<{ id: string; type: 'lesson' | 'exercise_set'; publishStatus: string }>;
+  artifacts: Array<{ id: string; type: 'lesson' | 'exercise_set'; publishStatus: string; subjectRevisionId?: string }>;
   activeRun?: { id: string; status: string } | null;
 }
 
-export function createConversation(input: { title?: string; initialText?: string; subjectType?: 'question' | 'knowledge' } = {}): Promise<ConversationSummary> {
+export type LearningIntent = 'question' | 'knowledge' | 'practice';
+
+export interface SubjectEdit {
+  content: SubjectView['content'];
+  tags: string[];
+  subquestions: string[];
+  subquestionIndex?: number;
+  expectedRevision: number;
+}
+
+export function updateSubject(id: string, input: SubjectEdit): Promise<{ subject: SubjectView }> {
+  return request({ method: 'POST', path: `/api/conversations/${id}/subjects`, data: { ...input, action: 'update' } });
+}
+
+export function createConversation(input: { title?: string; initialText?: string; subjectType?: 'question' | 'knowledge'; intent?: LearningIntent } = {}): Promise<ConversationSummary> {
   return request<ConversationSummary>({ method: 'POST', path: '/api/conversations', data: input });
 }
 

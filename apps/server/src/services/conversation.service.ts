@@ -63,7 +63,7 @@ export const conversationService = {
   },
 
   /** FR-02：创建会话，围绕一题或一个知识点；首条文字生成学习对象 v1（待确认） */
-  async create(userId: string, input: { title?: string; subjectType?: 'question' | 'knowledge'; initialText?: string }) {
+  async create(userId: string, input: { title?: string; subjectType?: 'question' | 'knowledge'; intent?: 'question' | 'knowledge' | 'practice'; initialText?: string }) {
     const subjectType = input.subjectType === 'knowledge' ? 'knowledge' : 'question';
     const title =
       input.title?.trim() ||
@@ -78,7 +78,7 @@ export const conversationService = {
               create: {
                 version: 1,
                 type: subjectType,
-                content: { text: input.initialText },
+                content: { text: input.initialText, intent: input.intent ?? subjectType },
                 tags: [],
               },
             }

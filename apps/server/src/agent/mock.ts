@@ -2,15 +2,8 @@
  * 联调回退响应：未配置模型凭据时保持教学形态可走通（识别核对 / 引导 / 解析）。
  * 仅在无 OPENAI_API_KEY 时使用，交付环境必须配置模型。
  */
-export function mockClarify(subjectText: string): string {
-  return [
-    '题目收到了，请你对照核对：',
-    '',
-    subjectText || '（未提取到题干文本）',
-    '',
-    '- 无误的话点击「内容正确，开始学习」；',
-    '- 有误请先修改核对内容，再开始学习。',
-  ].join('\n');
+export function mockClarify(_subjectText: string): string {
+  return '（联调模式）请核对下方内容，有不准确的地方可以先修改，再开始学习。';
 }
 
 export function mockGuide(userText: string): string {

@@ -7,6 +7,8 @@ import LearningHeader from '@/components/LearningHeader.vue';
 import LearningDrawer from '@/components/LearningDrawer.vue';
 import AccountPanel from '@/components/AccountPanel.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
+import SubjectEditor from '@/components/SubjectEditor.vue';
+import type { SubjectEdit } from '@/api/conversations';
 import { saveCollection } from '@/api/collections';
 import { useConversationStore } from '@/stores/conversation';
 
@@ -17,29 +19,43 @@ const menuOpen = ref(false);
 const accountOpen = ref(false);
 const saved = ref(false);
 const saving = ref(false);
+const editorOpen = ref(false);
+const editorError = ref('');
+const summaryOpen = ref(false);
+const moreActions = ref(false);
+const focused = ref(false);
 const pageHeight = uni.getSystemInfoSync().windowHeight;
 const keyboardHeight = ref(0);
 const scrollTarget = ref('');
-const status = computed(() => store.subject && !store.subject.confirmedAt ? '先核对题目与知识点' : '理解 → 练习 → 对照自评 → 再追问');
-const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating);
-const lesson = computed(() => store.artifacts.find((item) => item.type === 'lesson' && item.publishStatus === 'published'));
-const practice = computed(() => store.artifacts.find((item) => item.type === 'exercise_set' && item.publishStatus === 'published'));
+const isKnowledge = computed(() => store.subject?.type === 'knowledge');
+const status = computed(() => !store.subject?.confirmedAt ? (isKnowledge.value ? '先核对学习范围' : '先确认题目内容') : store.waitingJob ? '学习材料正在整理' : practice.value ? '同类练习已准备好' : lesson.value ? '图文讲解已准备好' : '先提示，再逐步推导');
+const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating && !store.confirmingSubject && !store.editingSubject);
+const lesson = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'lesson' && item.publishStatus === 'published'));
+const practice = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'exercise_set' && item.publishStatus === 'published'));
+const recommended = computed(() => practice.value ? 'practice' : lesson.value ? 'lesson' : 'thinking');
+const recommendLabel = computed(() => recommended.value === 'practice' ? '开始配套练习' : recommended.value === 'lesson' ? '阅读图文讲解' : '写下我的思路');
+const subquestions = computed(() => store.subject?.subquestions ?? []);
+const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
+const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
 const lastReply = computed(() => [...store.messages].reverse().find((message) => message.role === 'assistant'));
 onUnload(() => store.stopStream());
 onLoad(async (query) => {
   try {
     if (query?.id) await store.open(query.id);
-    else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question'); }
+    else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
 });
 function scrollToEnd(): void {
   scrollTarget.value = '';
   void nextTick(() => { scrollTarget.value = 'thread-end'; });
 }
-watch(() => store.messages.map((message) => message.text).join('') + Boolean(store.subject), scrollToEnd);
+watch(() => store.messages.map((message) => message.text).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), scrollToEnd);
+watch(() => store.currentId, () => { editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; moreActions.value = false; saved.value = false; });
+watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; });
 async function onSend(): Promise<void> {
   const text = draft.value.trim();
-  if (!text || store.generating) return;
+  if (!text || store.generating || store.editingSubject || store.confirmingSubject) return;
+  focused.value = false;
   await store.send(text);
   if (!store.error) draft.value = '';
 }
@@ -61,6 +77,30 @@ function openConversation(id: string): void {
   saved.value = false;
   draft.value = '';
   void store.open(id).catch((err) => { store.error = err.message; });
+}
+function edit(): void {
+  if (store.generating || store.confirmingSubject || store.editingSubject) return;
+  focused.value = false;
+  keyboardHeight.value = 0;
+  editorError.value = '';
+  editorOpen.value = true;
+}
+async function saveSubject(input: SubjectEdit): Promise<void> {
+  editorError.value = '';
+  try {
+    if (await store.editSubject(input)) { editorOpen.value = false; uni.showToast({ title: '已保存，请重新核对', icon: 'none' }); }
+  } catch (err) { editorError.value = err instanceof Error ? err.message : '保存失败，修改内容仍保留，请重试'; }
+}
+async function choosePart(index: number): Promise<void> {
+  const subject = store.subject;
+  if (!subject || (subject.activeSubquestionIndex ?? 0) === index) return;
+  try { await store.editSubject({ content: subject.content, tags: subject.tags, subquestions: subquestions.value, subquestionIndex: index, expectedRevision: subject.version }); }
+  catch (err) { store.error = err instanceof Error ? err.message : '小问切换失败，请重试'; }
+}
+function recommend(): void {
+  if (recommended.value !== 'thinking') { openMaterial(recommended.value); return; }
+  focused.value = false;
+  void nextTick(() => { focused.value = true; });
 }
 function action(text: string, kind: TurnRequest['action']): void {
   if (!ready.value) return;
@@ -89,29 +129,29 @@ function openMaterial(type: 'lesson' | 'practice'): void {
     <view class="task-toolbar">
       <text class="stage">{{ status }}</text>
       <view class="toolbar-actions">
-        <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ saved ? '已保存' : '保存错题' }}</text></button>
-        <button :disabled="!store.subject?.confirmedAt" @tap="openMaterial('lesson')"><text>图文讲解</text><LumaIcon name="arrow-diagonal" :size="12" /></button>
+        <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ saved ? '已保存' : isKnowledge ? '保存记录' : '保存错题' }}</text></button>
       </view>
     </view>
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="true">
       <view class="thread">
+        <view v-if="store.subject?.confirmedAt" class="subject-summary">
+          <button class="summary-toggle" :aria-label="summaryOpen ? '收起已确认内容' : '展开已确认内容'" @tap="summaryOpen = !summaryOpen"><view><text class="summary-label">{{ isKnowledge ? '学习范围已确认' : '题目已确认' }}<text v-if="activePart"> · 第 {{ (store.subject.activeSubquestionIndex ?? 0) + 1 }} 问</text></text><view v-if="!summaryOpen" class="summary-preview">{{ store.subject.content.text }}</view></view><LumaIcon :name="summaryOpen ? 'chevron-up' : 'chevron-down'" :size="14" /></button>
+          <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
+        </view>
         <view v-if="!store.messages.length" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
         <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :incomplete="msg.incomplete" />
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
-          <view class="card-heading"><text>核对题目与知识点</text><text class="revision">待确认</text></view>
+          <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
           <text class="subject-text" selectable>{{ store.subject.content.text }}</text>
-          <view v-if="store.subject.tags.length" class="tags"><text v-for="tag in store.subject.tags" :key="tag">{{ tag }}</text></view>
-          <text class="check-note">先确认题干、公式和已知条件，我们再开始。</text>
-          <button class="confirm-action" :disabled="busy || store.generating" @tap="onConfirm">{{ busy ? '正在确认…' : '内容正确，开始学习' }}</button>
+
+          <view v-if="subquestions.length" class="part-options"><text class="check-note">这次先学哪一问？</text><button v-for="(part, index) in subquestions" :key="index" :class="{ selected: (store.subject.activeSubquestionIndex ?? 0) === index }" :disabled="store.editingSubject || store.generating || busy" @tap="choosePart(index)"><text class="part-index">{{ (store.subject.activeSubquestionIndex ?? 0) === index ? '●' : '○' }}</text><text>第 {{ index + 1 }} 问 · {{ part }}</text></button></view>
+          <text class="check-note">{{ store.subject.version > 1 ? '后续讲解与练习将依据修改后的内容。' : isKnowledge ? '确认要学习的内容，不清楚的范围可以先补充。' : '请检查题干、公式和已知条件。' }}</text>
+          <view class="confirmation-actions"><button class="edit-action" :disabled="busy || store.generating || store.editingSubject" @tap="edit">{{ isKnowledge ? '补充内容' : '修改题目' }}</button><button class="confirm-action" :disabled="busy || store.generating || store.editingSubject" @tap="onConfirm">{{ busy ? '正在确认…' : confirmLabel }}</button></view>
         </view>
         <view v-if="ready && lastReply && !store.error" class="follow-actions">
-          <button @tap="action('没思路，请给我一个方向提示', 'hint')">再给一点提示<text>›</text></button>
-          <button @tap="action('我想查看完整解析', 'show_solution')">查看完整解析<text>›</text></button>
-          <button @tap="openMaterial('lesson')">图文讲解<text>›</text></button>
-        </view>
-        <view v-if="lesson || practice" class="resources">
-          <button v-if="lesson" class="resource" @tap="openMaterial('lesson')"><view><text class="resource-title">图文讲解</text><text class="resource-caption">概念图解 · 分步推导 · 易错辨析</text></view><LumaIcon name="arrow-diagonal" :size="16" /></button>
-          <button v-if="practice" class="resource" @tap="openMaterial('practice')"><view><text class="resource-title">同知识点配套练习</text><text class="resource-caption">独立思考，再对照解析与自评</text></view><LumaIcon name="arrow-diagonal" :size="16" /></button>
+          <button class="recommend-action" @tap="recommend"><text>{{ recommendLabel }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button>
+          <view class="secondary-actions"><button @tap="action('没思路，请给我一个方向提示', 'hint')">给点提示</button><button @tap="action('我想查看完整解析', 'show_solution')">看完整解析</button><button :aria-expanded="moreActions" @tap="moreActions = !moreActions">{{ moreActions ? '收起' : '更多学习方式' }}</button></view>
+          <view v-if="moreActions" class="material-actions"><button v-if="recommended !== 'lesson'" :disabled="store.waitingJob && !lesson" @tap="openMaterial('lesson')">{{ lesson ? '阅读图文讲解' : '生成图文讲解' }}</button><button v-if="recommended !== 'practice'" :disabled="store.waitingJob && !practice" @tap="openMaterial('practice')">{{ practice ? '开始配套练习' : '练同类题' }}</button></view>
         </view>
         <view v-if="store.generating" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
         <view v-if="store.waitingJob" class="progress-state"><view class="pulse" /><text>学习材料正在生成，你可以继续提问。</text></view>
@@ -122,11 +162,12 @@ function openMaterial(type: 'lesson' | 'practice'): void {
     </scroll-view>
     <view class="input-dock">
       <view class="composer">
-        <textarea v-model="draft" class="input" :maxlength="2000" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen" @keyboardheightchange="keyboardHeight = $event.detail.height" />
-        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
+        <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
+        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
       </view>
     </view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />
+    <SubjectEditor :open="editorOpen" :subject="store.subject" :saving="store.editingSubject" :error="editorError" @close="editorOpen = false" @save="saveSubject" />
     <LearningDrawer :open="menuOpen" @close="menuOpen = false" @new="newChat" @select="openConversation" @account="accountOpen = true" />
   </view>
 </template>
@@ -145,22 +186,34 @@ function openMaterial(type: 'lesson' | 'practice'): void {
 .empty { display:flex; flex-direction:column; align-items:center; gap:24rpx; padding:100rpx 20rpx; font-size:28rpx; color:#6a7d5d; }
 .empty-symbol { font-size:48rpx; color:#92a27c; }
 .empty-caption { font-size:23rpx; color:#a1ad94; }
-.confirmation { margin:0 0 40rpx 68rpx; padding:28rpx; border:1rpx solid #dfe5d5; border-radius:22rpx; background:#fffefa; }
+.confirmation { margin:0 0 36rpx 68rpx; padding:24rpx 0 8rpx; border-top:1rpx solid #dfe5d5; border-bottom:1rpx solid #e5e9df; }
 .card-heading { display:flex; justify-content:space-between; gap:14rpx; font-size:25rpx; color:#54694b; }
 .revision { font-size:19rpx; color:#a38b69; flex-shrink:0; padding-top:4rpx; }
 .subject-text { display:block; margin:22rpx 0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:27rpx; line-height:1.9; color:#3e4a37; }
-.tags { display:flex; gap:12rpx; flex-wrap:wrap; margin-bottom:20rpx; }
-.tags text { padding:5rpx 12rpx; background:#edf2e6; border-radius:8rpx; font-size:20rpx; color:#81946f; }
 .check-note { display:block; font-size:21rpx; color:#9aa58c; line-height:1.8; }
-.chat-page .confirm-action { width:100%; min-height:80rpx; margin-top:25rpx; padding:14rpx 12rpx; box-sizing:border-box; border-radius:44rpx; color:#fffefa; background:#4f6652; font-size:24rpx; }
-.chat-page .confirm-action[disabled] { opacity:.5; }
-.follow-actions { display:flex; gap:12rpx 30rpx; flex-wrap:wrap; margin:-18rpx 0 30rpx 68rpx; }
-.follow-actions button { display:flex; align-items:center; gap:9rpx; min-height:76rpx; color:#829272; font-size:22rpx; }
-.follow-actions button text { color:#a1ad95; }
-.resources { margin:0 0 24rpx 68rpx; }
-.chat-page .resource { display:flex; align-items:center; justify-content:space-between; gap:16rpx; width:100%; border-bottom:1rpx solid #e0e6d7; padding:26rpx 0; text-align:left; }
-.resource-title { display:block; font-size:26rpx; color:#54694b; }
-.resource-caption { display:block; font-size:21rpx; color:#99a28c; margin-top:10rpx; line-height:1.8; }
+.confirmation-actions { display:flex; align-items:center; justify-content:space-between; gap:12rpx; margin-top:24rpx; }
+.chat-page .edit-action { color:#80916f; font-size:22rpx; padding:16rpx 4rpx; text-align:left; }
+.chat-page .confirm-action { min-height:80rpx; padding:18rpx 4rpx 18rpx 16rpx; box-sizing:border-box; color:#4f6652; font-size:24rpx; font-weight:500; }
+.chat-page .confirm-action[disabled],.chat-page .edit-action[disabled] { opacity:.5; }
+.subject-summary { margin-bottom:32rpx; border-bottom:1rpx solid #e3e8dc; }
+.chat-page .summary-toggle { display:flex; align-items:center; justify-content:space-between; gap:20rpx; width:100%; padding:0 0 24rpx; text-align:left; }
+.summary-toggle>view { flex:1; min-width:0; }
+.summary-label { color:#879779; font-size:21rpx; }
+.summary-preview { margin-top:10rpx; font-size:23rpx; color:#667b5a; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.summary-details { padding-bottom:16rpx; }
+.summary-details .subject-text { margin-top:0; }
+.part-options { margin:20rpx 0; }
+.chat-page .part-options button { display:flex; align-items:flex-start; gap:12rpx; width:100%; text-align:left; padding:14rpx 0; font-size:22rpx; color:#97a18d; }
+.part-options button.selected { color:#4f6652; }
+.part-index { flex-shrink:0; }
+.part-options button text:last-child { min-width:0; overflow-wrap:anywhere; }
+.follow-actions { margin:0 0 30rpx 68rpx; }
+.chat-page .recommend-action { display:flex; align-items:center; justify-content:space-between; gap:20rpx; width:100%; padding:22rpx 0; border-top:1rpx solid #e1e7d8; text-align:left; font-size:26rpx; color:#516b48; }
+.secondary-actions,.material-actions { display:flex; flex-wrap:wrap; gap:8rpx 26rpx; }
+.secondary-actions button,.material-actions button { min-height:72rpx; font-size:21rpx; color:#8a987e; }
+.material-actions { border-top:1rpx solid #e8ecdf; }
+.material-actions button { color:#718661; }
+.material-actions button[disabled] { opacity:.45; }
 .progress-state { display:flex; align-items:center; gap:14rpx; padding:20rpx 0 24rpx 68rpx; color:#94a086; font-size:23rpx; }
 .pulse { width:10rpx; height:10rpx; background:#91a27c; border-radius:50%; }
 .error { margin:12rpx 0 16rpx 68rpx; padding:22rpx; background:#f4eee5; border-radius:16rpx; color:#a47d61; font-size:24rpx; }

@@ -7,8 +7,9 @@ export const dynamic = 'force-dynamic';
 
 const SubjectBody = z.object({
   action: z.enum(['update', 'confirm']),
-  content: z.unknown().optional(),
-  tags: z.array(z.string()).optional(),
+  content: z.object({ text: z.string().trim().min(1).max(8000) }).passthrough().optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  subquestions: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
   subquestionIndex: z.number().int().min(0).optional(),
   expectedRevision: z.number().int().optional(),
 });

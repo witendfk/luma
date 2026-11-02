@@ -14,6 +14,7 @@ export const subjectService = {
       action: 'update' | 'confirm';
       content?: unknown;
       tags?: string[];
+      subquestions?: string[];
       subquestionIndex?: number;
       expectedRevision?: number;
     },
@@ -45,16 +46,20 @@ export const subjectService = {
       }
 
       if (!latest) throw invalidFormat('会话尚无学习对象，请先发送题目或知识点');
+      const subquestions = input.subquestions ?? (Array.isArray(latest.subquestions) ? latest.subquestions : []);
+      const selected = input.subquestionIndex ?? (input.subquestions ? (subquestions.length ? 0 : null) : latest.activeSubquestionIndex);
+      if (selected !== null && selected !== undefined && (!Number.isInteger(selected) || selected < 0 || selected >= subquestions.length)) {
+        throw invalidFormat('请选择有效的小问');
+      }
       const revision = await tx.subjectRevision.create({
         data: {
           conversationId,
           version: latest.version + 1,
           type: latest.type,
-          content: (input.content ?? latest.content) as object,
+          content: { ...(latest.content as object), ...((input.content ?? {}) as object) },
           tags: input.tags ?? latest.tags,
-          subquestions: (latest.subquestions as object | null) ?? undefined,
-          activeSubquestionIndex:
-            input.subquestionIndex !== undefined ? input.subquestionIndex : latest.activeSubquestionIndex,
+          subquestions,
+          activeSubquestionIndex: subquestions.length ? selected ?? 0 : null,
           // 新版本必须重新确认（FR-03：确认前不按未核实条件生成解答）
           confirmedAt: null,
         },

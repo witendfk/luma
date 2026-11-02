@@ -73,10 +73,10 @@ function send(): void {
   focused.value = false;
   sentDraft = text;
   // 练习入口保留明确意图；对话页仍先核对知识范围，再进入生成。
-  const initial = scenario.value === 'practice' ? `请围绕以下内容出同知识点练习：${text}` : text;
+  const initial = text;
   sentMessage = initial;
   uni.navigateTo({
-    url: `/pages/chat/index?text=${encodeURIComponent(initial)}&type=${scenario.value === 'question' ? 'question' : 'knowledge'}`,
+    url: `/pages/chat/index?text=${encodeURIComponent(initial)}&type=${scenario.value === 'question' ? 'question' : 'knowledge'}&intent=${scenario.value}`,
     fail: () => { navigating.value = false; sentDraft = null; uni.showToast({ title: '打开对话失败，请重试', icon: 'none' }); },
   });
 }
@@ -131,10 +131,10 @@ function sample(): void {
 .home-page { box-sizing:border-box; background:#f8f7f2; color:#354a37; }
 .home-page button { margin:0; padding:0; border:0; background:transparent; line-height:1.5; font-weight:400; }
 .home-page button::after { border:0; }
-.hero { padding:62rpx 50rpx 48rpx; text-align:center; }
-.emblem { display:block; font-size:64rpx; line-height:1; color:#91a27c; margin:10rpx 0 42rpx; }
+.hero { padding:46rpx 50rpx 48rpx; text-align:center; }
+.emblem { display:block; font-size:64rpx; line-height:1; color:#91a27c; margin:10rpx 0 30rpx; }
 .greeting { font-family:'Songti SC','STSong',serif; font-size:54rpx; line-height:1.5; letter-spacing:2rpx; }
-.lede { display:block; margin:22rpx -8rpx 58rpx; font-size:22rpx; line-height:1.95; color:#96a287; }
+.lede { display:block; margin:22rpx -8rpx 42rpx; font-size:22rpx; line-height:1.95; color:#96a287; }
 .composer { padding:24rpx 28rpx 22rpx; border:1rpx solid #dfe6d5; border-radius:34rpx; background:#fffefa; text-align:left; }
 .input { box-sizing:border-box; width:100%; height:168rpx; font-size:30rpx; line-height:1.75; color:#405443; }
 .input-placeholder { color:#a0ad92; font-size:27rpx; }

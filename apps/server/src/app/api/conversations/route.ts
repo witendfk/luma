@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 const CreateConversationBody = z.object({
   title: z.string().max(60).optional(),
   subjectType: z.enum(['question', 'knowledge']).optional(),
+  intent: z.enum(['question', 'knowledge', 'practice']).optional(),
   initialText: z.string().max(8000).optional(),
 });
 

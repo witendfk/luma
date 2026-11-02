@@ -2,6 +2,69 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { miniappSandbox, storageMock } from './helpers/miniapp';
 
+test('修改题目期间禁止发送；旧刷新不能覆盖新版本，失败保留原对象', async () => {
+  let resolveDetail!: (value: any) => void, resolveEdit!: (value: any) => void;
+  let fail = false;
+  const sandbox = miniappSandbox({ '@/api/conversations': {
+    getConversation: () => new Promise((resolve) => { resolveDetail = resolve; }),
+    updateSubject: () => fail ? Promise.reject(new Error('网络断开')) : new Promise((resolve) => { resolveEdit = resolve; }),
+    listMessages: async () => ({ items: [] }),
+  } }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia');
+  pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c';
+  chat.subject = { id: 'v1', version: 1, content: { text: '原题' }, tags: [], confirmedAt: 'today' };
+  const refreshing = chat.refresh(false);
+  const saving = chat.editSubject({ content: { text: '新题' }, tags: [], subquestions: [], expectedRevision: 1 });
+  await chat.send('不应发送');
+  assert.equal(chat.messages.length, 0);
+  resolveEdit({ subject: { id: 'v2', version: 2, content: { text: '新题' }, tags: [], confirmedAt: null } });
+  assert.equal(await saving, true);
+  resolveDetail({ conversation: { title: '旧标题' }, subject: { id: 'v1' }, artifacts: [] });
+  await refreshing;
+  assert.equal(chat.subject.id, 'v2');
+  assert.equal(chat.subject.confirmedAt, null);
+  fail = true;
+  await assert.rejects(chat.editSubject({ expectedRevision: 2 }), /网络断开/);
+  assert.equal(chat.subject.id, 'v2');
+  assert.equal(chat.editingSubject, false);
+  chat.$dispose();
+});
+
+test('确认保留教学/练习意图，重复点击不重复请求；切换账号后迟到修改不写入', async () => {
+  for (const intent of ['question', 'knowledge', 'practice']) {
+    let confirms = 0, requestBody: any;
+    const subject = { id: 's', version: 1, type: intent === 'question' ? 'question' : 'knowledge', content: { text: '集合', intent }, tags: [], confirmedAt: null as string | null };
+    const sandbox = miniappSandbox({
+      '@/api/conversations': {
+        confirmSubject: async () => { confirms += 1; subject.confirmedAt = 'today'; },
+        getConversation: async () => ({ conversation: { title: '集合' }, subject, progress: { stage: 'guiding' }, artifacts: [] }),
+      },
+      '@/utils/sse': { openTurnStream: (options: any) => { requestBody = options.body; return { abort() {} }; } },
+    }, { uni: storageMock() });
+    const pinia = sandbox.require('pinia');
+    pinia.setActivePinia(pinia.createPinia());
+    const chat = sandbox.load('@/stores/conversation').useConversationStore();
+    chat.currentId = 'c'; chat.subject = subject;
+    await Promise.all([chat.confirm(), chat.confirm()]);
+    assert.equal(confirms, 1);
+    assert.equal(requestBody.action, intent === 'practice' ? 'generate_practice' : intent === 'knowledge' ? 'generate_lesson' : undefined);
+    chat.$dispose();
+  }
+  let resolveEdit!: (value: any) => void;
+  const sandbox = miniappSandbox({ '@/api/conversations': { updateSubject: () => new Promise((resolve) => { resolveEdit = resolve; }) } }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'old';
+  const saving = chat.editSubject({ expectedRevision: 1 });
+  chat.reset();
+  resolveEdit({ subject: { id: 'private-old-subject' } });
+  assert.equal(await saving, false);
+  assert.equal(chat.subject, null);
+  chat.$dispose();
+});
+
 function streamFixture() {
   const storage = storageMock();
   let request: any, chunk: any, headers: any, aborts = 0;

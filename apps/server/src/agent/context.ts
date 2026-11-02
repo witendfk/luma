@@ -17,6 +17,10 @@ export async function assembleSystem(policy: TurnPolicy, taskFrame: TaskFrame): 
     subject
       ? `当前学习对象（版本 ${subject.version}，${policy.subjectConfirmed ? '已确认' : '待核对'}）：\n${subjectText}`
       : '当前没有学习对象；若学生消息包含题目，先转写为待核对题干，等待学生确认。',
+    `关联知识点：${subject?.tags.join('、') || '暂无标签。请根据已确认题目自行分析涉及的知识点，不要求学生命名或确认考点；题目条件不清楚时才询问具体条件'}`,
+    ...(subject && Array.isArray(subject.subquestions) && subject.activeSubquestionIndex !== null
+      ? [`当前学习第 ${subject.activeSubquestionIndex + 1} 小问：${subject.subquestions[subject.activeSubquestionIndex]}。保留全题已知条件，只推进当前小问。`]
+      : []),
     policy.subjectConfirmed
       ? '本轮可用工具：readLearningContext、recognizeMaterial、createLesson、createPractice。'
       : '本轮可用工具：readLearningContext、recognizeMaterial。学习对象未确认，不能调用 createLesson/createPractice。',

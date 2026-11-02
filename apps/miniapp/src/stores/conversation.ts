@@ -12,12 +12,16 @@ export const useConversationStore = defineStore('conversation', () => {
   const subject = ref<api.SubjectView | null>(null);
   const artifacts = ref<api.ConversationDetail['artifacts']>([]);
   const generating = ref(false);
+  const editingSubject = ref(false);
+  const confirmingSubject = ref(false);
+  const stage = ref('clarifying');
   const waitingJob = ref(false);
   const error = ref('');
   const currentRunId = ref<string | null>(null);
   let streamHandle: TurnStreamHandle | null = null;
   let openVersion = 0;
   let messageVersion = 0;
+  let subjectVersion = 0;
   let polling: ReturnType<typeof setTimeout> | undefined;
 
   function stopStream(): void {
@@ -34,6 +38,7 @@ export const useConversationStore = defineStore('conversation', () => {
 
   function reset(): void {
     openVersion += 1;
+    subjectVersion += 1;
     stopStream();
     currentId.value = null;
     currentRunId.value = null;
@@ -41,6 +46,9 @@ export const useConversationStore = defineStore('conversation', () => {
     messages.value = [];
     subject.value = null;
     artifacts.value = [];
+    editingSubject.value = false;
+    confirmingSubject.value = false;
+    stage.value = 'clarifying';
     waitingJob.value = false;
     error.value = '';
   }
@@ -49,12 +57,13 @@ export const useConversationStore = defineStore('conversation', () => {
   async function refresh(includeMessages = true): Promise<void> {
     const id = currentId.value;
     if (!id) return;
-    const version = openVersion, session = sessionVersion(), revision = messageVersion;
+    const version = openVersion, session = sessionVersion(), revision = messageVersion, subjectSnapshot = subjectVersion;
     const [detail, history] = await Promise.all([api.getConversation(id), includeMessages ? api.listMessages(id) : Promise.resolve(null)]);
-    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value) return;
+    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion) return;
     title.value = detail.conversation.title;
     subject.value = detail.subject;
     artifacts.value = detail.artifacts;
+    stage.value = detail.progress?.stage ?? 'clarifying';
     if (detail.activeRun && !generating.value) {
       waitingJob.value = true;
       currentRunId.value = detail.activeRun.id;
@@ -98,15 +107,15 @@ export const useConversationStore = defineStore('conversation', () => {
     }, 1500);
   }
 
-  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question'): Promise<void> {
-    if (generating.value || (!text.trim() && !action)) return;
+  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent): Promise<void> {
+    if (generating.value || editingSubject.value || (!text.trim() && !action)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;
     generating.value = true;
     error.value = '';
     try {
       if (!currentId.value) {
-        const created = await api.createConversation({ initialText: text, subjectType });
+        const created = await api.createConversation({ initialText: text, subjectType, intent });
         if (version !== openVersion || session !== sessionVersion()) return;
         currentId.value = created.id;
         title.value = created.title;
@@ -160,13 +169,43 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   async function confirm(): Promise<void> {
-    if (!currentId.value || !subject.value || generating.value) return;
+    if (!currentId.value || !subject.value || subject.value.confirmedAt || generating.value || editingSubject.value || confirmingSubject.value) return;
     const version = openVersion, session = sessionVersion();
-    await api.confirmSubject(currentId.value, subject.value.version);
-    if (version !== openVersion || session !== sessionVersion()) return;
-    await refresh(false);
-    if (version !== openVersion || session !== sessionVersion()) return;
-    await send('题目已核对，请先给我一个思考方向');
+    confirmingSubject.value = true;
+    subjectVersion += 1;
+    try {
+      await api.confirmSubject(currentId.value, subject.value.version);
+      if (version !== openVersion || session !== sessionVersion()) return;
+      await refresh(false);
+      if (version !== openVersion || session !== sessionVersion()) return;
+      const intent = subject.value?.content.intent ?? subject.value?.type;
+      if (intent === 'practice') await send('范围已核对，请生成同知识点练习', 'generate_practice');
+      else if (intent === 'knowledge') await send('范围已核对，请生成图文讲解', 'generate_lesson');
+      else await send('题目已核对，请先给我一个思考方向');
+    } finally {
+      if (version === openVersion && session === sessionVersion()) confirmingSubject.value = false;
+    }
+  }
+
+  async function editSubject(input: api.SubjectEdit): Promise<boolean> {
+    if (!currentId.value || generating.value || confirmingSubject.value || editingSubject.value) return false;
+    const id = currentId.value, version = openVersion, session = sessionVersion();
+    editingSubject.value = true;
+    subjectVersion += 1;
+    try {
+      const result = await api.updateSubject(id, input);
+      if (version !== openVersion || session !== sessionVersion() || id !== currentId.value) return false;
+      stopStream();
+      messageVersion += 1;
+      waitingJob.value = false;
+      currentRunId.value = null;
+      subject.value = result.subject;
+      stage.value = 'clarifying';
+      error.value = '';
+      return true;
+    } finally {
+      if (version === openVersion && session === sessionVersion()) editingSubject.value = false;
+    }
   }
 
   async function stop(): Promise<void> {
@@ -178,6 +217,6 @@ export const useConversationStore = defineStore('conversation', () => {
     await refresh();
   }
 
-  return { currentId, currentRunId, title, messages, subject, artifacts, generating, waitingJob, error,
-    reset, open, refresh, send, confirm, stop, appendLocalMessage, setStream, stopStream };
+  return { currentId, currentRunId, title, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+    reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream };
 });
