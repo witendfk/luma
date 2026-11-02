@@ -24,8 +24,8 @@ function navigate(page: string, tab = false): void {
 }
 </script>
 <template>
-  <view v-if="open" class="drawer-layer" @touchmove.stop.prevent>
-    <view class="scrim" aria-label="关闭学习菜单" @tap="emit('close')" />
+  <view v-if="open" class="drawer-layer">
+    <view class="scrim" aria-label="关闭学习菜单" @touchmove.stop.prevent @tap="emit('close')" />
     <view class="drawer">
       <view class="brand-row">
         <view><view class="brand">Luma<text>.</text></view><text class="subtitle">留一点时间，想明白。</text></view>
@@ -37,18 +37,22 @@ function navigate(page: string, tab = false): void {
         <text>最近学习</text>
         <button class="fold" :aria-label="expanded ? '收起学习历史' : '展开学习历史'" @tap="expanded = !expanded"><LumaIcon :name="expanded ? 'chevron-up' : 'chevron-down'" :size="15" /></button>
       </view>
-      <scroll-view v-if="expanded" scroll-y class="history-list">
-        <view v-if="history.loading && !history.items.length" class="list-state">正在找回你的学习记录…</view>
-        <view v-if="history.error" class="list-state error"><text>{{ history.error }}</text><button class="retry" :disabled="history.loading" @tap="history.load()">重新加载</button></view>
-        <view v-else-if="history.loaded && !history.items.length" class="list-state">还没有学习对话<text class="empty-note">新的问题，会在这里留下思路。</text></view>
-        <view v-for="group in groups" :key="group.label">
-          <view class="history-date">{{ group.label }}</view>
-          <button v-for="item in group.items" :key="item.id" class="history-item" @tap="emit('select', item.id)">
-            <text class="history-title">{{ item.title }}</text><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
-          </button>
-        </view>
-        <button v-if="history.nextCursor" class="load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
-      </scroll-view>
+      <view v-if="expanded" class="history-area">
+        <scroll-view scroll-y class="history-list">
+          <view class="history-content">
+            <view v-if="history.loading && !history.items.length" class="list-state">正在找回你的学习记录…</view>
+            <view v-if="history.error" class="list-state error"><text>{{ history.error }}</text><button class="retry" :disabled="history.loading" @tap="history.load()">重新加载</button></view>
+            <view v-else-if="history.loaded && !history.items.length" class="list-state">还没有学习对话<text class="empty-note">新的问题，会在这里留下思路。</text></view>
+            <view v-for="group in groups" :key="group.label">
+              <view class="history-date">{{ group.label }}</view>
+              <button v-for="item in group.items" :key="item.id" class="history-item" @tap="emit('select', item.id)">
+                <text class="history-title">{{ item.title }}</text><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
+              </button>
+            </view>
+            <button v-if="history.nextCursor" class="load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
+          </view>
+        </scroll-view>
+      </view>
       <view v-else class="collapsed-space" />
       <view class="drawer-footer">
         <button class="archive-row" @tap="navigate('/pages/archived/index')"><LumaIcon name="archive" :size="19" /><text>已归档对话</text></button>
@@ -76,7 +80,9 @@ function navigate(page: string, tab = false): void {
 .nav-row:active,.history-item:active { background:#edf1e6; border-radius:16rpx; }
 .history-head { display:flex; align-items:center; justify-content:space-between; flex-shrink:0; margin-top:36rpx; padding:24rpx 20rpx 6rpx; border-top:1rpx solid #e4e8dc; font-size:22rpx; color:#909888; }
 .drawer .fold { display:flex; align-items:center; justify-content:center; width:60rpx; height:60rpx; }
-.history-list,.collapsed-space { flex:1; min-height:0; height:0; }
+.history-area,.collapsed-space { flex:1; min-height:0; position:relative; overflow:hidden; }
+.history-list { position:absolute; inset:0; width:100%; height:100%; }
+.history-content { display:flex; flex-direction:column; }
 .history-date { margin:26rpx 22rpx 10rpx; color:#a2aa98; font-size:18rpx; }
 .drawer .history-item { display:block; width:100%; padding:20rpx 22rpx; box-sizing:border-box; }
 .history-title { display:block; color:#54654d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
