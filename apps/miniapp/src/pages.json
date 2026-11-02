@@ -10,7 +10,7 @@
     },
     {
       "path": "pages/chat/index",
-      "style": { "navigationBarTitleText": "对话" }
+      "style": { "navigationBarTitleText": "Luma", "navigationBarBackgroundColor": "#fafbf7" }
     },
     {
       "path": "pages/reader/index",
@@ -40,12 +40,12 @@
   "tabBar": {
     "color": "#8a8f85",
     "selectedColor": "#4f6652",
-    "backgroundColor": "#fffefa",
+    "backgroundColor": "#fafbf5",
     "borderStyle": "white",
     "list": [
       {
         "pagePath": "pages/home/index",
-        "text": "学习",
+        "text": "学习对话",
         "iconPath": "static/tab/study.png",
         "selectedIconPath": "static/tab/study-on.png"
       },
