@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { listConversations } from '@/api/conversations';
+import { getToken } from '@/utils/token';
 
-/**
- * 新建对话页（FR-02 / 设计文档 §2）。
- * TODO(第一周)：创建会话 → 预填输入 → 跳对话页；继续上次学习指向最近活动的未归档对话。
- */
 const greeting = computed(() => {
   const hour = new Date().getHours();
   if (hour < 6) return '夜深了';
@@ -12,23 +10,30 @@ const greeting = computed(() => {
   if (hour < 18) return '下午好';
   return '晚上好';
 });
-
 const draft = ref('');
-
 const entries = [
   { icon: '📷', title: '拍题求助', desc: '拍照或输入题目，逐层引导' },
   { icon: '📖', title: '讲知识点', desc: '没听懂的内容，图文讲给你' },
   { icon: '✏️', title: '出练习', desc: '同知识点练习与自评' },
 ];
-
+const subjectType = ref<'question' | 'knowledge'>('question');
 function onEntry(title: string): void {
-  // TODO(第一周)：预填输入框并聚焦（FR-02 首页三入口）
-  uni.showToast({ title: `「${title}」接入会话接口后开放`, icon: 'none' });
+  subjectType.value = title === '讲知识点' ? 'knowledge' : 'question';
+  if (title === '拍题求助') uni.showToast({ title: '本轮先支持文字题目，拍照正在接入', icon: 'none' });
 }
-
-function onContinue(): void {
-  // TODO(第一周)：跳最近活动的未归档对话（FR-10）
-  uni.showToast({ title: '继续学习接入会话接口后开放', icon: 'none' });
+function onSend(): void {
+  const text = draft.value.trim();
+  if (!text) return;
+  if (!getToken()) { uni.navigateTo({ url: '/pages/login/index' }); return; }
+  uni.navigateTo({ url: `/pages/chat/index?text=${encodeURIComponent(text)}&type=${subjectType.value}` });
+  draft.value = '';
+}
+async function onContinue(): Promise<void> {
+  try {
+    const result = await listConversations(false);
+    if (result.items[0]) uni.navigateTo({ url: `/pages/chat/index?id=${result.items[0].id}` });
+    else uni.showToast({ title: '还没有对话，先发一道题吧', icon: 'none' });
+  } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '加载失败', icon: 'none' }); }
 }
 </script>
 
@@ -49,7 +54,7 @@ function onContinue(): void {
       <view class="toolbar">
         <text class="tool">📷 拍照</text>
         <text class="tool">🖼 相册</text>
-        <view class="send" @tap="onContinue">发送</view>
+        <view class="send" @tap="onSend">发送</view>
       </view>
     </view>
 

@@ -36,9 +36,15 @@ const envSchema = z.object({
   COS_BUCKET: optionalText,
   COS_REGION: optionalText,
 
-  // Agent 每轮限制（设计文档 §4.2）
-  TURN_MAX_MODEL_CALLS: z.coerce.number().int().positive().default(4),
-  TURN_MAX_TOOL_CALLS: z.coerce.number().int().positive().default(4),
+  // ---- Agent 运行保护上限（设计文档 §4.7：分项计数，可配置；正式默认值待实测调整）----
+  MAX_DECISIONS: z.coerce.number().int().positive().default(12),
+  MAX_TOOL_ROUNDS: z.coerce.number().int().positive().default(6),
+  MAX_TOOL_EXECUTIONS: z.coerce.number().int().positive().default(10),
+  MODEL_MAX_CORRECTIONS: z.coerce.number().int().min(1).default(1),
+  RUN_LEASE_MS: z.coerce.number().int().positive().default(120_000),
+  /** 整项目标截止时间；后台等待计入且恢复不重置 */
+  TURN_TOTAL_MS: z.coerce.number().int().positive().default(600_000),
+  JOB_TOTAL_MS: z.coerce.number().int().positive().default(300_000),
 
   // 后台任务（设计文档 §8.3）
   JOB_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),

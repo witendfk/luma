@@ -134,7 +134,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
   function feed(text: string): void {
     frames.feed(text, (event) => {
       if (!active() || terminal) return;
-      terminal = ['run.completed', 'run.failed', 'run.cancelled'].includes(event.type);
+      terminal = ['run.completed', 'run.failed', 'run.cancelled', 'run.waiting'].includes(event.type);
       opts.onEvent(event);
     });
   }

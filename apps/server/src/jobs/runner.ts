@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../lib/db';
 import { env } from '../lib/env';
 import { ApiError, toApiError } from '../lib/errors';
+import { resumeRunsForJob, scanWaitingRuns, failExpiredRuns } from './scheduler';
 import { lessonTask } from './lesson.task';
 import { practiceTask } from './practice.task';
 import { failJob, JobLeaseLostError, type JobLease } from './shared';
@@ -70,16 +71,22 @@ async function executeJob(lease: JobLease): Promise<void> {
     const apiErr = toApiError(err);
     if (!(err instanceof ApiError)) console.error(`[worker] 任务 ${lease.jobId} 异常`, err);
     await failJob(lease, apiErr.code, apiErr.message, apiErr.retryable);
+  } finally {
+    // 任务终态后恢复等待该结果的运行（§4.13：登记排队不是完成，恢复后继续决策）
+    await resumeRunsForJob(lease.jobId);
   }
 }
 
 async function tick(): Promise<void> {
   await markExpiredLeases();
+  await failExpiredRuns();
   for (;;) {
-    const jobId = await claimNextJob();
-    if (!jobId) return;
-    await executeJob(jobId);
+    const lease = await claimNextJob();
+    if (!lease) break;
+    await executeJob(lease);
   }
+  // 兜底扫描：等待入库前任务已完成的运行 / 进程重启后的遗留等待运行
+  await scanWaitingRuns();
 }
 
 let ticking = false;

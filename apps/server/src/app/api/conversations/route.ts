@@ -7,6 +7,8 @@ export const dynamic = 'force-dynamic';
 
 const CreateConversationBody = z.object({
   title: z.string().max(60).optional(),
+  subjectType: z.enum(['question', 'knowledge']).optional(),
+  initialText: z.string().max(8000).optional(),
 });
 
 /** GET /conversations —— 最近学习或归档列表（FR-10） */

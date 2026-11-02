@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   return withRoute(req, async () => {
     const { userId } = await requireUser(req);
     const { id } = await params;
-    return json(await conversationService.getOwned(userId, id));
+    return json(await conversationService.get(userId, id));
   });
 }
 

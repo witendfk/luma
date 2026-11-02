@@ -1,56 +1,441 @@
 import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
+import { activeControllers, RunStoppedError, withActiveRun } from './run-guard';
 import type { StreamEvent } from '@luma/shared';
-import { hasModelCredentials } from '../lib/env';
-import { toApiError, notImplemented } from '../lib/errors';
-import { assembleContext } from './context';
-import { createBudget } from './limits';
-import type { TurnContext } from './types';
+import { db } from '../lib/db';
+import { env, hasModelCredentials } from '../lib/env';
+import type { EventEmitter } from '../lib/sse';
+import { nextAgentStep, type AgentStep, type ModelMessage, type ToolCall } from '../lib/model';
+import { assembleSystem } from './context';
+import {
+  clearFailure,
+  correctionAllowed,
+  countersFrom,
+  initialCounters,
+  recordCorrection,
+  recordModelRequest,
+  recordUsage,
+  spendDecision,
+  spendToolRound,
+  type RunCounters,
+} from './limits';
+import { mockClarify, mockGuide, mockSolution } from './mock';
+import { buildPolicy } from './policy';
+import { assistantToolCallsMessage, correctionMessage, toolResultsMessage } from './protocol';
+import { PROMPT_VERSION } from './prompts';
+import { executeBatch } from './tool-executor';
+import { nativeToolSet } from './tools';
+import { taskFrameFrom, type PendingBatch, type TaskFrame } from './types';
 
 /**
- * 教学 Agent 每轮执行循环（设计文档 §4.2）。
- * 以 AsyncGenerator 产出流式事件；保证终止事件（completed/failed/cancelled）。
- *
- * 骨架顺序与文档一一对应，开发时逐步替换 TODO：
- *  1. 校验账号、会话、请求标识及当前学习对象版本（路由层已完成归属校验）
- *  2. 保存用户消息，或按 requestId 幂等复用
- *  3. 根据阶段、明确操作和文字确定意图（明确操作优先）
- *  4. 装配上下文，选择本轮允许的工具及答案展示权限
- *  5. 调用 GPT 流式输出，或处理工具调用
- *  6. 校验工具参数、执行工具，结果交回模型
- *  7. 长生成工具 → 返回任务引用并结束本轮
- *  8. 完成/等待学生/取消/达到限制时停止，保存消息与运行结果
+ * 驱动器（设计文档 §4.12）：唯一的循环所有者。
+ * 领取租约 → 恢复点先完成工具批次 → 决策 → respond 校验提交 / 工具批次保存 → 停靠或继续。
+ * 状态、协议、计数全部落库；进程崩溃后由租约过期重新领取，不精确续跑。
  */
-export async function* runTurn(ctx: TurnContext): AsyncGenerator<StreamEvent> {
-  yield { type: 'run.started', runId: ctx.runId };
 
+
+const asJson = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
+
+export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSignal): Promise<void> {
+  const owner = `drive-${randomUUID()}`;
+  // 原子领取会话执行权与运行租约；抢不到即退出（§4.12 claim）
+  const claimed = await db.agentRun.updateMany({
+    where: {
+      id: runId,
+      status: { in: ['running', 'waiting_job'] },
+      OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }],
+    },
+    data: { status: 'running', leaseBy: owner, leaseUntil: new Date(Date.now() + env().RUN_LEASE_MS) },
+  });
+  if (claimed.count === 0) return;
+
+  const controller = new AbortController();
+  activeControllers.set(runId, controller);
+  const onDisconnect = () => controller.abort(new Error('客户端已停止接收'));
+  signal?.addEventListener('abort', onDisconnect, { once: true });
+  if (signal?.aborted) onDisconnect();
+  let checking = false;
+  const heartbeat = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      const current = await db.agentRun.findUnique({ where: { id: runId } });
+      if (!current || current.status !== 'running' || current.leaseBy !== owner ||
+        (current.deadlineAt && current.deadlineAt.getTime() <= Date.now())) {
+        controller.abort(new Error('运行已停止或超时'));
+        return;
+      }
+      const renewed = await db.agentRun.updateMany({
+        where: { id: runId, status: 'running', leaseBy: owner, leaseUntil: { gt: new Date() } },
+        data: { leaseUntil: new Date(Date.now() + env().RUN_LEASE_MS) },
+      });
+      if (renewed.count !== 1) controller.abort(new Error('执行租约失效'));
+    } catch (err) {
+      controller.abort(err);
+    } finally { checking = false; }
+  }, Math.min(1000, Math.max(20, Math.floor(env().RUN_LEASE_MS / 3))));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const context = await assembleContext(ctx);
-    createBudget(); // 每轮预算；模型调用接入后逐步扣减
+    const initial = await db.agentRun.findUnique({ where: { id: runId } });
+    timeout = setTimeout(() => controller.abort(new Error('本轮运行超时')),
+      Math.max(1, (initial?.deadlineAt?.getTime() ?? Date.now() + env().TURN_TOTAL_MS) - Date.now()));
+    for (; ;) {
+      controller.signal.throwIfAborted();
+      const run = await db.agentRun.findUnique({ where: { id: runId } });
+      if (!run || !['running', 'waiting_job'].includes(run.status) || run.leaseBy !== owner) return;
+      // assertActive：取消、时限、预算（取消由状态条件检查实现）
+      if (run.deadlineAt && run.deadlineAt.getTime() < Date.now()) {
+        await failRun(runId, 'LIMIT', '本轮运行超时，可重试', true, emit, owner);
+        return;
+      }
+      await db.agentRun.updateMany({
+        where: { id: runId, leaseBy: owner },
+        data: { leaseUntil: new Date(Date.now() + env().RUN_LEASE_MS) },
+      });
 
-    if (!hasModelCredentials()) {
-      yield {
-        type: 'text.delta',
-        runId: ctx.runId,
-        delta:
-          '（框架联调提示）服务端尚未配置 GPT 凭据（OPENAI_API_KEY），当前为骨架回显。' +
-          '配置凭据后，这里将按教学阶段输出识别核对、方向提示或完整解析。',
-      };
-      yield { type: 'run.completed', runId: ctx.runId, stage: context.stage };
+      const counters = countersFrom(run.counters);
+      const protocol = ((run.protocol ?? []) as ModelMessage[]).slice();
+      const taskFrame = taskFrameFrom(run.taskFrame);
+      const conversation = await db.conversation.findUnique({
+        where: { id: run.conversationId },
+        select: { userId: true },
+      });
+      if (!conversation) {
+        await failRun(runId, 'INTERNAL', '会话不存在', false, emit, owner);
+        return;
+      }
+      const policy = await buildPolicy({
+        conversationId: run.conversationId,
+        action: taskFrame.action,
+        focus: taskFrame.focus,
+      });
+
+      // 恢复点：先完成已有工具批次，不能重发模型请求跳过旧结果（§4.12）
+      if (run.pendingBatch) {
+        const batch = run.pendingBatch as unknown as PendingBatch;
+        const outcome = await executeBatch(
+          { userId: conversation.userId, conversationId: run.conversationId, runId, leaseOwner: owner, policy, counters },
+          batch,
+        );
+
+        if (outcome.kind === 'waiting') {
+          // 长工具进入 waiting_job：释放前台连接，不保持模型空转（§4.5）
+          markGoalsStarted(taskFrame, outcome.jobs);
+          await withActiveRun(runId, owner, async (tx) => tx.agentRun.update({
+            where: { id: runId },
+            data: {
+              status: 'waiting_job', waitingJobIds: outcome.jobIds, taskFrame: asJson(taskFrame),
+              counters: asJson(counters), leaseBy: null, leaseUntil: null
+            },
+          }));
+          for (const job of outcome.jobs) {
+            if (job.artifactId) {
+              emit?.({ type: 'artifact.updated', runId, artifactId: job.artifactId, artifactType: job.artifactType as 'lesson' | 'exercise_set', status: 'generating' });
+            }
+            emit?.({ type: 'job.created', runId, jobId: job.jobId, artifactId: job.artifactId, artifactType: (job.artifactType as 'lesson' | 'exercise_set') ?? null });
+          }
+          emit?.({ type: 'run.waiting', runId, waiting: 'job', jobIds: outcome.jobIds });
+          return; // 不保持调用栈或模型连接
+        }
+
+        // 全部结果就绪：按 toolCallId 补回结果，才允许下一次决策（§4.13）
+        protocol.push(toolResultsMessage(outcome.results));
+        mergeGoalCompletions(taskFrame, outcome.results);
+        clearFailure(counters);
+        await withActiveRun(runId, owner, (tx) => tx.agentRun.update({
+          where: { id: runId },
+          data: {
+            pendingBatch: Prisma.DbNull,
+            waitingJobIds: [],
+            protocol: asJson(protocol),
+            taskFrame: asJson(taskFrame),
+            counters: asJson(counters),
+          },
+        }));
+        for (const r of outcome.results) {
+          const value = r.value as { ok?: boolean };
+          emit?.({ type: 'tool.finished', runId, toolExecutionId: r.toolCallId, ok: value?.ok !== false });
+        }
+        continue;
+      }
+
+      if (run.status === 'waiting_job') {
+        // 等待态但没有 pendingBatch：状态不一致，交还调度器
+        await db.agentRun.updateMany({
+          where: { id: runId, leaseBy: owner },
+          data: { status: 'waiting_job', leaseBy: null, leaseUntil: null },
+        });
+        return;
+      }
+
+      // ---- 决策步骤 ----
+      if (!spendDecision(counters)) {
+        await failRun(runId, 'LIMIT', '本轮决策步数已达保护上限', false, emit, owner);
+        return;
+      }
+      recordModelRequest(counters, 'agent');
+      const subjectText = await loadSubjectText(policy.subjectRevisionId);
+      const step = await nextAgentStep({
+        purpose: 'agent',
+        system: await assembleSystem(policy, taskFrame),
+        messages: protocol,
+        tools: nativeToolSet(),
+        abortSignal: controller.signal,
+        mock: mockStep(policy, taskFrame, subjectText),
+      });
+      controller.signal.throwIfAborted();
+      recordUsage(counters, step.usage);
+
+      if (step.kind === 'respond') {
+        const validation = await validateRespond(step.disposition, taskFrame);
+        if (!validation.ok) {
+          // finish 条件不满足：协议校正，有限次（§4.11）
+          if (correctionAllowed(counters)) {
+            recordCorrection(counters);
+            protocol.push(correctionMessage(validation.message));
+            await withActiveRun(runId, owner, (tx) => tx.agentRun.update({
+              where: { id: runId },
+              data: { protocol: asJson(protocol), counters: asJson(counters) },
+            }));
+            continue;
+          }
+          await failRun(runId, 'PROTOCOL', validation.message, true, emit, owner);
+          return;
+        }
+
+        // 学生可见正文来自 respond.text（§4.11）；结构化成果引用随消息保存
+        const blocks: unknown[] = [{ type: 'text', text: step.text }];
+        for (const goal of taskFrame.goals) {
+          if (goal.completedArtifactId) {
+            blocks.push({ type: 'artifact', artifactId: goal.completedArtifactId, artifactType: goal.type === 'lesson' ? 'lesson' : 'exercise_set', status: 'published' });
+          }
+        }
+        if (!policy.subjectConfirmed && policy.subjectRevisionId) {
+          const subject = await db.subjectRevision.findUnique({ where: { id: policy.subjectRevisionId } });
+          if (subject) {
+            blocks.push({ type: 'clarification', subjectRevisionId: subject.id, version: subject.version, text: step.text, tags: subject.tags });
+          }
+        }
+
+        const nextStatus = step.disposition === 'finish' ? 'completed' : 'waiting_user';
+        await withActiveRun(runId, owner, async (tx) => {
+          await tx.message.create({
+            data: {
+              conversationId: run.conversationId, role: 'assistant',
+              content: { blocks } as Prisma.InputJsonValue, runId, status: 'complete',
+              subjectRevisionId: run.subjectRevisionId
+            },
+          });
+          await updateStage(tx, run.conversationId, policy, taskFrame);
+          await tx.agentRun.update({
+            where: { id: runId },
+            data: {
+              status: nextStatus, finishedAt: new Date(), counters: asJson(counters),
+              usage: step.usage ? asJson(step.usage) : undefined, pendingBatch: Prisma.DbNull, waitingJobIds: []
+            },
+          });
+          await tx.conversation.update({ where: { id: run.conversationId }, data: { lastActiveAt: new Date() } });
+        });
+        // 首期按设计允许的降级路径：协议与终态校验通过后一次性发送正文，避免丢字或泄漏无效输出。
+        emit?.({ type: 'text.delta', runId, delta: step.text });
+        if (nextStatus === 'completed') {
+          emit?.({ type: 'run.completed', runId, stage: policy.stage });
+        } else {
+          emit?.({ type: 'run.waiting', runId, waiting: 'user', jobIds: [] });
+        }
+        return;
+      }
+
+      if (step.kind === 'tool_calls') {
+        if (!spendToolRound(counters)) {
+          await failRun(runId, 'LIMIT', '工具往返次数已达保护上限', false, emit, owner);
+          return;
+        }
+        const decisionId = `${runId}:d${counters.decisions}`;
+        // 先保存 assistant 工具调用消息与批次，再产生业务副作用（§4.12）
+        protocol.push(assistantToolCallsMessage(step.calls));
+        const items: PendingBatch['items'] = step.calls.map((c: ToolCall) => ({ toolCallId: c.toolCallId, toolName: c.toolName, input: c.input }));
+        await withActiveRun(runId, owner, async (tx) => {
+          for (const [idx, item] of items.entries()) {
+            await tx.toolExecution.create({
+              data: {
+                runId,
+                decisionId,
+                toolCallId: item.toolCallId,
+                tool: item.toolName,
+                batchOrder: idx,
+                status: 'pending',
+                idempotencyKey: `${runId}:${decisionId}:${item.toolCallId}`,
+                paramsDigest: { input: item.input } as Prisma.InputJsonValue,
+              },
+            });
+          }
+          await tx.agentRun.update({
+            where: { id: runId },
+            data: { pendingBatch: asJson({ decisionId, items } satisfies PendingBatch), protocol: asJson(protocol), counters: asJson(counters) },
+          });
+        });
+        for (const item of items) {
+          emit?.({ type: 'tool.started', runId, toolExecutionId: item.toolCallId, tool: item.toolName });
+        }
+        continue;
+      }
+
+      // issue：有限校正，不可恢复则失败终止（§4.12 handleModelIssue）
+      if (correctionAllowed(counters)) {
+        recordCorrection(counters);
+        protocol.push(correctionMessage(step.message));
+        await withActiveRun(runId, owner, (tx) => tx.agentRun.update({
+          where: { id: runId },
+          data: { protocol: asJson(protocol), counters: asJson(counters) },
+        }));
+        continue;
+      }
+      await failRun(runId, step.code, step.message, step.retryable, emit, owner);
       return;
     }
-
-    // TODO(第一周)：Vercel AI SDK 流式调用 + 工具循环（教学工具见 ./tools.ts）
-    throw notImplemented('Agent 模型调用（AI SDK 接入）');
   } catch (err) {
-    const apiErr = toApiError(err);
-    yield {
-      type: 'run.failed',
-      runId: ctx.runId,
-      error: { code: apiErr.code, message: apiErr.message, retryable: apiErr.retryable },
-    };
+    if (signal?.aborted) {
+      const stopped = await db.agentRun.updateMany({
+        where: { id: runId, status: 'running', leaseBy: owner },
+        data: { status: 'cancelled', finishedAt: new Date() },
+      });
+      if (stopped.count) emit?.({ type: 'run.cancelled', runId });
+    } else if (err instanceof RunStoppedError) {
+      await failRun(runId, 'RUN_INTERRUPTED', err.message, true, emit, owner);
+    } else {
+      if (!controller.signal.aborted) console.error(`[drive] 运行 ${runId} 异常`, err);
+      await failRun(runId, controller.signal.aborted ? 'LIMIT' : 'INTERNAL',
+        controller.signal.aborted ? '本轮运行已停止或超时，可重试' : '运行异常，可重试', true, emit, owner);
+    }
+  } finally {
+    clearInterval(heartbeat);
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onDisconnect);
+    if (activeControllers.get(runId) === controller) activeControllers.delete(runId);
+    // 释放仍归属本执行者的租约
+    await db.agentRun.updateMany({
+      where: { id: runId, leaseBy: owner },
+      data: { leaseBy: null, leaseUntil: null },
+    });
   }
 }
 
-export function newRunId(): string {
-  return `run_${randomUUID()}`;
+/** 终态失败：条件更新，迟到执行者无权覆盖取消/完成状态（§4.13） */
+export async function failRun(
+  runId: string,
+  code: string,
+  message: string,
+  retryable: boolean,
+  emit?: EventEmitter,
+  owner?: string,
+): Promise<void> {
+  const updated = await db.agentRun.updateMany({
+    where: { id: runId, status: { in: ['running', 'waiting_job'] }, ...(owner ? { leaseBy: owner } : {}) },
+    data: { status: 'failed', error: { code, message, retryable }, finishedAt: new Date() },
+  });
+  if (updated.count > 0) {
+    emit?.({ type: 'run.failed', runId, error: { code, message, retryable } });
+  }
 }
+
+async function loadSubjectText(subjectRevisionId: string | null): Promise<string> {
+  if (!subjectRevisionId) return '';
+  const subject = await db.subjectRevision.findUnique({ where: { id: subjectRevisionId } });
+  return (subject?.content as { text?: string } | null)?.text ?? '';
+}
+
+/** respond 终态校验（§4.11）：finish 必须满足目标成果已真实存在 */
+async function validateRespond(
+  disposition: 'wait_user' | 'finish',
+  taskFrame: TaskFrame,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (disposition === 'wait_user') return { ok: true };
+  const uncompleted = taskFrame.goals.filter((g) => !g.completedArtifactId);
+  if (uncompleted.length > 0) {
+    const name = (t: 'lesson' | 'practice') => (t === 'lesson' ? '图文讲义' : '同类题组');
+    return { ok: false, message: `respond.finish 前提不满足：${uncompleted.map((g) => name(g.type)).join('、')} 尚未完成（任务排队不是完成）。请等待工具结果，或改用 wait_user。` };
+  }
+  return { ok: true };
+}
+
+function markGoalsStarted(
+  taskFrame: TaskFrame,
+  jobs: Array<{ toolCallId: string; jobId: string }>,
+): void {
+  // 目标与批次内调用按发起顺序一一对应，仅作记录；完成与否以真实工具结果为准（§4.11）
+  const pending = taskFrame.goals.filter((g) => !g.completedArtifactId && !g.startedJobId);
+  for (const [idx, job] of jobs.entries()) {
+    const goal = pending[idx];
+    if (goal) goal.startedJobId = job.jobId;
+  }
+}
+
+function mergeGoalCompletions(
+  taskFrame: TaskFrame,
+  results: Array<{ toolCallId: string; toolName: string; value: unknown }>,
+): void {
+  for (const r of results) {
+    const v = r.value as { ok?: boolean; artifactId?: string; status?: string; type?: string } | undefined;
+    if (!v?.ok || !v.artifactId) continue;
+    // 工具结果用材料枚举（lesson/exercise_set），TaskFrame 目标用 lesson/practice —— 在此统一
+    const goalType: 'lesson' | 'practice' = v.type === 'lesson' ? 'lesson' : 'practice';
+    for (const goal of taskFrame.goals) {
+      if (goal.type === goalType && !goal.completedArtifactId && v.status === 'published') {
+        goal.completedArtifactId = v.artifactId;
+      }
+    }
+  }
+}
+
+async function updateStage(tx: Prisma.TransactionClient, conversationId: string, policy: { stage: string; subjectConfirmed: boolean }, taskFrame: TaskFrame): Promise<void> {
+  let stage: string = policy.stage;
+  if (taskFrame.goals.some((g) => g.type === 'lesson' && g.completedArtifactId) || taskFrame.kind === 'solution') {
+    stage = 'explaining';
+  } else if (taskFrame.goals.some((g) => g.type === 'practice' && g.completedArtifactId)) {
+    stage = 'practicing';
+  } else if (policy.stage === 'clarifying' && policy.subjectConfirmed) {
+    stage = 'guiding';
+  }
+  await tx.learningProgress.upsert({
+    where: { conversationId },
+    update: { stage: stage as never },
+    create: { conversationId, stage: stage as never },
+  });
+}
+
+/** 联调脚本（无模型凭据时）：按运行状态给确定性步骤，保证协议与恢复路径可端到端验证 */
+function mockStep(
+  policy: { subjectConfirmed: boolean; subjectRevisionId: string | null },
+  taskFrame: TaskFrame,
+  subjectText: string,
+): AgentStep {
+  const pendingGoal = taskFrame.goals.find((g) => !g.completedArtifactId);
+  if (pendingGoal && policy.subjectConfirmed) {
+    const call: ToolCall =
+      pendingGoal.type === 'lesson'
+        ? { toolCallId: `mock_${randomUUID().slice(0, 8)}`, toolName: 'createLesson', input: { target: pendingGoal.target ?? '按已确认范围生成讲义' } }
+        : { toolCallId: `mock_${randomUUID().slice(0, 8)}`, toolName: 'createPractice', input: { count: pendingGoal.count ?? 2 } };
+    return { kind: 'tool_calls', calls: [call] };
+  }
+  if (taskFrame.goals.length > 0 && policy.subjectConfirmed) {
+    const parts = taskFrame.goals.map((g) =>
+      g.type === 'lesson' ? '图文讲义已生成，可在成果里查看' : '同类题组已生成，可以开始作答',
+    );
+    return {
+      kind: 'respond',
+      disposition: 'finish',
+      text: `（联调模式）${parts.join('；')}。继续追问随时说。`,
+      refs: [],
+    };
+  }
+  if (taskFrame.kind === 'solution') {
+    return { kind: 'respond', disposition: 'wait_user', text: mockSolution(), refs: [] };
+  }
+  if (!policy.subjectConfirmed) {
+    return { kind: 'respond', disposition: 'wait_user', text: mockClarify(subjectText), refs: [] };
+  }
+  return { kind: 'respond', disposition: 'wait_user', text: mockGuide(''), refs: [] };
+}
+
+export { initialCounters };

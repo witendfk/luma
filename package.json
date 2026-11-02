@@ -15,7 +15,9 @@
     "db:down": "docker compose down",
     "db:migrate": "pnpm --filter @luma/server prisma:migrate",
     "db:generate": "pnpm --filter @luma/server prisma:generate",
-    "db:studio": "pnpm --filter @luma/server prisma:studio"
+    "db:studio": "pnpm --filter @luma/server prisma:studio",
+    "test:local": "pnpm --filter @luma/server test:local",
+    "test:runtime": "pnpm --filter @luma/server test:runtime"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -50,6 +50,33 @@ export const RunCompletedEvent = z.object({
   stage: z.string().optional(),
 });
 
+/** 运行进入等待态（设计文档 §10 编排补充契约）：区分等待学生与等待材料 */
+export const RunWaitingEvent = z.object({
+  type: z.literal('run.waiting'),
+  runId: RunId,
+  waiting: z.enum(['user', 'job']),
+  /** 等待材料时附上任务引用，前端据此轮询 */
+  jobIds: z.array(z.string()).default([]),
+});
+
+/** 任务已登记（设计文档 §10 编排补充契约）：返回可查询的任务引用 */
+export const JobCreatedEvent = z.object({
+  type: z.literal('job.created'),
+  runId: RunId,
+  jobId: z.string(),
+  artifactId: z.string().nullable(),
+  artifactType: z.enum([ArtifactType.lesson, ArtifactType.exercise_set]).nullable(),
+});
+
+/** 学习对象已保存/更新（设计文档 §10 编排补充契约） */
+export const SubjectUpdatedEvent = z.object({
+  type: z.literal('subject.updated'),
+  runId: RunId,
+  subjectRevisionId: z.string(),
+  version: z.number().int(),
+  confirmed: z.boolean(),
+});
+
 export const RunFailedEvent = z.object({
   type: z.literal('run.failed'),
   runId: RunId,
@@ -72,6 +99,9 @@ export const StreamEvent = z.discriminatedUnion('type', [
   ToolFinishedEvent,
   ArtifactUpdatedEvent,
   RunCompletedEvent,
+  RunWaitingEvent,
+  JobCreatedEvent,
+  SubjectUpdatedEvent,
   RunFailedEvent,
   RunCancelledEvent,
 ]);

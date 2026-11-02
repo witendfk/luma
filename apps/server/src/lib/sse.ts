@@ -7,7 +7,7 @@ export type EventEmitter = (event: StreamEvent) => void;
  * - X-Accel-Buffering: no 关闭反向代理缓冲，保证首段 5 秒内到达；
  * - 微信端用 wx.request enableChunked + onChunkReceived 分块接收，
  *   小程序侧负责跨块 UTF-8 解码与半条事件拼接。
- * produce 约定：自行保证终止事件（run.completed / run.failed / run.cancelled），
+ * produce 约定：自行保证终止事件（run.completed / run.waiting / run.failed / run.cancelled），
  * 本函数不代发兜底事件，避免伪造状态。
  */
 export function sseResponse(

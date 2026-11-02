@@ -23,6 +23,8 @@ export const TurnRequest = z.object({
   sectionId: z.string().optional(),
   attemptId: z.string().optional(),
   exerciseId: z.string().optional(),
+  /** 显式重试来源运行（设计文档 §10：显式重试携带新 requestId 及 retryOfRunId） */
+  retryOfRunId: z.string().optional(),
 });
 export type TurnRequest = z.infer<typeof TurnRequest>;
 

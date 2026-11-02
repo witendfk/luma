@@ -200,6 +200,8 @@ model Message {
 
   conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+  /// 作为某次运行的用户输入消息（§9.1：重试不重复创建用户消息）
+  userMessageRuns AgentRun[]       @relation("RunUserMessage")
 
   @@unique([conversationId, requestId])
   @@index([conversationId, createdAt])
@@ -341,17 +343,35 @@ model Attachment {
   transcripts      ProcessTranscript[]
 }
 
-/// 一次 Agent 运行（设计文档 §9）：耗时、消耗与所用提示词版本
+/// 一次 Agent 运行（设计文档 §4.3 / §4.11 / §9.1）：任务记录、协议快照、分项计数与租约
 model AgentRun {
   id                String    @id @default(cuid())
   conversationId    String
   subjectRevisionId String?
-  requestId         String?
-  /// running | completed | failed | cancelled
+  requestId         String
+  /// running | waiting_job | waiting_user | completed | failed | cancelled（§4.3）
   status            String    @default("running")
   promptVersion     String
-  modelCalls        Int       @default(0)
-  toolCalls         Int       @default(0)
+  /// 学生目标与已完成成果引用（TaskFrame，§4.3）
+  taskFrame         Json?
+  /// 恢复所需的最小工具协议快照（ModelMessage[]，§4.13）
+  protocol          Json?
+  /// 待执行工具批次（pendingBatch，§4.12）
+  pendingBatch      Json?
+  /// 等待中的材料任务引用（waiting_job 时非空）
+  waitingJobIds     String[]  @default([])
+  /// 分项计数：决策步骤、工具往返、工具执行、各类模型请求、无进展检测（§4.7）
+  counters          Json?
+  /// 权限与焦点快照（TurnPolicy，§4.6）
+  policySnapshot    Json?
+  inputDigest       String?
+  /// 整项目标截止时间；后台等待计入且恢复不重置（§4.7）
+  deadlineAt        DateTime?
+  retryOfRunId      String?
+  userMessageId     String?
+  /// 执行租约：驱动器原子领取，过期可重新领取
+  leaseBy           String?
+  leaseUntil        DateTime?
   usage             Json?
   error             Json?
   startedAt         DateTime  @default(now())
@@ -359,29 +379,40 @@ model AgentRun {
 
   conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+  userMessage     Message?         @relation("RunUserMessage", fields: [userMessageId], references: [id])
   toolExecutions  ToolExecution[]
+  jobs            GenerationJob[]
 
+  @@unique([conversationId, requestId])
   @@index([conversationId, startedAt])
+  @@index([status, leaseUntil])
 }
 
-/// 工具执行记录：参数摘要与结果引用，不落完整学生内容（设计文档 §11）
+/// 工具执行记录（设计文档 §4.12 / §9.1）：批次顺序、toolCallId 配对、幂等与结果引用
 model ToolExecution {
-  id           String   @id @default(cuid())
-  runId        String
-  tool         String
-  order        Int
-  paramsDigest Json?
-  resultRef    String?
-  error        String?
-  durationMs   Int?
-  createdAt    DateTime @default(now())
+  id             String   @id @default(cuid())
+  runId          String
+  decisionId     String
+  toolCallId     String
+  tool           String
+  batchOrder     Int
+  /// pending | running | succeeded | failed | deferred | cancelled
+  status         String   @default("pending")
+  idempotencyKey String?  @unique
+  paramsDigest   Json?
+  resultRef      Json?
+  error          Json?
+  durationMs     Int?
+  jobId          String?
+  createdAt      DateTime @default(now())
 
   run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  @@unique([runId, order])
+  @@unique([runId, toolCallId])
+  @@index([runId, decisionId])
 }
 
-/// 长生成任务（讲义/题组/配图）：数据库原子领取 + 租约，支持离开页面后查询（设计文档 §8.3）
+/// 长生成任务（设计文档 §8.3 / §8.4 / §9.1）：固定输入快照 + 租约 + 检查点
 model GenerationJob {
   id                String    @id @default(cuid())
   runId             String?
@@ -393,7 +424,15 @@ model GenerationJob {
   /// 当前步骤描述，如「生成正文」「生成配图」「复核」
   step              String?
   resultArtifactId  String?
-  /// 幂等标识唯一：重复操作不重复新增成果
+  /// 创建时固定的输入快照：目标、段落、来源材料与权限范围（§9.1，worker 不从当前状态重建输入）
+  payload           Json?
+  /// 任务内部模型调用计数与消耗（§8.4）
+  counters          Json?
+  deadlineAt        DateTime?
+  /// 正文等中间检查点，仅图片步骤失败时可复用（§8.4）
+  draftCheckpoint   Json?
+  retryOfJobId      String?
+  /// 幂等标识唯一：同一工具执行只产生一个任务
   idempotencyKey    String?   @unique
   attempts          Int       @default(0)
   error             Json?
@@ -404,6 +443,7 @@ model GenerationJob {
 
   conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   subjectRevision SubjectRevision? @relation(fields: [subjectRevisionId], references: [id])
+  run             AgentRun?        @relation(fields: [runId], references: [id])
 
   @@index([status, createdAt])
 }

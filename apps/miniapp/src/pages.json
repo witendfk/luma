@@ -2,7 +2,7 @@
   "pages": [
     {
       "path": "pages/login/index",
-      "style": { "navigationBarTitleText": "登录" }
+      "style": { "navigationBarTitleText": "", "navigationBarBackgroundColor": "#fafaf6", "backgroundColor": "#fafaf6" }
     },
     {
       "path": "pages/home/index",

@@ -30,12 +30,40 @@ export function listConversations(archived: boolean, cursor?: string): Promise<P
   return request<Paged<ConversationSummary>>({ method: 'GET', path: `/api/conversations?${query}` });
 }
 
-export function createConversation(title?: string): Promise<ConversationSummary> {
-  return request<ConversationSummary>({ method: 'POST', path: '/api/conversations', data: { title } });
+export interface SubjectView {
+  id: string;
+  version: number;
+  content: { text?: string };
+  tags: string[];
+  confirmedAt: string | null;
 }
 
-export function getConversation(id: string): Promise<ConversationSummary> {
-  return request<ConversationSummary>({ method: 'GET', path: `/api/conversations/${id}` });
+export interface ConversationDetail {
+  conversation: ConversationSummary;
+  subject: SubjectView | null;
+  progress: { stage: string } | null;
+  artifacts: Array<{ id: string; type: 'lesson' | 'exercise_set'; publishStatus: string }>;
+  activeRun?: { id: string; status: string } | null;
+}
+
+export function createConversation(input: { title?: string; initialText?: string; subjectType?: 'question' | 'knowledge' } = {}): Promise<ConversationSummary> {
+  return request<ConversationSummary>({ method: 'POST', path: '/api/conversations', data: input });
+}
+
+export function getConversation(id: string): Promise<ConversationDetail> {
+  return request<ConversationDetail>({ method: 'GET', path: `/api/conversations/${id}` });
+}
+
+export function confirmSubject(id: string, version: number) {
+  return request({ method: 'POST', path: `/api/conversations/${id}/subjects`, data: { action: 'confirm', expectedRevision: version } });
+}
+
+export function cancelRun(id: string) {
+  return request({ method: 'POST', path: `/api/runs/${id}/cancel` });
+}
+
+export function getRun(id: string): Promise<{ status: string; error: { message: string } | null }> {
+  return request({ method: 'GET', path: `/api/runs/${id}` });
 }
 
 /** 微信 wx.request 不支持 PATCH，统一用 PUT（服务端两种方法等价接受） */

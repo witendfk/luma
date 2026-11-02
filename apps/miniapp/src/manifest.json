@@ -10,7 +10,7 @@
     "enable": false
   },
   "mp-weixin": {
-    "appid": "",
+    "appid": "wxdd548cdbc16629f9",
     "setting": {
       "es6": true,
       "minified": true,

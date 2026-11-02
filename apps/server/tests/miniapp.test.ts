@@ -64,6 +64,16 @@ test('没有 TextDecoder 时逐字节接收中文、emoji 和 CRLF 帧，正常�
   assert.deepEqual(f.callbacks, ['done']);
 });
 
+test('等待学生或后台任务均为本次 SSE 的正常结束，不误报截断', () => {
+  for (const waiting of ['user', 'job']) {
+    const f = streamFixture();
+    f.headers(200);
+    f.send(`data: ${JSON.stringify({ type: 'run.waiting', runId: 'r', waiting, jobIds: waiting === 'job' ? ['j'] : [] })}\n\n`);
+    f.finish(200);
+    assert.deepEqual(f.callbacks, ['done']);
+  }
+});
+
 test('停止、账号切换与损坏帧后不再消费迟到事件', () => {
   for (const action of ['abort', 'switch', 'malformed']) {
     const f = streamFixture();
@@ -91,7 +101,10 @@ test('退出立即清空账号数据、中止流、清理草稿，旧响应不�
   let revoke!: () => void, resolveConversation!: (value: any) => void, aborts = 0;
   const sandbox = miniappSandbox({
     '@/api/auth': { logout: () => new Promise<void>((resolve) => { revoke = resolve; }) },
-    '@/api/conversations': { getConversation: () => new Promise((resolve) => { resolveConversation = resolve; }) },
+    '@/api/conversations': {
+      getConversation: () => new Promise((resolve) => { resolveConversation = resolve; }),
+      listMessages: async () => ({ items: [], nextCursor: null }),
+    },
   }, { uni: storage });
   const pinia = sandbox.require('pinia');
   const instance = pinia.createPinia();
@@ -103,7 +116,7 @@ test('退出立即清空账号数据、中止流、清理草稿，旧响应不�
   const auth = sandbox.load('@/stores/auth').useAuthStore();
   conversation.currentId = 'account-A-conversation';
   conversation.appendLocalMessage({ role: 'user', text: 'account-A-message' });
-  const opening = conversation.open('old-conversation');
+  const opening = conversation.refresh();
   conversation.setStream({ abort() { aborts += 1; } });
   const logout = auth.logout();
   assert.equal(conversation.currentId, null);

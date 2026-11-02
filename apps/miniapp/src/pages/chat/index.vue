@@ -1,102 +1,42 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
-import { onUnload } from '@dcloudio/uni-app';
+import { nextTick, ref, watch } from 'vue';
+import { onLoad, onUnload } from '@dcloudio/uni-app';
 import MessageBubble from '@/components/MessageBubble.vue';
 import { useConversationStore } from '@/stores/conversation';
-import type { StreamEvent } from '@luma/shared';
-import { openTurnStream } from '@/utils/sse';
 
-/**
- * 对话页（FR-04）：消息流 + 输入区。
- * 已按设计文档 §10 接好分块流式管道（utils/sse）；会话创建接口就绪后即连通。
- */
 const store = useConversationStore();
 const draft = ref('');
-const generating = computed(() => store.generating);
+const busy = ref(false);
 onUnload(() => store.stopStream());
-
-function scrollToBottom(): void {
-  nextTick(() => {
-    uni.pageScrollTo({ scrollTop: 999999, duration: 100 });
-  });
-}
-
-function handleEvent(event: StreamEvent): void {
-  const msgs = store.messages;
-  if (event.type === 'run.started') return;
-  if (event.type === 'text.delta') {
-    const last = msgs[msgs.length - 1];
-    if (last && last.role === 'assistant' && last.incomplete) {
-      last.text += event.delta;
-    } else {
-      store.appendLocalMessage({ role: 'assistant', text: event.delta });
-      const added = msgs[msgs.length - 1];
-      if (added) added.incomplete = true;
-    }
-    scrollToBottom();
-    return;
-  }
-  if (event.type === 'run.completed') {
-    const last = msgs[msgs.length - 1];
-    if (last) last.incomplete = false;
-    store.generating = false;
-    scrollToBottom();
-    return;
-  }
-  if (event.type === 'run.failed') {
-    const last = msgs[msgs.length - 1];
-    if (last && last.role === 'assistant') last.incomplete = true;
-    store.generating = false;
-    uni.showToast({ title: event.error.message, icon: 'none' });
-    return;
-  }
-  if (event.type === 'run.cancelled') {
-    store.generating = false;
-  }
-}
-
-function onSend(): void {
+onLoad(async (query) => {
+  try {
+    if (query?.id) await store.open(query.id);
+    else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question'); }
+  } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
+});
+watch(() => store.messages.map((m) => m.text).join(''), () => nextTick(() => uni.pageScrollTo({ scrollTop: 999999, duration: 100 })));
+async function onSend() {
   const text = draft.value.trim();
-  if (!text || generating.value) return;
+  if (!text || store.generating) return;
   draft.value = '';
-  store.appendLocalMessage({ role: 'user', text });
-  store.generating = true;
-  scrollToBottom();
-
-  // TODO(第一周)：无会话时先 POST /api/conversations 创建，再发首条消息（FR-02）
-  const conversationId = store.currentId;
-  if (!conversationId) {
-    store.generating = false;
-    uni.showToast({ title: '会话创建接口接入后开放', icon: 'none' });
-    return;
-  }
-
-  const handle = openTurnStream({
-    conversationId,
-    body: {
-      requestId: `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      text,
-    },
-    onEvent: handleEvent,
-    onDone: () => {
-      store.generating = false;
-    },
-    onError: (message) => {
-      store.generating = false;
-      uni.showToast({ title: message, icon: 'none' });
-    },
-  });
-  store.setStream(handle);
+  await store.send(text);
 }
-
-function onStop(): void {
-  store.stopStream();
+async function onConfirm() {
+  if (busy.value) return;
+  busy.value = true;
+  try { await store.confirm(); }
+  catch (err) { store.error = err instanceof Error ? err.message : '核对失败'; }
+  finally { busy.value = false; }
+}
+async function onStop() {
+  try { await store.stop(); }
+  catch (err) { store.error = err instanceof Error ? err.message : '停止失败'; }
 }
 </script>
 
 <template>
   <view class="page">
-    <view class="title">{{ store.title || '新对话' }}</view>
+    <view class="title">{{ store.title || '新建对话' }}</view>
 
     <view v-if="store.messages.length === 0" class="empty">
       <text>把题目或没听懂的知识点发给我，我先引导你想，而不是直接给答案。</text>
@@ -110,16 +50,30 @@ function onStop(): void {
       :incomplete="msg.incomplete"
     />
 
-    <view v-if="generating" class="stop" @tap="onStop">■ 停止生成</view>
+    <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
+      <text class="confirm-label">核对学习内容</text>
+      <text class="subject-text">{{ store.subject.content.text }}</text>
+      <view class="confirm-action" @tap="onConfirm">{{ busy ? '正在确认…' : '内容正确，开始学习' }}</view>
+    </view>
+    <view v-if="store.waitingJob" class="notice">材料正在生成，可以继续提问。</view>
+    <view v-if="store.error" class="error">{{ store.error }}</view>
+    <view v-if="store.generating || store.waitingJob" class="stop" @tap="onStop">停止本次生成</view>
 
     <view class="composer">
       <input v-model="draft" class="input" placeholder="说出你的思路，或请求提示" confirm-type="send" @confirm="onSend" />
-      <view class="send" :class="{ busy: generating }" @tap="onSend">↑</view>
+      <view class="send" :class="{ busy: store.generating }" @tap="onSend">↑</view>
     </view>
   </view>
 </template>
 
 <style scoped lang="scss">
+.confirmation { margin: 24rpx 0; padding: 28rpx; border: 1rpx solid #d9dfd4; border-radius: 20rpx; background: #fffefa; }
+.confirm-label { display: block; color: #8a8f85; font-size: 22rpx; }
+.subject-text { display: block; margin: 16rpx 0; font-size: 28rpx; white-space: pre-wrap; }
+.confirm-action { padding-top: 20rpx; border-top: 1rpx solid #e8eadf; color: #4f6652; font-size: 26rpx; }
+.notice, .error { font-size: 24rpx; padding: 16rpx 0; color: #8a8f85; }
+.error { color: #a46950; }
+
 .page {
   min-height: 100vh;
   padding: 24rpx 32rpx 200rpx;

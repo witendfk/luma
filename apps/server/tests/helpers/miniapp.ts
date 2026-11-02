@@ -19,13 +19,14 @@ export function miniappSandbox(overrides: Record<string, unknown> = {}, globals:
     if (cache.has(filename)) return cache.get(filename);
     const exports = {};
     cache.set(filename, exports);
-    const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    const source = fs.readFileSync(filename, 'utf8').replace(/import\.meta\.env/g, '__viteEnv');
+    const code = ts.transpileModule(source, {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
     }).outputText;
     vm.runInNewContext(code, {
       exports, require: (dep: string) => load(dep, filename), console,
-      ArrayBuffer, Uint8Array, TextDecoder: undefined, TextEncoder: undefined,
-      URLSearchParams: undefined, ...globals,
+      ArrayBuffer, Uint8Array, setTimeout, clearTimeout, TextDecoder: undefined, TextEncoder: undefined,
+      URLSearchParams: undefined, __viteEnv: {}, ...globals,
     }, { filename });
     return exports;
   }

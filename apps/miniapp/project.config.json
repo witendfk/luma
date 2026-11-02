@@ -2,7 +2,7 @@
   "description": "Luma 学生版",
   "miniprogramRoot": "dist/dev/mp-weixin",
   "compileType": "miniprogram",
-  "appid": "",
+  "appid": "wxdd548cdbc16629f9",
   "projectname": "luma-miniapp",
   "libVersion": "3.8.10",
   "setting": {

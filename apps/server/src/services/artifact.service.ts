@@ -1,11 +1,64 @@
-import { notImplemented } from '../lib/errors';
+import { db } from '../lib/db';
+import { invalidFormat, notFound } from '../lib/errors';
 
 /**
- * 成果材料读取（FR-05 / FR-06 / 设计文档 §10）。
- * 按权限与当前阶段返回：作答阶段不下发参考答案（§8.2 题目侧/答案侧分离投影）。
+ * 成果材料读取（FR-05 / FR-06 / 设计文档 §8.2）。
+ * 讲义直接返回内容；题组作答阶段隐藏参考答案，提交进入自评后投影答案侧。
  */
 export const artifactService = {
-  async get(_userId: string, _artifactId: string) {
-    throw notImplemented('材料读取');
+  async get(userId: string, artifactId: string) {
+    const artifact = await db.artifact.findFirst({
+      where: { id: artifactId, conversation: { userId } },
+      include: { exercises: { orderBy: { order: 'asc' } }, subjectRevision: true },
+    });
+    if (!artifact) throw notFound('学习材料');
+
+    if (artifact.type === 'lesson') {
+      return {
+        id: artifact.id,
+        type: artifact.type,
+        version: artifact.version,
+        publishStatus: artifact.publishStatus,
+        subjectRevisionId: artifact.subjectRevisionId,
+        subject: {
+          text: (artifact.subjectRevision.content as { text?: string }).text ?? '',
+          tags: artifact.subjectRevision.tags,
+          confirmed: Boolean(artifact.subjectRevision.confirmedAt),
+        },
+        content: artifact.content,
+        jobId: artifact.jobId,
+        createdAt: artifact.createdAt,
+      };
+    }
+
+    if (artifact.type === 'exercise_set') {
+      const activeAttempt = await db.practiceAttempt.findFirst({
+        where: { artifactId: artifact.id, userId },
+        orderBy: { createdAt: 'desc' },
+      });
+      const includeAnswers =
+        Boolean(activeAttempt) && ['review', 'summary'].includes(activeAttempt!.stage);
+      return {
+        id: artifact.id,
+        type: artifact.type,
+        version: artifact.version,
+        publishStatus: artifact.publishStatus,
+        subjectRevisionId: artifact.subjectRevisionId,
+        answersHidden: !includeAnswers,
+        attemptId: activeAttempt?.id ?? null,
+        exercises: artifact.exercises.map((ex) => ({
+          id: ex.id,
+          order: ex.order,
+          stem: ex.stem,
+          topic: ex.topic,
+          difficulty: ex.difficulty,
+          purpose: ex.purpose,
+          ...(includeAnswers && (activeAttempt!.exerciseIds as string[]).includes(ex.id) ? { answer: ex.answer, analysis: ex.analysis } : {}),
+        })),
+        createdAt: artifact.createdAt,
+      };
+    }
+
+    throw invalidFormat(`未知材料类型：${artifact.type}`);
   },
 };

@@ -13,7 +13,9 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "test:local": "tsx scripts/local-smoke.ts",
+    "test:runtime": "tsx scripts/runtime-check.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",
