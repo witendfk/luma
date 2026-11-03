@@ -1,5 +1,6 @@
 import { parseStreamEvent, type StreamEvent } from '@luma/shared';
-import { API_BASE } from '@/config';
+import { API_BASE, UI_MOCK } from '@/config';
+import { mockTurn, MOCK_TOKEN } from '@/mocks/workspace';
 import { clearToken, getToken } from './token';
 
 /**
@@ -98,6 +99,8 @@ interface ChunkedTask {
 }
 
 export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
+  if (UI_MOCK) return mockTurn(opts);
+  if (getToken() === MOCK_TOKEN) { clearToken(); opts.onError('请重新登录正式账号'); return { abort() {} }; }
   let aborted = false;
   let settled = false;
   let terminal = false;

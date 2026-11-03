@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PreviewNotice from '@/components/PreviewNotice.vue';
 import { onShow } from '@dcloudio/uni-app';
 import { ref } from 'vue';
 import LumaIcon from '@/components/LumaIcon.vue';
@@ -30,6 +31,7 @@ async function restore(id: string): Promise<void> {
 
 <template>
   <view class="archive-page">
+    <PreviewNotice />
     <view class="intro"><text class="eyebrow">ARCHIVE</text><text class="title">暂时收起，随时拾起。</text><text class="caption">对话和已保存的内容都还在。<br />查看不会恢复，继续提问时会回到最近学习。</text></view>
     <scroll-view class="archive-scroll" scroll-y enhanced :bounces="false" :show-scrollbar="false" @scrolltolower="archive.load(true)">
       <view class="archive-content">

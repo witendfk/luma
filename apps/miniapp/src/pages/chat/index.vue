@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { UI_MOCK } from '@/config';
+import { useNotebookPreviewStore } from '@/stores/notebook-preview';
+import PreviewNotice from '@/components/PreviewNotice.vue';
 import { computed, nextTick, ref, watch } from 'vue';
-import { onLoad, onUnload } from '@dcloudio/uni-app';
+import { onLoad, onShow, onUnload } from '@dcloudio/uni-app';
 import type { TurnRequest } from '@luma/shared';
 import MessageBubble from '@/components/MessageBubble.vue';
 import LearningHeader from '@/components/LearningHeader.vue';
@@ -14,6 +17,9 @@ import { saveCollection } from '@/api/collections';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
+const notebook = useNotebookPreviewStore();
+onShow(() => { if (UI_MOCK) notebook.refresh(); });
+const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === store.currentId && row.collected) : saved.value);
 const previewStudy = ref(false);
 const draft = ref('');
 const busy = ref(false);
@@ -115,12 +121,15 @@ function upload(): void { uni.showModal({ title: '上传解题过程', content: 
 async function save(): Promise<void> {
   if (!store.currentId || !store.subject?.confirmedAt || saving.value) return;
   saving.value = true;
-  try { await saveCollection(store.currentId, {}); saved.value = true; uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
+  try { await saveCollection(store.currentId, {}); saved.value = true; if (UI_MOCK) notebook.refresh(); uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
   catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存失败，请重试', icon: 'none' }); }
   finally { saving.value = false; }
 }
 function openMaterial(type: 'lesson' | 'practice'): void {
   const artifact = type === 'lesson' ? lesson.value : practice.value;
+  if (artifact && UI_MOCK && store.currentId === 'preview-quadratic') {
+    uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?preview=1` }); return;
+  }
   if (artifact) uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?artifactId=${artifact.id}&conversationId=${store.currentId}` });
   else action(type === 'lesson' ? '请生成图文讲解' : '请出同知识点练习', type === 'lesson' ? 'generate_lesson' : 'generate_practice');
 }
@@ -130,10 +139,11 @@ function openMaterial(type: 'lesson' | 'practice'): void {
   <StudyDiscussion v-if="previewStudy" />
   <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
+    <PreviewNotice />
     <view class="task-toolbar">
       <text class="stage">{{ status }}</text>
       <view class="toolbar-actions">
-        <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ saved ? '已保存' : isKnowledge ? '保存记录' : '保存错题' }}</text></button>
+        <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ isSaved ? '已保存' : isKnowledge ? '保存记录' : '保存错题' }}</text></button>
       </view>
     </view>
     <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>

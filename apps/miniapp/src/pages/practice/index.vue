@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onHide, onLoad, onShow } from '@dcloudio/uni-app';
+import { UI_MOCK } from '@/config';
+import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
 import { studyExample, type StudyRating } from '@/fixtures/study';
@@ -20,7 +22,13 @@ const reviewRound = computed(() => selectedHistory.value ? study.history.find((i
 const reviewExercises = computed(() => (reviewRound.value?.ids ?? []).map((id) => studyExample.exercises.find((item) => item.id === id)!));
 const reviewTarget = ref('');
 const ratings: Array<{ value: StudyRating; label: string }> = [{ value: 'independent', label: '独立做对' }, { value: 'partial', label: '部分会' }, { value: 'stuck', label: '还不会' }];
-onLoad((query) => { preview.value = import.meta.env.DEV && query?.preview === '1'; if (preview.value) study.restore(); });
+onLoad((query) => { preview.value = import.meta.env.DEV && query?.preview === '1'; if (preview.value) {
+  study.restore();
+  if (query?.historyId) {
+    if (study.history.some((round) => round.id === query.historyId)) selectedHistory.value = query.historyId;
+    else uni.showToast({ title: '该轮记录已不在本机，已回到当前轮次', icon: 'none' });
+  }
+} });
 onShow(() => { if (preview.value) study.endFocus(); });
 onHide(() => { if (preview.value) study.persist(); keyboard.value = 0; });
 function back(): void {
@@ -69,6 +77,7 @@ function viewHistory(id: string): void { selectedHistory.value = id; historyOpen
   <view class="practice-page" :style="{ height: Math.max(260, pageHeight - keyboard) + 'px' }">
     <view v-if="selectedHistory" class="page-header"><button @tap="selectedHistory = null"><LumaIcon name="chevron-left" :size="18" /><text>回到本轮</text></button><text>历史作答 · 只读</text><text class="header-space" /></view>
     <view v-if="preview" class="preview-label">交互预览 · 示例题与解析 · 仅保存在本机</view>
+    <PreviewCollectionAction v-if="UI_MOCK && preview" />
     <view v-if="!preview" class="unavailable"><text>这份练习暂未载入</text><text class="muted">作答交互可先从首页预览入口体验。</text><button @tap="back">返回对话</button></view>
     <template v-else>
       <view v-if="!selectedHistory && study.history.length && study.round.phase !== 'summary'" class="round-tools"><text>当前轮次</text><button @tap="historyOpen = true">历史作答</button></view>

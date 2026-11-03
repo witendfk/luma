@@ -1,4 +1,5 @@
-const KEY = 'luma_token';
+import { UI_MOCK } from '@/config';
+const KEY = UI_MOCK ? 'luma_ui_preview:token' : 'luma_token';
 const clearListeners = new Set<() => void>();
 let version = 0;
 
@@ -29,7 +30,7 @@ export function clearToken(): void {
   try {
     uni.removeStorageSync(KEY);
     for (const key of uni.getStorageInfoSync().keys) {
-      if (key.startsWith('luma_draft:')) uni.removeStorageSync(key);
+      if (key.startsWith(UI_MOCK ? 'luma_ui_draft:' : 'luma_draft:')) uni.removeStorageSync(key);
     }
   } catch {
     // 本地存储失败也必须清空内存、终止旧账号请求。

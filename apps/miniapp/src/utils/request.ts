@@ -1,4 +1,5 @@
-import { API_BASE } from '@/config';
+import { API_BASE, UI_MOCK } from '@/config';
+import { mockRequest, MOCK_TOKEN } from '@/mocks/workspace';
 import { clearToken, getToken } from './token';
 
 /**
@@ -40,7 +41,9 @@ export interface RequestOptions {
 }
 
 export function request<T>(opts: RequestOptions): Promise<T> {
+  if (UI_MOCK) return mockRequest<T>(opts);
   const token = getToken();
+  if (token === MOCK_TOKEN) { clearToken(); return Promise.reject(new Error('请重新登录正式账号')); }
   return new Promise<T>((resolve, reject) => {
     uni.request({
       url: API_BASE + opts.path,

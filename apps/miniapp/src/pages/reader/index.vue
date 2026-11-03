@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, onScopeDispose, ref } from 'vue';
 import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app';
+import { UI_MOCK } from '@/config';
+import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
 import { studyExample } from '@/fixtures/study';
@@ -99,6 +101,7 @@ function previewExample(): void { preview.value = true; artifactId = ''; void lo
   <view class="reader-page" :style="{ height: pageHeight + 'px' }">
     <view v-if="preview" class="preview-label">交互预览 · 示例讲解与回复 · 仅保存在本机</view>
     <view class="reading-navigation"><view class="tabs"><button :class="{ active: tab === 'source' }" @tap="switchTab('source')">原题</button><button :class="{ active: tab === 'lesson' }" @tap="switchTab('lesson')">图文讲解</button><button @tap="practice">配套练习</button></view><button class="directory-button" :disabled="!document || tab !== 'lesson'" aria-label="阅读目录" @tap="directoryOpen = true"><LumaIcon name="menu" :size="18" /></button></view>
+    <PreviewCollectionAction v-if="UI_MOCK && preview" />
     <view v-if="loading" class="state"><text class="state-symbol">✳</text><text>正在打开讲解…</text></view>
     <view v-else-if="error" class="state"><text class="state-symbol">✳</text><text class="state-title">{{ error }}</text><text class="state-note">你可以稍后重试，原来的对话会保留。</text><button @tap="load">重新加载</button><button v-if="availablePreview" class="quiet" @tap="previewExample">先体验阅读交互</button></view>
     <scroll-view v-else-if="document" class="reading-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="trackScroll">

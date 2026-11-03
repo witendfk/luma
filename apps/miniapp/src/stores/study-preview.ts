@@ -1,12 +1,13 @@
 import { computed, onScopeDispose, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { studyExample, type StudyRating } from '@/fixtures/study';
+import { UI_MOCK } from '@/config';
 import { onSessionCleared } from '@/utils/token';
 
 interface Answer { text: string; unknown: boolean; hint: boolean; rating: StudyRating | null }
 interface Round { id: string; phase: 'intro' | 'doing' | 'review' | 'summary'; index: number; ids: string[]; answers: Record<string, Answer> }
 export interface StudyFocus { kind: 'section' | 'exercise'; id: string; heading: string; question: string; roundId?: string }
-const KEY = 'luma_draft:study-preview:v1';
+const KEY = UI_MOCK ? 'luma_ui_draft:study-preview:v1' : 'luma_draft:study-preview:v1';
 const blank = (): Answer => ({ text: '', unknown: false, hint: false, rating: null });
 const newRound = (ids = studyExample.exercises.map((item) => item.id)): Round => ({
   id: `preview_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, phase: 'intro', index: 0, ids,

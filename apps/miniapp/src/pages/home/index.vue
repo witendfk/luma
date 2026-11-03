@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PreviewNotice from '@/components/PreviewNotice.vue';
 import { computed, nextTick, onScopeDispose, ref, watch } from 'vue';
 import { onLoad, onShow, onUnload } from '@dcloudio/uni-app';
 import AccountPanel from '@/components/AccountPanel.vue';
@@ -9,6 +10,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useHistoryStore } from '@/stores/history';
 import { useConversationStore } from '@/stores/conversation';
 import { getToken, onSessionCleared } from '@/utils/token';
+import { UI_MOCK } from '@/config';
 
 const auth = useAuthStore();
 const history = useHistoryStore();
@@ -20,7 +22,7 @@ const focused = ref(false);
 const navigating = ref(false);
 const scenario = ref<'question' | 'knowledge' | 'practice'>('question');
 const contentScrollTop = ref(0);
-const draftKey = 'luma_draft:home';
+const draftKey = UI_MOCK ? 'luma_ui_draft:home' : 'luma_draft:home';
 let sentDraft: string | null = null;
 let sentMessage = '';
 const greeting = computed(() => `你好，${auth.nickname || '同学'}`);
@@ -95,6 +97,7 @@ function openConversation(id: string): void {
 <template>
   <view class="home-page">
     <LearningHeader @menu="menuOpen = true" @new="newChat" />
+    <PreviewNotice />
     <scroll-view class="home-content" scroll-y enhanced :bounces="false" :show-scrollbar="false" :scroll-top="contentScrollTop">
     <view class="hero">
       <text class="emblem">✳</text>
