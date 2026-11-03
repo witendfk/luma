@@ -13,6 +13,14 @@ export const useHistoryStore = defineStore('history', () => {
   let revision = 0;
   const latest = computed(() => items.value[0] ?? null);
 
+  function applySummary(item: ConversationSummary): void {
+    items.value = items.value.filter((row) => row.id !== item.id);
+    if (!item.archivedAt) {
+      items.value.push(item);
+      items.value.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
+    }
+  }
+
   function reset(): void {
     revision += 1;
     items.value = [];
@@ -45,5 +53,5 @@ export const useHistoryStore = defineStore('history', () => {
     }
   }
 
-  return { items, latest, nextCursor, loading, loaded, error, load, reset };
+  return { items, latest, nextCursor, loading, loaded, error, load, reset, applySummary };
 });

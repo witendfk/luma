@@ -30,14 +30,15 @@ const modeLabel = computed(() => scenario.value === 'knowledge' ? '讲知识点'
 watch([menuOpen, accountOpen], ([menu, account]) => {
   const pages = getCurrentPages();
   if (pages[pages.length - 1]?.route !== 'pages/home/index') return;
-  if (menu || account) uni.hideTabBar({ animation: false });
-  else uni.showTabBar({ animation: false });
+  if (menu || account) uni.hideTabBar({ animation: false, fail: () => undefined });
+  else uni.showTabBar({ animation: false, fail: () => undefined });
 });
 watch(draft, (text) => { try { uni.setStorageSync(draftKey, text); } catch { /* 页面内仍保留输入 */ } });
 onScopeDispose(onSessionCleared(() => { draft.value = ''; menuOpen.value = false; sentDraft = null; }));
 onShow(() => {
   navigating.value = false;
   if (!getToken()) { uni.reLaunch({ url: '/pages/login/index' }); return; }
+  if (!menuOpen.value && !accountOpen.value) uni.showTabBar({ animation: false, fail: () => undefined });
   // 首题完成落库后再清除首页输入；失败返回时保留原文，便于继续编辑。
   if (sentDraft !== null && !conversation.error && conversation.subject && conversation.messages.some((message) => message.role === 'user' && message.text === sentMessage)) {
     if (draft.value.trim() === sentDraft) draft.value = '';

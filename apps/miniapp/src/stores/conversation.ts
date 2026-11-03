@@ -4,10 +4,12 @@ import * as api from '@/api/conversations';
 import type { StreamEvent, TurnRequest } from '@luma/shared';
 import { openTurnStream, type TurnStreamHandle } from '@/utils/sse';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
+import { useHistoryStore } from '@/stores/history';
 
 export const useConversationStore = defineStore('conversation', () => {
   const currentId = ref<string | null>(null);
   const title = ref('');
+  const archivedAt = ref<string | null>(null);
   const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; incomplete?: boolean }>>([]);
   const subject = ref<api.SubjectView | null>(null);
   const artifacts = ref<api.ConversationDetail['artifacts']>([]);
@@ -23,6 +25,12 @@ export const useConversationStore = defineStore('conversation', () => {
   let messageVersion = 0;
   let subjectVersion = 0;
   let polling: ReturnType<typeof setTimeout> | undefined;
+
+  function applySummary(item: api.ConversationSummary): void {
+    if (item.id !== currentId.value) return;
+    title.value = item.title;
+    archivedAt.value = item.archivedAt;
+  }
 
   function stopStream(): void {
     streamHandle?.abort();
@@ -43,6 +51,7 @@ export const useConversationStore = defineStore('conversation', () => {
     currentId.value = null;
     currentRunId.value = null;
     title.value = '';
+    archivedAt.value = null;
     messages.value = [];
     subject.value = null;
     artifacts.value = [];
@@ -61,6 +70,7 @@ export const useConversationStore = defineStore('conversation', () => {
     const [detail, history] = await Promise.all([api.getConversation(id), includeMessages ? api.listMessages(id) : Promise.resolve(null)]);
     if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion) return;
     title.value = detail.conversation.title;
+    archivedAt.value = detail.conversation.archivedAt;
     subject.value = detail.subject;
     artifacts.value = detail.artifacts;
     stage.value = detail.progress?.stage ?? 'clarifying';
@@ -119,6 +129,14 @@ export const useConversationStore = defineStore('conversation', () => {
         if (version !== openVersion || session !== sessionVersion()) return;
         currentId.value = created.id;
         title.value = created.title;
+        archivedAt.value = created.archivedAt;
+      } else if (archivedAt.value) {
+        // 查看不恢复；发言前恢复失败时保留草稿，不发送新一轮。
+        const restored = await api.updateConversation(currentId.value, { archived: false });
+        if (version !== openVersion || session !== sessionVersion() || restored.id !== currentId.value) return;
+        applySummary(restored);
+        useHistoryStore().applySummary(restored);
+        uni.showToast({ title: '已恢复到最近学习', icon: 'none' });
       }
       clearTimeout(polling);
       waitingJob.value = false;
@@ -217,6 +235,6 @@ export const useConversationStore = defineStore('conversation', () => {
     await refresh();
   }
 
-  return { currentId, currentRunId, title, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
-    reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream };
+  return { currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+    reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });

@@ -37,7 +37,7 @@
     },
     {
       "path": "pages/archived/index",
-      "style": { "navigationBarTitleText": "已归档对话" }
+      "style": { "navigationBarTitleText": "已归档对话", "disableScroll": true }
     },
     {
       "path": "pages/account/index",

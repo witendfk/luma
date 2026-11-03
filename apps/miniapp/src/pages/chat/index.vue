@@ -136,6 +136,7 @@ function openMaterial(type: 'lesson' | 'practice'): void {
         <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ saved ? '已保存' : isKnowledge ? '保存记录' : '保存错题' }}</text></button>
       </view>
     </view>
+    <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="true">
       <view class="thread">
         <view v-if="store.subject?.confirmedAt" class="subject-summary">
@@ -185,6 +186,7 @@ function openMaterial(type: 'lesson' | 'practice'): void {
 .toolbar-actions { display:flex; align-items:center; gap:24rpx; }
 .toolbar-actions button { display:flex; align-items:center; gap:5rpx; min-height:72rpx; color:#718661; font-size:20rpx; white-space:nowrap; }
 .toolbar-actions button[disabled] { opacity:.45; }
+.archive-notice { display:flex; align-items:center; gap:14rpx; padding:18rpx 32rpx; flex-shrink:0; color:#8c9279; background:#eef0e6; font-size:21rpx; line-height:1.8; }
 .thread-scroll { flex:1; height:0; min-height:0; }
 .thread { padding:36rpx 32rpx 0; }
 .empty { display:flex; flex-direction:column; align-items:center; gap:24rpx; padding:100rpx 20rpx; font-size:28rpx; color:#6a7d5d; }

@@ -3,6 +3,9 @@ import { computed, ref, watch } from 'vue';
 import { useHistoryStore } from '@/stores/history';
 import { useAuthStore } from '@/stores/auth';
 import { activityTime, groupHistory } from '@/utils/history';
+import { updateConversation } from '@/api/conversations';
+import { useConversationStore } from '@/stores/conversation';
+import { sessionVersion } from '@/utils/token';
 import LumaIcon from './LumaIcon.vue';
 
 const props = defineProps<{ open: boolean }>();
@@ -10,6 +13,7 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'new'): void; (e: 'select', i
 const history = useHistoryStore();
 const auth = useAuthStore();
 const expanded = ref(true);
+const actionItem = ref<string | null>(null);
 const groups = computed(() => groupHistory(history.items));
 const displayName = computed(() => auth.nickname || '同学');
 watch(() => props.open, (open) => {
@@ -21,6 +25,55 @@ function navigate(page: string, tab = false): void {
   emit('close');
   if (tab) uni.switchTab({ url: page });
   else uni.navigateTo({ url: page });
+}
+async function manage(id: string): Promise<void> {
+  if (actionItem.value) return;
+  const session = sessionVersion();
+  const item = history.items.find((entry) => entry.id === id);
+  if (!item) return;
+  const result = await new Promise<UniApp.ShowActionSheetRes | null>((resolve) => {
+    uni.showActionSheet({ itemList: ['重命名', '归档'], success: resolve, fail: () => resolve(null) });
+  });
+  if (!result || session !== sessionVersion() || !props.open) return;
+  if (result.tapIndex === 0) rename(id, item.title);
+  else await update(id, { archived: true });
+}
+function rename(id: string, initial: string, original = initial): void {
+  const session = sessionVersion();
+  uni.showModal({
+    title: '重命名对话', editable: true, content: initial,
+    placeholderText: '给这段学习起个名字', confirmText: '保存', confirmColor: '#4f6652',
+    success: async (res) => {
+      if (!res.confirm || session !== sessionVersion() || !props.open) return;
+      const title = (res.content ?? '').trim();
+      if (!title || title.length > 60) {
+        uni.showToast({ title: !title ? '名称不能为空' : '名称最多 60 个字', icon: 'none' });
+        rename(id, res.content ?? '', original);
+        return;
+      }
+      if (title !== original && !(await update(id, { title })) && session === sessionVersion() && props.open) rename(id, title, original);
+    },
+  });
+}
+async function update(id: string, patch: { title?: string; archived?: boolean }): Promise<boolean> {
+  if (actionItem.value) return false;
+  const session = sessionVersion();
+  actionItem.value = id;
+  try {
+    const item = await updateConversation(id, patch);
+    if (session !== sessionVersion()) return false;
+    history.applySummary(item);
+    useConversationStore().applySummary(item);
+    void history.load();
+    uni.showToast({ title: patch.archived ? '已归档，可在归档中恢复' : '名称已更新', icon: 'none' });
+    return true;
+  } catch (err) {
+    if (session === sessionVersion()) {
+      const message = err instanceof Error ? err.message : '操作失败，请重试';
+      uni.showToast({ title: message, icon: 'none' });
+    }
+    return false;
+  } finally { actionItem.value = null; }
 }
 </script>
 <template>
@@ -38,16 +91,19 @@ function navigate(page: string, tab = false): void {
         <button class="drawer-button fold" :aria-label="expanded ? '收起学习历史' : '展开学习历史'" @tap="expanded = !expanded"><LumaIcon :name="expanded ? 'chevron-up' : 'chevron-down'" :size="15" /></button>
       </view>
       <view v-if="expanded" class="history-area">
-        <scroll-view scroll-y class="history-list">
+        <scroll-view scroll-y enhanced :bounces="false" :show-scrollbar="false" class="history-list">
           <view class="history-content">
             <view v-if="history.loading && !history.items.length" class="list-state">正在找回你的学习记录…</view>
             <view v-if="history.error" class="list-state error"><text>{{ history.error }}</text><button class="drawer-button retry" :disabled="history.loading" @tap="history.load()">重新加载</button></view>
             <view v-else-if="history.loaded && !history.items.length" class="list-state">还没有学习对话<text class="empty-note">新的问题，会在这里留下思路。</text></view>
             <view v-for="group in groups" :key="group.label">
               <view class="history-date">{{ group.label }}</view>
-              <button v-for="item in group.items" :key="item.id" class="drawer-button history-item" @tap="emit('select', item.id)">
-                <view class="history-title">{{ item.title }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
-              </button>
+              <view v-for="item in group.items" :key="item.id" class="history-row">
+                <button class="drawer-button history-item" :disabled="actionItem === item.id" @tap="emit('select', item.id)">
+                  <view class="history-title">{{ item.title }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
+                </button>
+                <button class="drawer-button history-more" :disabled="Boolean(actionItem)" :aria-label="`管理对话：${item.title}`" @tap="manage(item.id)"><LumaIcon name="more" :size="17" /></button>
+              </view>
             </view>
             <button v-if="history.nextCursor" class="drawer-button load-more" :disabled="history.loading" @tap="history.load(true)">{{ history.loading ? '正在加载…' : '更早的学习记录' }}</button>
           </view>
@@ -63,6 +119,7 @@ function navigate(page: string, tab = false): void {
         </button>
       </view>
     </view>
+
   </view>
 </template>
 <style scoped>
@@ -84,7 +141,9 @@ function navigate(page: string, tab = false): void {
 .history-list { position:absolute; inset:0; width:100%; height:100%; }
 .history-content { display:flex; flex-direction:column; }
 .history-date { margin:26rpx 22rpx 10rpx; color:#a2aa98; font-size:18rpx; }
-.drawer .history-item { display:block; width:100%; padding:20rpx 22rpx; box-sizing:border-box; }
+.history-row { display:flex; align-items:center; min-width:0; }
+.drawer .history-item { display:block; flex:1; min-width:0; padding:20rpx 0 20rpx 22rpx; box-sizing:border-box; }
+.drawer .history-more { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:80rpx; height:88rpx; color:#8a987e; }
 .history-title { display:block; width:100%; min-width:0; color:#54654d; font-size:24rpx; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .history-time { display:block; margin-top:8rpx; font-size:18rpx; color:#a0aa95; }
 .list-state { padding:40rpx 22rpx; color:#8d9982; font-size:24rpx; line-height:1.8; }
