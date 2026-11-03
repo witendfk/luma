@@ -10,7 +10,6 @@ const devLogin = import.meta.env.DEV && import.meta.env.VITE_DEV_LOGIN === 'true
 const status = ref('');
 const loading = ref(false);
 const consent = ref(false);
-const pageHeight = uni.getSystemInfoSync().windowHeight;
 function policy(kind: 'privacy' | 'terms'): void {
   uni.showModal({
     title: kind === 'privacy' ? '隐私政策' : '用户协议',
@@ -74,7 +73,7 @@ function onLogin(): void {
 }
 </script>
 <template>
-  <view class="login-page" :style="{ minHeight: pageHeight + 'px' }">
+  <view class="login-page">
     <view class="wordmark-row">
       <view class="wordmark">Luma<text>.</text></view>
       <view class="edition"><text>YOUR LEARNING</text><text>COMPANION</text></view>
@@ -85,7 +84,7 @@ function onLogin(): void {
       <view class="intro">把卡住的那一步，<text>变成下一次的恍然大悟。</text></view>
     </view>
     <view class="illustration">
-      <image src="/static/login-journey.svg" mode="widthFix" class="journey" />
+      <image src="/static/login-journey.svg" mode="aspectFit" class="journey" />
     </view>
     <view class="login-actions">
       <view class="action-intro">
@@ -139,10 +138,13 @@ function onLogin(): void {
 .login-page {
   display:flex;
   flex-direction:column;
+  height:100vh;
+  overflow:hidden;
   padding:48rpx 58rpx max(32rpx, env(safe-area-inset-bottom));
   background:#fafaf6;
 }
 .wordmark-row {
+  flex-shrink:0;
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -169,6 +171,7 @@ function onLogin(): void {
 }
 .edition text { display: block; }
 .login-copy {
+  flex-shrink:0;
   margin-top:80rpx;
 }
 .kicker {
@@ -207,16 +210,19 @@ function onLogin(): void {
 }
 .illustration {
   flex:1;
-  min-height:200rpx;
+  min-height:0;
+  overflow:hidden;
   display:flex;
   align-items:center;
   margin:8rpx -12rpx 0;
 }
 .journey {
   width:100%;
+  height:100%;
   max-height:370rpx;
 }
 .login-actions {
+  flex-shrink:0;
   margin-top:auto;
   padding-top:20rpx;
 }
@@ -298,6 +304,7 @@ function onLogin(): void {
   margin-top:10rpx;
 }
 .login-footer {
+  flex-shrink:0;
   display:flex;
   justify-content:space-between;
   align-items:center;
@@ -329,9 +336,6 @@ function onLogin(): void {
 .intro {
   margin-top:22rpx;
   font-size:23rpx;
-}
-.illustration {
-  min-height:160rpx;
 }
 .journey {
   max-height:270rpx;

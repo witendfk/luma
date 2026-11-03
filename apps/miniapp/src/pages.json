@@ -9,11 +9,11 @@
   "pages": [
     {
       "path": "pages/login/index",
-      "style": { "navigationBarTitleText": "", "navigationBarBackgroundColor": "#fafaf6", "backgroundColor": "#fafaf6" }
+      "style": { "navigationBarTitleText": "", "navigationBarBackgroundColor": "#fafaf6", "backgroundColor": "#fafaf6", "disableScroll": true }
     },
     {
       "path": "pages/home/index",
-      "style": { "navigationBarTitleText": "Luma" }
+      "style": { "navigationBarTitleText": "Luma", "disableScroll": true }
     },
     {
       "path": "pages/chat/index",

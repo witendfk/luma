@@ -19,7 +19,7 @@ const accountOpen = ref(false);
 const focused = ref(false);
 const navigating = ref(false);
 const scenario = ref<'question' | 'knowledge' | 'practice'>('question');
-const pageHeight = uni.getSystemInfoSync().windowHeight;
+const contentScrollTop = ref(0);
 const draftKey = 'luma_draft:home';
 let sentDraft: string | null = null;
 let sentMessage = '';
@@ -28,6 +28,8 @@ const placeholder = computed(() => scenario.value === 'knowledge' ? '哪个知�
 const modeLabel = computed(() => scenario.value === 'knowledge' ? '讲知识点' : scenario.value === 'practice' ? '同知识点练习' : '');
 
 watch([menuOpen, accountOpen], ([menu, account]) => {
+  const pages = getCurrentPages();
+  if (pages[pages.length - 1]?.route !== 'pages/home/index') return;
   if (menu || account) uni.hideTabBar({ animation: false });
   else uni.showTabBar({ animation: false });
 });
@@ -55,7 +57,8 @@ function newChat(): void {
   sentDraft = null;
   scenario.value = 'question';
   focused.value = false;
-  uni.pageScrollTo({ scrollTop: 0, duration: 150 });
+  contentScrollTop.value = 1;
+  void nextTick(() => { contentScrollTop.value = 0; });
 }
 function chooseScenario(value: 'knowledge' | 'practice'): void {
   scenario.value = value;
@@ -89,8 +92,9 @@ function openConversation(id: string): void {
 </script>
 
 <template>
-  <view class="home-page" :style="{ minHeight: pageHeight + 'px' }">
+  <view class="home-page">
     <LearningHeader @menu="menuOpen = true" @new="newChat" />
+    <scroll-view class="home-content" scroll-y enhanced :bounces="false" :show-scrollbar="false" :scroll-top="contentScrollTop">
     <view class="hero">
       <text class="emblem">✳</text>
       <view class="greeting">{{ greeting }}</view>
@@ -116,13 +120,15 @@ function openConversation(id: string): void {
       </view>
       <view v-if="history.error" class="history-error"><text>学习记录暂时未能加载</text><button :disabled="history.loading" @tap="history.load()">重试</button></view>
     </view>
+    </scroll-view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />
     <LearningDrawer :open="menuOpen" @account="accountOpen = true" @close="menuOpen = false" @new="newChat" @select="openConversation" />
   </view>
 </template>
 
 <style scoped lang="scss">
-.home-page { box-sizing:border-box; background:#f8f7f2; color:#354a37; }
+.home-page { display:flex; flex-direction:column; height:100vh; overflow:hidden; box-sizing:border-box; background:#f8f7f2; color:#354a37; }
+.home-content { flex:1; height:0; min-height:0; }
 .home-page button { margin:0; padding:0; border:0; background:transparent; line-height:1.5; font-weight:400; }
 .home-page button::after { border:0; }
 .hero { padding:46rpx 50rpx 48rpx; text-align:center; }
