@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AttachmentStrip from '@/components/AttachmentStrip.vue';
+import { chooseAttachments, MAX_IMAGES, type LocalAttachment } from '@/utils/attachments';
+import { createAttachmentPreview, previewRoot } from '@/mocks/workspace';
 import PreviewNotice from '@/components/PreviewNotice.vue';
 import { computed, nextTick, onScopeDispose, ref, watch } from 'vue';
 import { onLoad, onShow, onUnload } from '@dcloudio/uni-app';
@@ -16,6 +19,9 @@ const auth = useAuthStore();
 const history = useHistoryStore();
 const conversation = useConversationStore();
 const draft = ref('');
+const attachments = ref<LocalAttachment[]>([]);
+const choosing = ref(false), invalidImage = ref(false);
+let sentUploadId: string | null = null;
 const menuOpen = ref(false);
 const accountOpen = ref(false);
 const focused = ref(false);
@@ -26,8 +32,8 @@ const draftKey = UI_MOCK ? 'luma_ui_draft:home' : 'luma_draft:home';
 let sentDraft: string | null = null;
 let sentMessage = '';
 const greeting = computed(() => `你好，${auth.nickname || '同学'}`);
-const placeholder = computed(() => scenario.value === 'knowledge' ? '哪个知识点没听懂？说说你的困惑…' : scenario.value === 'practice' ? '想练哪个知识点？也可以说明难度…' : '拍一道题，或说说哪个知识点没听懂…');
-const modeLabel = computed(() => scenario.value === 'knowledge' ? '讲知识点' : scenario.value === 'practice' ? '同知识点练习' : '');
+const placeholder = computed(() => scenario.value === 'knowledge' ? '想弄懂什么？说说困惑，也可以添加课本或笔记…' : scenario.value === 'practice' ? '想练什么？也可以添加参考题…' : '写下问题，或添加题目、课本与笔记图片…');
+const modeLabel = computed(() => scenario.value === 'knowledge' ? '讲知识点' : scenario.value === 'practice' ? '出练习' : '');
 
 watch([menuOpen, accountOpen], ([menu, account]) => {
   const pages = getCurrentPages();
@@ -35,12 +41,13 @@ watch([menuOpen, accountOpen], ([menu, account]) => {
   if (menu || account) uni.hideTabBar({ animation: false, fail: () => undefined });
   else uni.showTabBar({ animation: false, fail: () => undefined });
 });
-watch(draft, (text) => { try { uni.setStorageSync(draftKey, text); } catch { /* 页面内仍保留输入 */ } });
-onScopeDispose(onSessionCleared(() => { draft.value = ''; menuOpen.value = false; sentDraft = null; }));
+watch(draft, (text) => { if (sentUploadId && previewRoot(sentUploadId)?.text !== text.trim()) sentUploadId = null; try { uni.setStorageSync(draftKey, text); } catch { /* 页面内仍保留输入 */ } });
+onScopeDispose(onSessionCleared(() => { draft.value = ''; menuOpen.value = false; sentDraft = null; attachments.value = []; sentUploadId = null; choosing.value = false; }));
 onShow(() => {
   navigating.value = false;
   if (!getToken()) { uni.reLaunch({ url: '/pages/login/index' }); return; }
   if (!menuOpen.value && !accountOpen.value) uni.showTabBar({ animation: false, fail: () => undefined });
+  if (sentUploadId && previewRoot(sentUploadId)?.recognition === 'ready') { attachments.value = []; draft.value = ''; sentUploadId = null; sentDraft = null; }
   // 首题完成落库后再清除首页输入；失败返回时保留原文，便于继续编辑。
   if (sentDraft !== null && !conversation.error && conversation.subject && conversation.messages.some((message) => message.role === 'user' && message.text === sentMessage)) {
     if (draft.value.trim() === sentDraft) draft.value = '';
@@ -57,27 +64,47 @@ onUnload(() => uni.$off('luma:new-chat', newChat));
 function newChat(): void {
   menuOpen.value = false;
   draft.value = '';
-  sentDraft = null;
+  sentDraft = null; sentUploadId = null; attachments.value = []; invalidImage.value = false;
   scenario.value = 'question';
   focused.value = false;
   contentScrollTop.value = 1;
   void nextTick(() => { contentScrollTop.value = 0; });
 }
 function chooseScenario(value: 'knowledge' | 'practice'): void {
-  scenario.value = value;
+  scenario.value = value; sentUploadId = null;
   focused.value = false;
   void nextTick(() => { focused.value = true; });
 }
-function upload(): void {
-  uni.showModal({ title: '拍题求助', content: '照片上传正在接入。现在可以先输入题目文字。', showCancel: false, confirmText: '知道了', confirmColor: '#4f6652' });
+async function upload(index?: number, question = false): Promise<void> {
+  if (choosing.value || navigating.value) return;
+  if (index === undefined && attachments.value.length >= MAX_IMAGES) { uni.showToast({ title: '本次最多添加 3 张图片，可更换或移除', icon: 'none' }); return; }
+  choosing.value = true; focused.value = false;
+  const session = getToken();
+  try {
+    const selected = await chooseAttachments(index === undefined ? MAX_IMAGES - attachments.value.length : 1);
+    if (!selected?.length || session !== getToken()) return;
+    if (index === undefined) attachments.value.push(...selected.slice(0, MAX_IMAGES - attachments.value.length));
+    else attachments.value.splice(index, 1, selected[0]!);
+    if (question) scenario.value = 'question';
+    sentUploadId = null;
+  } finally { choosing.value = false; }
 }
 function send(): void {
   const text = draft.value.trim();
-  if (!text || navigating.value) return;
+  if ((!text && !attachments.value.length) || navigating.value || choosing.value || invalidImage.value) return;
   if (!getToken()) { uni.reLaunch({ url: '/pages/login/index' }); return; }
   navigating.value = true;
   focused.value = false;
   sentDraft = text;
+  if (attachments.value.length) {
+    if (!UI_MOCK) { navigating.value = false; uni.showToast({ title: '图片学习暂在前端预览模式开放', icon: 'none' }); return; }
+    try {
+      const id = sentUploadId ?? createAttachmentPreview(attachments.value, text, scenario.value);
+      sentUploadId = id;
+      uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(id)}`, fail: () => { navigating.value = false; uni.showToast({ title: '未能打开，附件和文字已保留', icon: 'none' }); } });
+    } catch { navigating.value = false; uni.showToast({ title: '未能保存，附件和文字已保留', icon: 'none' }); }
+    return;
+  }
   // 练习入口保留明确意图；对话页仍先核对知识范围，再进入生成。
   const initial = text;
   sentMessage = initial;
@@ -105,14 +132,16 @@ function openConversation(id: string): void {
       <text class="lede">先想一步，再懂一点。把卡住的那一步交给我。</text>
       <view class="composer">
         <view v-if="modeLabel" class="mode-row"><text>{{ modeLabel }}</text><button aria-label="切换为普通提问" @tap="scenario = 'question'"><LumaIcon name="close" :size="12" /></button></view>
+        <AttachmentStrip :images="attachments" @replace="upload($event)" @remove="attachments.splice($event, 1); sentUploadId = null" @invalid="invalidImage = $event" />
         <textarea v-model="draft" class="input" :maxlength="2000" :placeholder="placeholder" placeholder-style="color:#a0ad92;font-size:14px" :focus="focused" :cursor-spacing="24" :show-confirm-bar="false" :adjust-position="true" :disabled="menuOpen" @blur="focused = false" />
         <view class="composer-bar">
-          <button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传题目</text></button>
-          <button class="send" :disabled="!draft.trim() || navigating" aria-label="发送问题" @tap="send"><LumaIcon name="arrow-up" white :size="21" /></button>
+          <button class="upload" @tap="upload()"><LumaIcon name="plus" :size="14" /><text>添加附件</text></button>
+          <button class="send" :disabled="(!draft.trim() && !attachments.length) || navigating || choosing || invalidImage" aria-label="发送问题" @tap="send"><LumaIcon name="arrow-up" white :size="21" /></button>
         </view>
       </view>
+      <text v-if="attachments.length" class="attachment-note">{{ attachments.length }}/3 张图片 · 可以包含多道题</text>
       <view class="quick-entries">
-        <button class="quick-entry" @tap="upload"><LumaIcon name="photo" :size="20" /><text>拍题求助</text></button>
+        <button class="quick-entry" @tap="upload(undefined, true)"><LumaIcon name="photo" :size="20" /><text>拍题求助</text></button>
         <button class="quick-entry" :class="{ selected: scenario === 'knowledge' }" @tap="chooseScenario('knowledge')"><LumaIcon name="book" :size="20" /><text>讲知识点</text></button>
         <button class="quick-entry" :class="{ selected: scenario === 'practice' }" @tap="chooseScenario('practice')"><LumaIcon name="practice" :size="20" /><text>出练习</text></button>
       </view>
@@ -146,6 +175,7 @@ function openConversation(id: string): void {
 .home-page .upload { display:flex; align-items:center; gap:4rpx; min-height:72rpx; font-size:23rpx; color:#788674; }
 .home-page .send { display:flex; align-items:center; justify-content:center; width:72rpx; height:72rpx; border-radius:50%; background:#4f6652; flex-shrink:0; }
 .home-page .send[disabled] { background:#b9c4b2; }
+.attachment-note { display:block; margin-top:14rpx; color:#9ca78f; font-size:20rpx; text-align:left; }
 .quick-entries { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12rpx; margin-top:24rpx; }
 .home-page .quick-entry { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14rpx; min-width:0; min-height:116rpx; font-size:23rpx; color:#78886c; white-space:nowrap; }
 .home-page .quick-entry.selected { color:#405b3c; }

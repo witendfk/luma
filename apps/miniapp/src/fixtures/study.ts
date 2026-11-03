@@ -17,3 +17,37 @@ export const studyExample = {
 
 export type StudySection = typeof studyExample.sections[number];
 export type StudyRating = 'independent' | 'partial' | 'stuck';
+
+export interface StudyContent {
+  id: string; title: string; subject: string; intro: string;
+  sections: Array<{ id: string; heading: string; body: string; figure?: string; caption?: string; formula?: string; note?: string; detail: string; example: string }>;
+  exercises: Array<{ id: string; kind: string; stem: string; purpose: string; hint: string; answer: string; analysis: string }>;
+}
+/** 各自独立的受控教学样例，不是对学生图片的真实识别或模型生成。 */
+export const studyExamples: Record<string, StudyContent> = {
+  quadratic: studyExample,
+  sets: {
+    id: 'preview-sets-material', title: '把两个条件，放在一起看', subject: '已知 A = {1, 2, 3}，B = {2, 3, 4}，求 A ∩ B 与 A ∪ B。', intro: '先判断元素满足哪个条件，再决定留下哪些元素。',
+    sections: [
+      { id: 'concept', heading: '交集：两个条件都满足', body: '交集保留同时属于 A 和 B 的元素。2 和 3 在两个集合中都出现，因此 A ∩ B = {2, 3}。', detail: '逐个检查：1 是否也在 B 中？2 和 3 呢？', example: '既喜欢数学又喜欢物理的同学，属于这两个集合的交集。' },
+      { id: 'steps', heading: '并集：至少满足一个条件', body: '并集收集属于 A 或属于 B 的元素。重复元素只写一次，所以 A ∪ B = {1, 2, 3, 4}。', detail: '先写 A 的元素，再补上 B 中还没有写过的元素。', example: 'A = {a, b}，B = {b, c}，并集是 {a, b, c}，b 不需要重复写。' },
+      { id: 'pitfall', heading: '或者，也包括同时满足', body: '数学中的“或者”允许两个条件同时成立；并集也包含交集中的元素。', note: '交集是“并且”，并集是“至少一个”。', detail: '如果一个元素同时在 A 和 B 中，它满足“至少在一个集合中”吗？', example: '既喜欢数学又喜欢物理，也属于“喜欢数学或物理”的同学。' },
+    ],
+    exercises: [
+      { id: 'e1', kind: '基础理解', stem: 'A = {1, 3, 5}，B = {3, 5, 7}，求 A ∩ B。', purpose: '找出同时满足两个条件的元素。', hint: '哪些元素在两个集合中都出现？', answer: '{3, 5}。', analysis: '3 和 5 同时属于 A、B；1 不属于 B，7 不属于 A。' },
+      { id: 'e2', kind: '同类变式', stem: 'A = {a, b}，B = {b, c}，求 A ∪ B。', purpose: '合并元素并去掉重复。', hint: '先写 A，再补 B 中新出现的元素。', answer: '{a, b, c}。', analysis: 'a、b、c 至少属于一个集合，b 只写一次。' },
+    ],
+  },
+  inequality: {
+    id: 'preview-inequality', title: '为什么乘负数，要换个方向', subject: '解不等式 −2x + 4 > 0，并说明除以负数时不等号如何变化。', intro: '把每一步对等式两边的影响看清楚。',
+    sections: [
+      { id: 'concept', heading: '先把含 x 的项留下', body: '两边同时减去 4，得到 −2x > −4。加减同一个数，不等号方向不变。', detail: '为了消去左侧的 +4，需要两边同时做什么？', example: 'x + 3 > 5，两边同时减去 3，得到 x > 2。' },
+      { id: 'steps', heading: '除以负数，顺序反过来', body: '两边同时除以 −2，不等号方向反转，得到 x < 2。', formula: '−2x > −4  ⇒  x < 2', detail: '比较 1 < 2，乘以 −1 后变成 −1 > −2。你能看到大小顺序反转了吗？', example: '−3x ≤ 6，两边除以 −3，得到 x ≥ −2。' },
+      { id: 'pitfall', heading: '代一个数，检查方向', body: '代入 x = 0，原式为 4 > 0，成立；代入 x = 3，原式为 −2 > 0，不成立。与 x < 2 一致。', note: '乘除负数才反向；移项本身不是反向的原因。', detail: '把 x = 2 代入后是 0 > 0，等号能取到吗？', example: '严格不等号 > 不包含边界，因此 x = 2 不在解集中。' },
+    ],
+    exercises: [
+      { id: 'e1', kind: '基础理解', stem: '解不等式 −3x > 6。', purpose: '判断除以负数后的不等号方向。', hint: '除以 −3 后，方向要怎样变？', answer: 'x < −2。', analysis: '两边同除以 −3，不等号反向，得到 x < −2。' },
+      { id: 'e2', kind: '同类变式', stem: '解不等式 2 − x ≥ 5。', purpose: '先移项，再处理负系数。', hint: '先减去 2，得到 −x ≥ 3。', answer: 'x ≤ −3。', analysis: '由 −x ≥ 3，两边乘以 −1 并反向，得到 x ≤ −3。' },
+    ],
+  },
+};

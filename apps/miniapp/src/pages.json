@@ -17,15 +17,15 @@
     },
     {
       "path": "pages/chat/index",
-      "style": { "navigationBarTitleText": "Luma", "navigationBarBackgroundColor": "#fafbf7" }
+      "style": { "navigationBarTitleText": "Luma", "navigationBarBackgroundColor": "#fafbf7", "disableScroll": true }
     },
     {
       "path": "pages/reader/index",
-      "style": { "navigationBarTitleText": "图文讲解" }
+      "style": { "navigationBarTitleText": "图文讲解", "disableScroll": true }
     },
     {
       "path": "pages/practice/index",
-      "style": { "navigationBarTitleText": "练习" }
+      "style": { "navigationBarTitleText": "练习", "disableScroll": true }
     },
     {
       "path": "pages/notebook/index",

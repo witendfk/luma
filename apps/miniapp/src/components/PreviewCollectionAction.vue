@@ -3,12 +3,14 @@ import { computed } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import LumaIcon from '@/components/LumaIcon.vue';
 import { useNotebookPreviewStore } from '@/stores/notebook-preview';
+import { useStudyPreviewStore } from '@/stores/study-preview';
+const study = useStudyPreviewStore();
 const notebook = useNotebookPreviewStore();
-const saved = computed(() => notebook.records.some((r) => r.id === 'preview-quadratic' && r.collected));
+const saved = computed(() => notebook.records.some((r) => r.id === study.scope && r.collected));
 onShow(() => notebook.refresh());
 function save(): void {
   if (saved.value) { uni.switchTab({ url: '/pages/notebook/index' }); return; }
-  try { notebook.update('preview-quadratic', { collected: true }); uni.showToast({ title: '已保存到错题本', icon: 'none' }); }
+  try { notebook.update(study.scope, { collected: true }); uni.showToast({ title: '已保存到错题本', icon: 'none' }); }
   catch { uni.showToast({ title: '保存失败，请重试', icon: 'none' }); }
 }
 </script>

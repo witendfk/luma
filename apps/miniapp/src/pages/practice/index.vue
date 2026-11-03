@@ -5,8 +5,10 @@ import { UI_MOCK } from '@/config';
 import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
-import { studyExample, type StudyRating } from '@/fixtures/study';
+import type { StudyRating } from '@/fixtures/study';
 import { useStudyPreviewStore } from '@/stores/study-preview';
+import { previewExampleKey } from '@/mocks/workspace';
+let scope = 'preview-quadratic';
 const study = useStudyPreviewStore();
 const preview = ref(false), historyOpen = ref(false);
 const selectedHistory = ref<string | null>(null);
@@ -15,21 +17,21 @@ const keyboard = ref(0), scrollTop = ref(0);
 const current = computed(() => study.currentExercise);
 const answer = computed(() => study.currentAnswer);
 const draft = computed({ get: () => study.currentAnswer.text, set: (value: string) => study.answer(value) });
-const exercises = computed(() => study.round.ids.map((id) => studyExample.exercises.find((item) => item.id === id)!));
+const exercises = computed(() => study.round.ids.map((id) => study.example.exercises.find((item) => item.id === id)!));
 const answered = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.text.trim() || study.round.answers[id]!.unknown).length);
 const independent = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.rating === 'independent').length);
 const reviewRound = computed(() => selectedHistory.value ? study.history.find((item) => item.id === selectedHistory.value) : study.round);
-const reviewExercises = computed(() => (reviewRound.value?.ids ?? []).map((id) => studyExample.exercises.find((item) => item.id === id)!));
+const reviewExercises = computed(() => (reviewRound.value?.ids ?? []).map((id) => study.example.exercises.find((item) => item.id === id)!));
 const reviewTarget = ref('');
 const ratings: Array<{ value: StudyRating; label: string }> = [{ value: 'independent', label: '独立做对' }, { value: 'partial', label: '部分会' }, { value: 'stuck', label: '还不会' }];
 onLoad((query) => { preview.value = import.meta.env.DEV && query?.preview === '1'; if (preview.value) {
-  study.restore();
+  scope = query?.scope ?? 'preview-quadratic'; study.restore(scope, previewExampleKey(scope));
   if (query?.historyId) {
     if (study.history.some((round) => round.id === query.historyId)) selectedHistory.value = query.historyId;
     else uni.showToast({ title: '该轮记录已不在本机，已回到当前轮次', icon: 'none' });
   }
 } });
-onShow(() => { if (preview.value) study.endFocus(); });
+onShow(() => { if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); } });
 onHide(() => { if (preview.value) study.persist(); keyboard.value = 0; });
 function back(): void {
   if (getCurrentPages().length > 1) uni.navigateBack(); else uni.switchTab({ url: '/pages/home/index' });
@@ -51,7 +53,7 @@ function finish(): void {
 }
 function ask(id: string): void {
   const index = study.round.ids.indexOf(id); if (index >= 0) study.jump(index);
-  const exercise = studyExample.exercises.find((item) => item.id === id)!;
+  const exercise = study.example.exercises.find((item) => item.id === id)!;
   study.ask({ kind: 'exercise', id, roundId: study.round.id, heading: `第 ${study.round.ids.indexOf(id) + 1} 题 · ${exercise.kind}`, question: '这道题我还没理解，请先给我一个思考方向。' });
   uni.navigateTo({ url: '/pages/chat/index?preview=study' });
 }
@@ -68,7 +70,7 @@ function more(): void {
 function lesson(): void {
   const pages = getCurrentPages();
   if (pages.length > 1 && pages[pages.length - 2]?.route === 'pages/reader/index') uni.navigateBack();
-  else uni.navigateTo({ url: '/pages/reader/index?preview=1' });
+  else uni.navigateTo({ url: `/pages/reader/index?preview=1&scope=${encodeURIComponent(scope)}` });
 }
 function viewHistory(id: string): void { selectedHistory.value = id; historyOpen.value = false; goTop(); }
 </script>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960">
+<rect width="720" height="960" fill="#fffdf7"/><g fill="#465741" font-family="sans-serif"><text x="56" y="80" font-size="30">数学练习 · 前端交互示例</text><text x="56" y="120" font-size="19" fill="#98a38a">三个独立问题，可以逐题学习</text><path d="M56 150H664" stroke="#dfe5d4"/>
+<text x="56" y="215" font-size="24">01  函数最小值</text><text x="56" y="265" font-size="23">已知 f(x) = x² − 2x + 3，</text><text x="56" y="305" font-size="23">求 f(x) 的最小值。</text><path d="M56 380H664" stroke="#e5e9dd"/>
+<text x="56" y="445" font-size="24">02  集合运算</text><text x="56" y="495" font-size="23">A = {1, 2, 3}，B = {2, 3, 4}，</text><text x="56" y="535" font-size="23">求 A ∩ B 与 A ∪ B。</text><path d="M56 610H664" stroke="#e5e9dd"/>
+<text x="56" y="675" font-size="24">03  不等式</text><text x="56" y="725" font-size="23">解不等式 −2x + 4 &gt; 0，</text><text x="56" y="765" font-size="23">说明除以负数时符号如何变化。</text>
+<text x="56" y="900" font-size="18" fill="#a18b6d">演示素材，不代表真实图片识别结果</text></g></svg>

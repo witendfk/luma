@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { UI_MOCK } from '@/config';
 import { useNotebookPreviewStore } from '@/stores/notebook-preview';
+import AttachmentStrip from '@/components/AttachmentStrip.vue';
+import TopicNavigator from '@/components/TopicNavigator.vue';
+import { previewRoot, selectPreviewTopic, recognizeAttachments, setRecognition, saveTopicDraft, planPreviewTopics, type PreviewRecord } from '@/mocks/workspace';
+import { previewAttachment } from '@/utils/attachments';
+import { sessionVersion } from '@/utils/token';
 import PreviewNotice from '@/components/PreviewNotice.vue';
 import { computed, nextTick, ref, watch } from 'vue';
-import { onLoad, onShow, onUnload } from '@dcloudio/uni-app';
+import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app';
 import type { TurnRequest } from '@luma/shared';
 import MessageBubble from '@/components/MessageBubble.vue';
 import LearningHeader from '@/components/LearningHeader.vue';
@@ -18,9 +23,15 @@ import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
 const notebook = useNotebookPreviewStore();
-onShow(() => { if (UI_MOCK) notebook.refresh(); });
-const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === store.currentId && row.collected) : saved.value);
+onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } });
+const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : saved.value);
 const previewStudy = ref(false);
+const previewMeta = ref<PreviewRecord | null>(null);
+const activeTopic = computed(() => previewMeta.value?.topics?.find((topic) => topic.id === previewMeta.value?.activeTopicId));
+const switchingTopic = ref(false);
+let pageActive = true, recognitionTimer: ReturnType<typeof setTimeout> | undefined;
+const unit = computed(() => previewMeta.value?.intent === 'knowledge' ? '部分' : '题');
+const nextTopic = computed(() => { const root = previewMeta.value; const index = root?.topics?.findIndex((topic) => topic.id === root.activeTopicId) ?? -1; return root?.topics?.[index + 1]; });
 const draft = ref('');
 const busy = ref(false);
 const menuOpen = ref(false);
@@ -46,11 +57,12 @@ const subquestions = computed(() => store.subject?.subquestions ?? []);
 const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
 const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
 const lastReply = computed(() => [...store.messages].reverse().find((message) => message.role === 'assistant'));
-onUnload(() => { if (!previewStudy.value) store.stopStream(); });
+onHide(() => { pageActive = false; clearTimeout(recognitionTimer); });
+onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
   if (import.meta.env.DEV && query?.preview === 'study') { previewStudy.value = true; return; }
   try {
-    if (query?.id) await store.open(query.id);
+    if (query?.id) await openLearning(query.id, query.topic);
     else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
 });
@@ -60,10 +72,16 @@ function scrollToEnd(): void {
 }
 watch(() => store.messages.map((message) => message.text).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), scrollToEnd);
 watch(() => store.currentId, () => { editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; moreActions.value = false; saved.value = false; });
-watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; });
+watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; syncPreview(); });
+watch(() => store.generating, (value) => { if (!value) syncPreview(); });
+watch(draft, (value) => {
+  if (!UI_MOCK || switchingTopic.value || !activeTopic.value) return;
+  try { saveTopicDraft(activeTopic.value.id, value); } catch { uni.showToast({ title: '草稿暂未保存，请勿退出', icon: 'none' }); }
+}, { flush: 'sync' });
 async function onSend(): Promise<void> {
   const text = draft.value.trim();
   if (!text || store.generating || store.editingSubject || store.confirmingSubject) return;
+  if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   await store.send(text);
   if (!store.error) draft.value = '';
@@ -84,8 +102,7 @@ function openConversation(id: string): void {
   menuOpen.value = false;
   if (id === store.currentId) return;
   saved.value = false;
-  draft.value = '';
-  void store.open(id).catch((err) => { store.error = err.message; });
+  void openLearning(id).catch((err) => { store.error = err.message; });
 }
 function edit(): void {
   if (store.generating || store.confirmingSubject || store.editingSubject) return;
@@ -121,17 +138,70 @@ function upload(): void { uni.showModal({ title: '上传解题过程', content: 
 async function save(): Promise<void> {
   if (!store.currentId || !store.subject?.confirmedAt || saving.value) return;
   saving.value = true;
-  try { await saveCollection(store.currentId, {}); saved.value = true; if (UI_MOCK) notebook.refresh(); uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
+  try { await saveCollection(activeTopic.value?.id ?? store.currentId, {}); saved.value = true; if (UI_MOCK) notebook.refresh(); uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
   catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存失败，请重试', icon: 'none' }); }
   finally { saving.value = false; }
 }
 function openMaterial(type: 'lesson' | 'practice'): void {
   const artifact = type === 'lesson' ? lesson.value : practice.value;
-  if (artifact && UI_MOCK && store.currentId === 'preview-quadratic') {
-    uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?preview=1` }); return;
+  if (artifact && UI_MOCK && (store.currentId === 'preview-quadratic' || activeTopic.value?.exampleKey)) {
+    uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?preview=1&scope=${encodeURIComponent(activeTopic.value?.id ?? store.currentId!)}` }); return;
   }
   if (artifact) uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?artifactId=${artifact.id}&conversationId=${store.currentId}` });
   else action(type === 'lesson' ? '请生成图文讲解' : '请出同知识点练习', type === 'lesson' ? 'generate_lesson' : 'generate_practice');
+}
+
+function syncPreview(): void {
+  if (!UI_MOCK || previewStudy.value || !store.currentId) { previewMeta.value = null; return; }
+  const root = previewRoot(store.currentId);
+  previewMeta.value = root?.attachments?.length ? root : null;
+}
+async function openLearning(id: string, topicId?: string): Promise<void> {
+  clearTimeout(recognitionTimer);
+  const root = UI_MOCK ? previewRoot(id) : undefined;
+  switchingTopic.value = true;
+  try {
+    if (root?.topics?.length && (topicId || root.id !== id)) selectPreviewTopic(root.id, topicId ?? id);
+    await store.open(root?.id ?? id);
+    syncPreview(); draft.value = activeTopic.value?.draft ?? '';
+    beginRecognition();
+  } finally { switchingTopic.value = false; }
+}
+function beginRecognition(): void {
+  clearTimeout(recognitionTimer);
+  if (!pageActive || previewMeta.value?.recognition !== 'reading') return;
+  const id = previewMeta.value.id, session = sessionVersion();
+  recognitionTimer = setTimeout(async () => {
+    if (!pageActive || session !== sessionVersion() || store.currentId !== id) return;
+    try {
+      recognizeAttachments(id); syncPreview(); await store.refresh();
+    } catch { try { setRecognition(id, 'failed'); } catch { /* 保留原图。 */ } syncPreview(); }
+  }, 900);
+}
+function recognitionAction(action: 'retry' | 'cancel' | 'fail'): void {
+  const id = previewMeta.value?.id; if (!id) return;
+  clearTimeout(recognitionTimer);
+  try { setRecognition(id, action === 'retry' ? 'reading' : action === 'cancel' ? 'cancelled' : 'failed'); syncPreview(); void store.refresh(); if (action === 'retry') beginRecognition(); }
+  catch { uni.showToast({ title: '状态未能保存，请重试', icon: 'none' }); }
+}
+async function selectTopic(id: string): Promise<void> {
+  if (!previewMeta.value || switchingTopic.value || store.generating || id === activeTopic.value?.id) return;
+  const rootId = previewMeta.value.id;
+  switchingTopic.value = true; focused.value = false; keyboardHeight.value = 0;
+  try {
+    selectPreviewTopic(rootId, id); await store.open(rootId); syncPreview();
+    draft.value = activeTopic.value?.draft ?? ''; scrollTarget.value = '';
+    scrollToEnd();
+  } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '切换失败，原进度仍保留', icon: 'none' }); }
+  finally { switchingTopic.value = false; }
+}
+function learnAll(): void {
+  if (!previewMeta.value) return;
+  try { planPreviewTopics(previewMeta.value.id); syncPreview(); uni.showToast({ title: '已记下，按顺序逐项学习', icon: 'none' }); }
+  catch { uni.showToast({ title: '未能保存安排，请重试', icon: 'none' }); }
+}
+function simulate(): void {
+  uni.showActionSheet({ itemList: ['模拟识别失败'], success: () => recognitionAction('fail') });
 }
 </script>
 
@@ -140,8 +210,9 @@ function openMaterial(type: 'lesson' | 'practice'): void {
   <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
     <PreviewNotice />
+    <TopicNavigator v-if="previewMeta?.recognition === 'ready'" :root="previewMeta" :disabled="store.generating || switchingTopic || store.editingSubject || busy" @select="selectTopic" @all="learnAll" />
     <view class="task-toolbar">
-      <text class="stage">{{ status }}</text>
+      <text class="stage">{{ previewMeta && previewMeta.recognition !== 'ready' ? '先读取图片，再核对内容' : status }}</text>
       <view class="toolbar-actions">
         <button :disabled="!store.subject?.confirmedAt || saving" @tap="save"><LumaIcon name="star" :size="12" /><text>{{ isSaved ? '已保存' : isKnowledge ? '保存记录' : '保存错题' }}</text></button>
       </view>
@@ -149,11 +220,23 @@ function openMaterial(type: 'lesson' | 'practice'): void {
     <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="true">
       <view class="thread">
+        <view v-if="previewMeta" class="source-attachments">
+          <view class="source-heading"><text>本次添加 · {{ previewMeta.attachments?.length }} 张图片</text><button v-if="previewMeta.recognition === 'ready'" @tap="previewAttachment(previewMeta.attachments ?? [], 0)">查看原图</button><button @tap="simulate">模拟异常</button></view>
+          <AttachmentStrip v-if="previewMeta.recognition !== 'ready'" :images="previewMeta.attachments ?? []" readonly />
+          <text v-if="previewMeta.text" class="source-prompt">{{ previewMeta.text }}</text>
+          <text class="mock-extraction">示例识别结果 · 当前未读取图片真实内容</text>
+        </view>
+        <view v-if="previewMeta && previewMeta.recognition !== 'ready'" class="recognition-state">
+          <text class="empty-symbol">✳</text>
+          <text>{{ previewMeta.recognition === 'reading' ? '正在整理图片里的内容…' : previewMeta.recognition === 'failed' ? '这次没能读清图片' : '已暂停读取' }}</text>
+          <text class="check-note">{{ previewMeta.recognition === 'reading' ? '多道题会分别列出，你可以选择从哪一道开始。' : '图片和你的文字都在，可以重试，或返回首页更换。' }}</text>
+          <button v-if="previewMeta.recognition === 'reading'" @tap="recognitionAction('cancel')">取消本次读取</button><button v-else @tap="recognitionAction('retry')">重新读取</button>
+        </view>
         <view v-if="store.subject?.confirmedAt" class="subject-summary">
           <button class="summary-toggle" :aria-label="summaryOpen ? '收起已确认内容' : '展开已确认内容'" @tap="summaryOpen = !summaryOpen"><view><text class="summary-label">{{ isKnowledge ? '学习范围已确认' : '题目已确认' }}<text v-if="activePart"> · 第 {{ (store.subject.activeSubquestionIndex ?? 0) + 1 }} 问</text></text><view v-if="!summaryOpen" class="summary-preview">{{ store.subject.content.text }}</view></view><LumaIcon :name="summaryOpen ? 'chevron-up' : 'chevron-down'" :size="14" /></button>
           <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
         </view>
-        <view v-if="!store.messages.length" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
+        <view v-if="!store.messages.length && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
         <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :incomplete="msg.incomplete" />
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
@@ -172,10 +255,11 @@ function openMaterial(type: 'lesson' | 'practice'): void {
         <view v-if="store.waitingJob" class="progress-state"><view class="pulse" /><text>学习材料正在生成，你可以继续提问。</text></view>
         <view v-if="store.error" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text></view>
         <button v-if="store.generating || store.waitingJob" class="stop" @tap="onStop">停止本次生成</button>
+        <view v-if="previewMeta?.recognition === 'ready' && ready && nextTopic" class="next-topic"><text>{{ previewMeta.learnAll ? '逐项学习已安排，按自己的节奏继续' : '当前内容先学到这里，也可以继续追问' }}</text><button :disabled="store.generating" @tap="selectTopic(nextTopic.id)">看看下一{{ unit }}<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
         <view id="thread-end" class="thread-end" />
       </view>
     </scroll-view>
-    <view class="input-dock">
+    <view v-if="!previewMeta || previewMeta.recognition === 'ready'" class="input-dock">
       <view class="composer">
         <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
         <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
@@ -243,4 +327,13 @@ function openMaterial(type: 'lesson' | 'practice'): void {
 .chat-page .upload { display:flex; align-items:center; gap:6rpx; min-height:72rpx; font-size:22rpx; color:#8e9b81; }
 .chat-page .send { display:flex; align-items:center; justify-content:center; width:72rpx; height:72rpx; flex-shrink:0; background:#4f6652; border-radius:50%; }
 .chat-page .send[disabled] { background:#b9c4b2; }
+.source-attachments { padding-bottom:24rpx; margin-bottom:30rpx; border-bottom:1rpx solid #e4e8dd; }
+.source-heading { display:flex; align-items:center; justify-content:space-between; color:#9ba58d; font-size:20rpx; }
+.source-heading button { display:flex; align-items:center; min-height:72rpx; color:#ad9b81; font-size:19rpx; }
+.source-prompt { display:block; color:#6f8262; font-size:25rpx; line-height:1.8; }
+.mock-extraction { display:block; color:#ad997a; font-size:19rpx; line-height:1.8; }
+.recognition-state { display:flex; align-items:center; flex-direction:column; gap:24rpx; padding:50rpx 20rpx; text-align:center; color:#6a815d; font-size:28rpx; }
+.recognition-state button { min-height:88rpx; color:#8b9e7c; font-size:24rpx; }
+.next-topic { display:flex; justify-content:space-between; gap:16rpx; align-items:center; margin-top:36rpx; border-top:1rpx solid #e0e6d8; color:#a1aa94; font-size:19rpx; }
+.next-topic button { display:flex; align-items:center; gap:10rpx; min-height:96rpx; color:#718a60; font-size:23rpx; flex-shrink:0; }
 </style>

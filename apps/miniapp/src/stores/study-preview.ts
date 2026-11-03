@@ -1,6 +1,6 @@
 import { computed, onScopeDispose, ref } from 'vue';
 import { defineStore } from 'pinia';
-import { studyExample, type StudyRating } from '@/fixtures/study';
+import { studyExample, studyExamples, type StudyRating } from '@/fixtures/study';
 import { UI_MOCK } from '@/config';
 import { onSessionCleared } from '@/utils/token';
 
@@ -16,7 +16,11 @@ const newRound = (ids = studyExample.exercises.map((item) => item.id)): Round =>
 
 /** 只管理隔离的交互演示；不导入请求模块，不修改会话或正式练习。 */
 export const useStudyPreviewStore = defineStore('study-preview', () => {
-  const sectionId = ref(studyExample.sections[0]!.id);
+  const scope = ref('preview-quadratic');
+  const fixtureKey = ref('quadratic');
+  const example = computed(() => studyExamples[fixtureKey.value] ?? studyExample);
+  const storageKey = () => scope.value === 'preview-quadratic' ? KEY : `${KEY}:${scope.value}`;
+  const sectionId = ref(example.value.sections[0]!.id);
   const round = ref<Round>(newRound());
   const history = ref<Round[]>([]);
   const focus = ref<StudyFocus | null>(null);
@@ -26,39 +30,44 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
   const focusKey = (target: StudyFocus) => `${target.kind}:${target.id}:${target.roundId ?? 'lesson-v1'}`;
   const loaded = ref(false);
   const savedLocally = ref(true);
-  const currentExercise = computed(() => studyExample.exercises.find((item) => item.id === round.value.ids[round.value.index])!);
+  const currentExercise = computed(() => example.value.exercises.find((item) => item.id === round.value.ids[round.value.index])!);
   const currentAnswer = computed(() => round.value.answers[currentExercise.value.id]!);
   const needsPractice = computed(() => round.value.ids.filter((id) => round.value.answers[id]!.rating !== 'independent'));
   const rated = computed(() => round.value.ids.filter((id) => Boolean(round.value.answers[id]!.rating)).length);
 
   function persist(): void {
-    try { uni.setStorageSync(KEY, JSON.stringify({ sectionId: sectionId.value, round: round.value, history: history.value.slice(-6) })); savedLocally.value = true; }
+    try { uni.setStorageSync(storageKey(), JSON.stringify({ sectionId: sectionId.value, round: round.value, history: history.value.slice(-6) })); savedLocally.value = true; }
     catch { savedLocally.value = false; }
   }
   function validRound(value: unknown): value is Round {
     const item = value as Round | null;
     return Boolean(item && typeof item.id === 'string' && ['intro', 'doing', 'review', 'summary'].includes(item.phase) &&
-      Array.isArray(item.ids) && item.ids.length > 0 && item.ids.length <= studyExample.exercises.length && new Set(item.ids).size === item.ids.length &&
+      Array.isArray(item.ids) && item.ids.length > 0 && item.ids.length <= example.value.exercises.length && new Set(item.ids).size === item.ids.length &&
       Number.isInteger(item.index) && item.index >= 0 && item.index < item.ids.length && item.ids.every((id) => {
         const answer = item.answers?.[id];
-        return studyExample.exercises.some((ex) => ex.id === id) && answer && typeof answer.text === 'string' && answer.text.length <= 4000 &&
+        return example.value.exercises.some((ex) => ex.id === id) && answer && typeof answer.text === 'string' && answer.text.length <= 4000 &&
           typeof answer.unknown === 'boolean' && typeof answer.hint === 'boolean' && (answer.rating === null || ['independent', 'partial', 'stuck'].includes(answer.rating));
       }) && (item.phase !== 'summary' || item.ids.every((id) => Boolean(item.answers[id]?.rating))));
   }
-  function restore(): void {
+  function restore(target = scope.value, exampleKey = fixtureKey.value): void {
+    if (target !== scope.value || exampleKey !== fixtureKey.value) {
+      if (loaded.value) persist();
+      clear(); scope.value = target; fixtureKey.value = exampleKey;
+      sectionId.value = example.value.sections[0]!.id; round.value = newRound(example.value.exercises.map((item) => item.id));
+    }
     if (loaded.value) return;
     loaded.value = true;
     try {
-      const raw = uni.getStorageSync(KEY);
+      const raw = uni.getStorageSync(storageKey());
       if (!raw) return;
       const data = JSON.parse(String(raw));
-      if (studyExample.sections.some((section) => section.id === data.sectionId)) sectionId.value = data.sectionId;
+      if (example.value.sections.some((section) => section.id === data.sectionId)) sectionId.value = data.sectionId;
       if (validRound(data.round)) round.value = data.round;
       if (Array.isArray(data.history)) history.value = data.history.filter(validRound).slice(-6);
     } catch { /* 损坏的演示缓存不阻断学习页面。 */ }
   }
   function selectSection(id: string): void {
-    if (!studyExample.sections.some((section) => section.id === id)) return;
+    if (!example.value.sections.some((section) => section.id === id)) return;
     sectionId.value = id; persist();
   }
   function start(): void { if (round.value.phase === 'intro') { round.value.phase = 'doing'; persist(); } }
@@ -78,7 +87,7 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
   }
   function restart(onlyNeeds: boolean): void {
     if (round.value.phase !== 'summary') return;
-    const ids = onlyNeeds ? needsPractice.value : studyExample.exercises.map((item) => item.id);
+    const ids = onlyNeeds ? needsPractice.value : example.value.exercises.map((item) => item.id);
     if (!ids.length) return;
     round.value = newRound([...ids]); round.value.phase = 'doing'; endFocus(); persist();
   }
@@ -94,9 +103,9 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
     if (!target || !text.trim()) return;
     let reply: string;
     if (target.kind === 'section') {
-      const section = studyExample.sections.find((item) => item.id === target.id)!;
+      const section = example.value.sections.find((item) => item.id === target.id)!;
       reply = /例子/.test(text) ? section.example : section.detail;
-    } else reply = studyExample.exercises.find((item) => item.id === target.id)!.hint;
+    } else reply = example.value.exercises.find((item) => item.id === target.id)!.hint;
     messages.value.push({ id: `u${messages.value.length}`, role: 'user', text },
       { id: `a${messages.value.length}`, role: 'assistant', text: `（示例回复）${reply}` });
     pendingQuestion.value = '';
@@ -108,10 +117,10 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
     focus.value = null; pendingQuestion.value = ''; messages.value = [];
   }
   function clear(): void {
-    sectionId.value = studyExample.sections[0]!.id; round.value = newRound(); history.value = [];
+    sectionId.value = example.value.sections[0]!.id; round.value = newRound(); history.value = [];
     endFocus(); threads.clear(); loaded.value = false; savedLocally.value = true;
   }
   onScopeDispose(onSessionCleared(clear));
-  return { sectionId, round, history, focus, pendingQuestion, messages, savedLocally, currentExercise, currentAnswer, rated, needsPractice,
+  return { scope, fixtureKey, example, sectionId, round, history, focus, pendingQuestion, messages, savedLocally, currentExercise, currentAnswer, rated, needsPractice,
     restore, persist, selectSection, start, jump, answer, markUnknown, toggleHint, submit, rate, finish, restart, ask, send, discussionDraft, endFocus };
 });

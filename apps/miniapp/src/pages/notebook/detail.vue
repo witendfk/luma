@@ -15,7 +15,7 @@ const editing = ref(false), draft = ref(''), historyOpen = ref(false);
 const item = computed(() => notebook.records.find((r) => r.id === id.value));
 const dirty = computed(() => editing.value && draft.value !== (item.value?.note ?? ''));
 onLoad((query) => { id.value = query?.id ?? ''; });
-onShow(() => { if (UI_MOCK) { notebook.refresh(); study.restore(); } });
+onShow(() => { if (UI_MOCK) { notebook.refresh(); study.restore(id.value, notebook.records.find((r) => r.id === id.value)?.exampleKey ?? 'quadratic'); } });
 // 原生返回/手势离开也保留未保存文字；主动取消则不保存。
 const draftSaved = ref(true);
 function remember(): void {
@@ -47,13 +47,13 @@ function review(): void {
 }
 function open(kind: 'lesson' | 'practice' | 'chat'): void {
   remember();
-  const url = kind === 'chat' ? `/pages/chat/index?id=${encodeURIComponent(id.value)}` : `/pages/${kind === 'lesson' ? 'reader' : 'practice'}/index?preview=1`;
+  const url = kind === 'chat' ? `/pages/chat/index?id=${encodeURIComponent(item.value?.parentId ?? id.value)}&topic=${encodeURIComponent(id.value)}` : `/pages/${kind === 'lesson' ? 'reader' : 'practice'}/index?preview=1&scope=${encodeURIComponent(id.value)}`;
   uni.navigateTo({ url });
 }
 function remove(): void {
   uni.showModal({ title: '从错题本移除？', content: '只取消收藏，原对话、讲解和练习记录都会保留。', confirmText: '移除收藏', cancelText: '保留', confirmColor: '#927c61', success: (res) => { if (res.confirm) { try { notebook.update(id.value, { collected: false }); uni.navigateBack(); } catch { uni.showToast({ title: '移除失败，请重试', icon: 'none' }); } } } });
 }
-function viewRound(roundId: string): void { historyOpen.value = false; uni.navigateTo({ url: `/pages/practice/index?preview=1&historyId=${encodeURIComponent(roundId)}` }); }
+function viewRound(roundId: string): void { historyOpen.value = false; uni.navigateTo({ url: `/pages/practice/index?preview=1&scope=${encodeURIComponent(id.value)}&historyId=${encodeURIComponent(roundId)}` }); }
 </script>
 <template>
   <view class="detail-page">

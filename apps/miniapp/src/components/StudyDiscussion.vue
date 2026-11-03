@@ -2,21 +2,20 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import LumaIcon from './LumaIcon.vue';
 import MessageBubble from './MessageBubble.vue';
-import { studyExample } from '@/fixtures/study';
 import { useStudyPreviewStore } from '@/stores/study-preview';
 const study = useStudyPreviewStore();
 const draft = ref(study.pendingQuestion);
 const keyboard = ref(0), expanded = ref(false), scrollTarget = ref('');
 watch(draft, (value) => study.discussionDraft(value));
 const pageHeight = uni.getSystemInfoSync().windowHeight;
-const exercise = computed(() => studyExample.exercises.find((item) => item.id === study.focus?.id));
-const source = computed(() => study.focus?.kind === 'exercise' ? exercise.value?.stem : studyExample.sections.find((item) => item.id === study.focus?.id)?.body);
+const exercise = computed(() => study.example.exercises.find((item) => item.id === study.focus?.id));
+const source = computed(() => study.focus?.kind === 'exercise' ? exercise.value?.stem : study.example.sections.find((item) => item.id === study.focus?.id)?.body);
 const backLabel = computed(() => study.focus?.kind === 'exercise' ? '返回练习' : '返回讲解');
 function back(end = false): void {
   const kind = study.focus?.kind;
   if (end) study.endFocus();
   if (getCurrentPages().length > 1) uni.navigateBack();
-  else uni.redirectTo({ url: `/pages/${kind === 'exercise' ? 'practice' : 'reader'}/index?preview=1` });
+  else uni.redirectTo({ url: `/pages/${kind === 'exercise' ? 'practice' : 'reader'}/index?preview=1&scope=${encodeURIComponent(study.scope)}` });
 }
 function send(): void {
   if (!draft.value.trim()) return;
