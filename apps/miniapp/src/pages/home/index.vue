@@ -14,6 +14,7 @@ import { useHistoryStore } from '@/stores/history';
 import { useConversationStore } from '@/stores/conversation';
 import { getToken, onSessionCleared } from '@/utils/token';
 import { UI_MOCK } from '@/config';
+import { previewContinuation } from '@/utils/continuation';
 
 const auth = useAuthStore();
 const history = useHistoryStore();
@@ -34,6 +35,14 @@ let sentMessage = '';
 const greeting = computed(() => `你好，${auth.nickname || '同学'}`);
 const placeholder = computed(() => scenario.value === 'knowledge' ? '想弄懂什么？说说困惑，也可以添加课本或笔记…' : scenario.value === 'practice' ? '想练什么？也可以添加参考题…' : '写下问题，或添加题目、课本与笔记图片…');
 const modeLabel = computed(() => scenario.value === 'knowledge' ? '讲知识点' : scenario.value === 'practice' ? '出练习' : '');
+const continuation = computed(() => history.latest && UI_MOCK ? previewContinuation(history.latest.id) : null);
+function continueLearning(): void {
+  if (!history.latest || navigating.value) return;
+  if (!continuation.value) { openConversation(history.latest.id); return; }
+  const target = continuation.value;
+  navigating.value = true;
+  uni.navigateTo({ url: target.url, success: () => { if (target.notice) uni.showToast({ title: target.notice, icon: 'none' }); }, fail: () => { navigating.value = false; uni.showToast({ title: '未能打开，学习进度仍保留', icon: 'none' }); } });
+}
 
 watch([menuOpen, accountOpen], ([menu, account]) => {
   const pages = getCurrentPages();
@@ -148,8 +157,8 @@ function openConversation(id: string): void {
       <view class="guidance"><view class="soft-dot" /><text>先给提示，陪你一步步想明白</text></view>
       <view v-if="history.latest" class="continue-card">
         <view class="continue-icon"><LumaIcon name="arrow-diagonal" :size="20" /></view>
-        <view class="continue-copy"><text class="continue-label">继续上次的学习</text><view class="continue-title">{{ history.latest.title }}</view></view>
-        <button class="continue-action" @tap="openConversation(history.latest.id)">继续学习</button>
+        <view class="continue-copy"><text class="continue-label">{{ continuation?.label ?? '继续上次的学习' }}</text><view class="continue-title">{{ history.latest.title }}</view></view>
+        <button class="continue-action" @tap="continueLearning">继续学习</button>
       </view>
       <view v-if="history.error" class="history-error"><text>学习记录暂时未能加载</text><button :disabled="history.loading" @tap="history.load()">重试</button></view>
     </view>

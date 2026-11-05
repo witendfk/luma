@@ -5,7 +5,8 @@ import { UI_MOCK } from '@/config';
 import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
-import { previewExampleKey } from '@/mocks/workspace';
+import { previewExampleKey, rememberPreviewLocation } from '@/mocks/workspace';
+import { previewAttachment } from '@/utils/attachments';
 import { useStudyPreviewStore } from '@/stores/study-preview';
 import { request } from '@/utils/request';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
@@ -20,13 +21,13 @@ const scrollTarget = ref(''), activeSection = ref('');
 const pageHeight = uni.getSystemInfoSync().windowHeight;
 const instance = getCurrentInstance();
 const availablePreview = import.meta.env.DEV;
-let artifactId = '', conversationId = '', scope = 'preview-quadratic', alive = true;
+let artifactId = '', conversationId = '', scope = 'preview-quadratic', alive = true, visible = true;
 let scrollTimer: ReturnType<typeof setTimeout> | undefined;
 const currentSection = computed(() => document.value?.sections.find((item) => item.id === activeSection.value));
 const localKey = () => `luma_draft:reader:${artifactId}:${document.value?.version ?? 1}`;
 function remember(): void {
   if (!activeSection.value) return;
-  if (preview.value) { study.selectSection(activeSection.value); return; }
+  if (preview.value) { study.selectSection(activeSection.value); if (visible && UI_MOCK) { try { rememberPreviewLocation(scope, 'reader'); } catch { /* 草稿状态另行显示。 */ } } return; }
   try { uni.setStorageSync(localKey(), activeSection.value); } catch { /* 页面内保留阅读位置。 */ }
 }
 async function load(): Promise<void> {
@@ -50,9 +51,10 @@ async function load(): Promise<void> {
 }
 onLoad((query) => { preview.value = availablePreview && query?.preview === '1'; scope = query?.scope ?? 'preview-quadratic'; artifactId = query?.artifactId ?? ''; conversationId = query?.conversationId ?? ''; void load(); });
 onShow(() => {
+  visible = true;
   if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); if (document.value) { activeSection.value = study.sectionId; void nextTick(() => jump(activeSection.value)); } }
 });
-onHide(() => { clearTimeout(scrollTimer); remember(); });
+onHide(() => { visible = false; clearTimeout(scrollTimer); remember(); });
 onUnload(() => { alive = false; clearTimeout(scrollTimer); });
 onScopeDispose(onSessionCleared(() => { alive = false; document.value = null; error.value = '请重新登录后继续阅读'; loading.value = false; clearTimeout(scrollTimer); }));
 function jump(id: string): void {
@@ -93,7 +95,7 @@ function practice(): void {
   if (!preview.value) { uni.showToast({ title: '作答交互可先从首页预览入口体验', icon: 'none' }); return; }
   remember(); uni.navigateTo({ url: `/pages/practice/index?preview=1&scope=${encodeURIComponent(scope)}` });
 }
-function showImage(src: string): void { uni.previewImage({ current: src, urls: [src] }); }
+function showImage(src: string): void { previewAttachment([{ id: src, path: src, name: '教学配图' }], 0); }
 function previewExample(): void { preview.value = true; artifactId = ''; void load(); }
 </script>
 

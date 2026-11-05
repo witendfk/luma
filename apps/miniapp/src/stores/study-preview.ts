@@ -3,11 +3,13 @@ import { defineStore } from 'pinia';
 import { studyExample, studyExamples, type StudyRating } from '@/fixtures/study';
 import { UI_MOCK } from '@/config';
 import { onSessionCleared } from '@/utils/token';
+import type { LocalAttachment } from '@/utils/attachments';
 
-interface Answer { text: string; unknown: boolean; hint: boolean; rating: StudyRating | null }
+interface Answer { text: string; unknown: boolean; hint: boolean; rating: StudyRating | null; images?: LocalAttachment[] }
 interface Round { id: string; phase: 'intro' | 'doing' | 'review' | 'summary'; index: number; ids: string[]; answers: Record<string, Answer> }
 export interface StudyFocus { kind: 'section' | 'exercise'; id: string; heading: string; question: string; roundId?: string }
 const KEY = UI_MOCK ? 'luma_ui_draft:study-preview:v1' : 'luma_draft:study-preview:v1';
+export const studyPreviewStorageKey = (scope: string): string => scope === 'preview-quadratic' ? KEY : `${KEY}:${scope}`;
 const blank = (): Answer => ({ text: '', unknown: false, hint: false, rating: null });
 const newRound = (ids = studyExample.exercises.map((item) => item.id)): Round => ({
   id: `preview_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, phase: 'intro', index: 0, ids,
@@ -19,7 +21,7 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
   const scope = ref('preview-quadratic');
   const fixtureKey = ref('quadratic');
   const example = computed(() => studyExamples[fixtureKey.value] ?? studyExample);
-  const storageKey = () => scope.value === 'preview-quadratic' ? KEY : `${KEY}:${scope.value}`;
+  const storageKey = () => studyPreviewStorageKey(scope.value);
   const sectionId = ref(example.value.sections[0]!.id);
   const round = ref<Round>(newRound());
   const history = ref<Round[]>([]);
@@ -46,7 +48,8 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
       Number.isInteger(item.index) && item.index >= 0 && item.index < item.ids.length && item.ids.every((id) => {
         const answer = item.answers?.[id];
         return example.value.exercises.some((ex) => ex.id === id) && answer && typeof answer.text === 'string' && answer.text.length <= 4000 &&
-          typeof answer.unknown === 'boolean' && typeof answer.hint === 'boolean' && (answer.rating === null || ['independent', 'partial', 'stuck'].includes(answer.rating));
+          typeof answer.unknown === 'boolean' && typeof answer.hint === 'boolean' && (answer.rating === null || ['independent', 'partial', 'stuck'].includes(answer.rating)) &&
+          (answer.images === undefined || Array.isArray(answer.images) && answer.images.length <= 3 && answer.images.every((image) => typeof image.id === 'string' && typeof image.path === 'string' && typeof image.name === 'string'));
       }) && (item.phase !== 'summary' || item.ids.every((id) => Boolean(item.answers[id]?.rating))));
   }
   function restore(target = scope.value, exampleKey = fixtureKey.value): void {
@@ -73,6 +76,7 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
   function start(): void { if (round.value.phase === 'intro') { round.value.phase = 'doing'; persist(); } }
   function jump(index: number): void { if (index >= 0 && index < round.value.ids.length) { round.value.index = index; persist(); } }
   function answer(text: string): void { if (round.value.phase === 'doing') { currentAnswer.value.text = text.slice(0, 4000); persist(); } }
+  function answerImages(images: LocalAttachment[]): void { if (round.value.phase === 'doing') { currentAnswer.value.images = images.slice(0, 3); persist(); } }
   function markUnknown(): void { if (round.value.phase === 'doing') { currentAnswer.value.unknown = !currentAnswer.value.unknown; persist(); } }
   function toggleHint(): void { if (round.value.phase === 'doing') { currentAnswer.value.hint = !currentAnswer.value.hint; persist(); } }
   function submit(): void { if (round.value.phase === 'doing') { round.value.phase = 'review'; persist(); } }
@@ -122,5 +126,5 @@ export const useStudyPreviewStore = defineStore('study-preview', () => {
   }
   onScopeDispose(onSessionCleared(clear));
   return { scope, fixtureKey, example, sectionId, round, history, focus, pendingQuestion, messages, savedLocally, currentExercise, currentAnswer, rated, needsPractice,
-    restore, persist, selectSection, start, jump, answer, markUnknown, toggleHint, submit, rate, finish, restart, ask, send, discussionDraft, endFocus };
+    restore, persist, selectSection, start, jump, answer, answerImages, markUnknown, toggleHint, submit, rate, finish, restart, ask, send, discussionDraft, endFocus };
 });

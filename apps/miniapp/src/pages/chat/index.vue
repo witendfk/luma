@@ -3,7 +3,8 @@ import { UI_MOCK } from '@/config';
 import { useNotebookPreviewStore } from '@/stores/notebook-preview';
 import AttachmentStrip from '@/components/AttachmentStrip.vue';
 import TopicNavigator from '@/components/TopicNavigator.vue';
-import { previewRoot, selectPreviewTopic, recognizeAttachments, setRecognition, saveTopicDraft, planPreviewTopics, type PreviewRecord } from '@/mocks/workspace';
+import ProcessSheet from '@/components/ProcessSheet.vue';
+import { previewRoot, selectPreviewTopic, recognizeAttachments, setRecognition, saveTopicDraft, planPreviewTopics, rememberPreviewLocation, type PreviewRecord } from '@/mocks/workspace';
 import { previewAttachment } from '@/utils/attachments';
 import { sessionVersion } from '@/utils/token';
 import PreviewNotice from '@/components/PreviewNotice.vue';
@@ -39,6 +40,7 @@ const accountOpen = ref(false);
 const saved = ref(false);
 const saving = ref(false);
 const editorOpen = ref(false);
+const processOpen = ref(false);
 const editorError = ref('');
 const summaryOpen = ref(false);
 const moreActions = ref(false);
@@ -72,7 +74,7 @@ function scrollToEnd(): void {
 }
 watch(() => store.messages.map((message) => message.text).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), scrollToEnd);
 watch(() => store.currentId, () => { editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; moreActions.value = false; saved.value = false; });
-watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; syncPreview(); });
+watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; processOpen.value = false; syncPreview(); });
 watch(() => store.generating, (value) => { if (!value) syncPreview(); });
 watch(draft, (value) => {
   if (!UI_MOCK || switchingTopic.value || !activeTopic.value) return;
@@ -83,12 +85,14 @@ async function onSend(): Promise<void> {
   if (!text || store.generating || store.editingSubject || store.confirmingSubject) return;
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
+  rememberChat();
   await store.send(text);
   if (!store.error) draft.value = '';
 }
 async function onConfirm(): Promise<void> {
   if (busy.value) return;
   busy.value = true;
+  rememberChat();
   try { await store.confirm(); }
   catch (err) { store.error = err instanceof Error ? err.message : '核对失败'; }
   finally { busy.value = false; }
@@ -134,7 +138,14 @@ function action(text: string, kind: TurnRequest['action']): void {
     uni.showModal({ title: '查看完整解析', content: '建议先自己推一遍。也可以现在查看，之后再独立试一试。', confirmText: '查看解析', cancelText: '继续思考', confirmColor: '#4f6652', success: (res) => { if (res.confirm) void store.send(text, kind); } });
   } else void store.send(text, kind);
 }
-function upload(): void { uni.showModal({ title: '上传解题过程', content: '照片上传正在接入。现在可以先写下你的思路，继续向 Luma 提问。', showCancel: false, confirmText: '知道了', confirmColor: '#4f6652' }); }
+function rememberChat(): void { if (UI_MOCK && store.currentId) { try { rememberPreviewLocation(activeTopic.value?.id ?? store.currentId, 'chat'); } catch { /* 不阻断学习。 */ } } }
+function upload(): void {
+  if (!UI_MOCK) { uni.showToast({ title: '过程照片可先在前端预览中体验', icon: 'none' }); return; }
+  if (!store.subject?.confirmedAt) { uni.showToast({ title: '请先核对当前题目', icon: 'none' }); return; }
+  if (store.generating || switchingTopic.value) return;
+  focused.value = false; processOpen.value = true;
+}
+function confirmProcess(text: string): void { rememberChat(); void store.send(`我已核对这些解题步骤：\n${text}\n请先引导我检查过程。`); }
 async function save(): Promise<void> {
   if (!store.currentId || !store.subject?.confirmedAt || saving.value) return;
   saving.value = true;
@@ -190,6 +201,7 @@ async function selectTopic(id: string): Promise<void> {
   switchingTopic.value = true; focused.value = false; keyboardHeight.value = 0;
   try {
     selectPreviewTopic(rootId, id); await store.open(rootId); syncPreview();
+    rememberChat();
     draft.value = activeTopic.value?.draft ?? ''; scrollTarget.value = '';
     scrollToEnd();
   } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '切换失败，原进度仍保留', icon: 'none' }); }
@@ -267,6 +279,7 @@ function simulate(): void {
     </view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />
     <SubjectEditor :open="editorOpen" :subject="store.subject" :saving="store.editingSubject" :error="editorError" @close="editorOpen = false" @save="saveSubject" />
+    <ProcessSheet v-if="UI_MOCK && store.currentId" :key="`${activeTopic?.id ?? store.currentId}:${store.subject?.version}`" :open="processOpen" :scope="activeTopic?.id ?? store.currentId" :revision="store.subject?.version ?? 1" @close="processOpen = false" @confirm="confirmProcess" />
     <LearningDrawer :open="menuOpen" @close="menuOpen = false" @new="newChat" @select="openConversation" @account="accountOpen = true" />
   </view>
 </template>

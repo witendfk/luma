@@ -42,6 +42,10 @@
     {
       "path": "pages/account/index",
       "style": { "navigationBarTitleText": "账号" }
+    },
+    {
+      "path": "pages/image-preview/index",
+      "style": { "navigationStyle": "custom", "disableScroll": true }
     }
   ],
   "tabBar": {

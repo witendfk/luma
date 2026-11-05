@@ -25,12 +25,11 @@ export async function chooseAttachments(count = MAX_IMAGES): Promise<LocalAttach
   }));
 }
 export function previewAttachment(images: LocalAttachment[], index: number): void {
-  // 兼容开发过程中已保存的旧 SVG 示例，原生全屏预览使用 PNG。
+  // 使用独立全屏页，包内示例与本机照片保持同样的缩放、切图和返回体验。
   const paths = images.map((item) => item.sample && item.path === '/static/preview/question-sheet.svg' ? '/static/preview/question-sheet.png' : item.path);
-  const current = paths[index];
-  if (!current) return;
+  if (!paths[index]) return;
   const failed = () => uni.showToast({ title: '图片暂时无法预览，请返回更换图片', icon: 'none' });
-  // 包内静态图片先解析为本机路径，不能直接把 /static 地址交给原生预览器。
-  void Promise.all(paths.map((src) => new Promise<string>((resolve, reject) => uni.getImageInfo({ src, success: (res) => resolve(res.path), fail: reject }))))
-    .then((urls) => uni.previewImage({ current: urls[index]!, urls, fail: failed })).catch(failed);
+  const key = `${UI_MOCK ? 'luma_ui_draft:' : 'luma_draft:'}image-view:${makeId()}`;
+  try { uni.setStorageSync(key, { paths, index }); uni.navigateTo({ url: `/pages/image-preview/index?key=${encodeURIComponent(key)}`, fail: () => { uni.removeStorageSync(key); failed(); } }); }
+  catch { failed(); }
 }

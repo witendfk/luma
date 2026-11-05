@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { onHide, onLoad, onShow } from '@dcloudio/uni-app';
 import { UI_MOCK } from '@/config';
 import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
@@ -7,8 +7,14 @@ import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
 import type { StudyRating } from '@/fixtures/study';
 import { useStudyPreviewStore } from '@/stores/study-preview';
-import { previewExampleKey } from '@/mocks/workspace';
+import { previewExampleKey, rememberPreviewLocation } from '@/mocks/workspace';
+import AttachmentStrip from '@/components/AttachmentStrip.vue';
+import { chooseAttachments, MAX_IMAGES } from '@/utils/attachments';
+import { sessionVersion } from '@/utils/token';
 let scope = 'preview-quadratic';
+let visible = true;
+const choosing = ref(false);
+const invalidImages = ref<Record<string, boolean>>({});
 const study = useStudyPreviewStore();
 const preview = ref(false), historyOpen = ref(false);
 const selectedHistory = ref<string | null>(null);
@@ -18,7 +24,7 @@ const current = computed(() => study.currentExercise);
 const answer = computed(() => study.currentAnswer);
 const draft = computed({ get: () => study.currentAnswer.text, set: (value: string) => study.answer(value) });
 const exercises = computed(() => study.round.ids.map((id) => study.example.exercises.find((item) => item.id === id)!));
-const answered = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.text.trim() || study.round.answers[id]!.unknown).length);
+const answered = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.text.trim() || study.round.answers[id]!.images?.length || study.round.answers[id]!.unknown).length);
 const independent = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.rating === 'independent').length);
 const reviewRound = computed(() => selectedHistory.value ? study.history.find((item) => item.id === selectedHistory.value) : study.round);
 const reviewExercises = computed(() => (reviewRound.value?.ids ?? []).map((id) => study.example.exercises.find((item) => item.id === id)!));
@@ -31,14 +37,33 @@ onLoad((query) => { preview.value = import.meta.env.DEV && query?.preview === '1
     else uni.showToast({ title: '该轮记录已不在本机，已回到当前轮次', icon: 'none' });
   }
 } });
-onShow(() => { if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); } });
-onHide(() => { if (preview.value) study.persist(); keyboard.value = 0; });
+function rememberVisit(): void { if (visible && UI_MOCK && preview.value && !selectedHistory.value) { try { rememberPreviewLocation(scope, 'practice'); } catch { /* 保留本机作答。 */ } } }
+onShow(() => { visible = true; if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); rememberVisit(); } });
+onHide(() => { visible = false; if (preview.value) study.persist(); keyboard.value = 0; });
+watch(() => [study.round.index, study.round.phase, study.currentAnswer.text, study.currentAnswer.images?.length, selectedHistory.value], rememberVisit);
+async function uploadAnswer(index?: number): Promise<void> {
+  if (choosing.value || study.round.phase !== 'doing') return;
+  const images = study.currentAnswer.images ?? [];
+  if (index === undefined && images.length >= MAX_IMAGES) { uni.showToast({ title: '每题最多添加 3 张作答图片', icon: 'none' }); return; }
+  const round = study.round.id, question = study.currentExercise.id, session = sessionVersion();
+  choosing.value = true;
+  try {
+    const selected = await chooseAttachments(index === undefined ? MAX_IMAGES - images.length : 1);
+    if (!selected?.length || session !== sessionVersion() || study.round.id !== round || study.currentExercise.id !== question || !visible) return;
+    const next = [...images]; if (index === undefined) next.push(...selected); else next.splice(index, 1, selected[0]!);
+    study.answerImages(next); rememberVisit();
+  } finally { choosing.value = false; }
+}
+function removeAnswer(index: number): void { const images = [...(study.currentAnswer.images ?? [])]; images.splice(index, 1); study.answerImages(images); }
 function back(): void {
   if (getCurrentPages().length > 1) uni.navigateBack(); else uni.switchTab({ url: '/pages/home/index' });
 }
 function goTop(): void { scrollTop.value = scrollTop.value === 0 ? 1 : 0; }
 function jump(index: number): void { study.jump(index); goTop(); }
 function submit(): void {
+  const invalidQuestion = study.round.ids.find((id) => invalidImages.value[id] && study.round.answers[id]?.images?.length);
+  if (invalidQuestion) { jump(study.round.ids.indexOf(invalidQuestion)); uni.showToast({ title: '请先更换或移除这题的失效图片', icon: 'none' }); return; }
+  if (choosing.value) { uni.showToast({ title: '请等待选图完成', icon: 'none' }); return; }
   if (answered.value < study.round.ids.length) {
     uni.showModal({ title: '还有未作答的题', content: '可以回去补充，也可以按未完成提交，接下来对照解析自评。', confirmText: '仍然提交', cancelText: '继续作答', confirmColor: '#4f6652', success: (res) => { if (res.confirm) { study.submit(); goTop(); } } });
   } else { study.submit(); goTop(); }
@@ -98,7 +123,8 @@ function viewHistory(id: string): void { selectedHistory.value = id; historyOpen
             <text class="eyebrow">{{ current.kind }}</text><text class="exercise-stem">{{ current.stem }}</text><text class="purpose">{{ current.purpose }}</text>
             <view class="answer-heading"><text>我的思路与答案</text><text class="saved">{{ study.savedLocally ? '本机已保存' : '未能保存，请勿退出' }}</text></view>
             <textarea :key="current.id" v-model="draft" class="draft" :maxlength="4000" placeholder="写下第一步，或试着完整推一遍…" :adjust-position="false" :show-confirm-bar="false" @keyboardheightchange="keyboard = $event.detail.height" />
-            <view class="answer-tools"><button @tap="study.toggleHint()">{{ answer.hint ? '收起提示' : '给点提示' }}</button><button @tap="ask(current.id)">围绕这题追问<LumaIcon name="arrow-diagonal" :size="12" /></button></view>
+            <AttachmentStrip :images="answer.images ?? []" @replace="uploadAnswer($event)" @remove="removeAnswer" @invalid="invalidImages[current.id] = $event" />
+            <view class="answer-tools"><button :disabled="choosing" @tap="uploadAnswer()"><LumaIcon name="photo" :size="14" />添加作答照片</button><button @tap="study.toggleHint()">{{ answer.hint ? '收起提示' : '给点提示' }}</button></view><button class="ask-link" @tap="ask(current.id)">围绕这题追问<LumaIcon name="arrow-diagonal" :size="12" /></button>
             <view v-if="answer.hint" class="hint"><text class="hint-label">先想一想</text><text>{{ current.hint }}</text></view>
             <button class="unknown" :class="{ marked: answer.unknown }" @tap="study.markUnknown()"><text class="check">{{ answer.unknown ? '✓' : '' }}</text><text>这题暂时不会，先记下来</text></button>
           </template>
@@ -107,6 +133,7 @@ function viewHistory(id: string): void { selectedHistory.value = id; historyOpen
             <view v-for="(exercise, index) in reviewExercises" :id="`review-${exercise.id}`" :key="exercise.id" class="review-section">
               <text class="task-title">0{{ index + 1 }} · {{ exercise.kind }}</text><text class="review-stem">{{ exercise.stem }}</text>
               <view class="my-answer"><text class="small-label">我的作答</text><text>{{ reviewRound?.answers[exercise.id]?.text || (reviewRound?.answers[exercise.id]?.unknown ? '暂时不会，待讲解' : '未填写作答') }}</text></view>
+              <AttachmentStrip :images="reviewRound?.answers[exercise.id]?.images ?? []" readonly />
               <view class="reference"><text class="small-label">参考答案与解析</text><text class="answer-text">{{ exercise.answer }}</text><StudyText :text="exercise.analysis" /></view>
               <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :class="{ selected: reviewRound?.answers[exercise.id]?.rating === rating.value }" :disabled="Boolean(selectedHistory)" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ reviewRound?.answers[exercise.id]?.rating === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
               <button v-if="!selectedHistory" class="ask-link" @tap="ask(exercise.id)">没看懂解析？围绕这题问问<LumaIcon name="arrow-diagonal" :size="12" /></button>

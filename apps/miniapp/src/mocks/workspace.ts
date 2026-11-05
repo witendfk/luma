@@ -10,6 +10,8 @@ export interface PreviewRecord {
   id: string; title: string; text: string; type: 'question' | 'knowledge'; tags: string[];
   learnAll?: boolean; topics?: PreviewRecord[]; activeTopicId?: string; parentId?: string; exampleKey?: string; draft?: string;
   attachments?: LocalAttachment[]; recognition?: 'reading' | 'failed' | 'ready' | 'cancelled';
+  resume?: { scope: string; view: 'chat' | 'reader' | 'practice'; revision: number };
+  processes?: Record<string, { images: LocalAttachment[]; text: string; confirmed: boolean }>;
   version?: number; confirmedAt?: string | null; intent?: string;
   archivedAt: string | null; lastActiveAt: string; collected: boolean; note: string;
   reviewStatus: 'to_review' | 'reviewed'; lesson: boolean; practice: boolean;
@@ -67,7 +69,7 @@ export async function mockRequest<T>(opts: RequestOptions): Promise<T> {
       else if (opts.method === 'PUT') {
         if (body.title !== undefined) { if (!body.title.trim() || body.title.length > 60) throw new Error('名称须为 1–60 个字'); root.title = body.title.trim(); }
         if (body.archived !== undefined) root.archivedAt = body.archived ? new Date().toISOString() : null;
-        root.lastActiveAt = new Date().toISOString(); persist(); result = summary(root);
+        persist(); result = summary(root);
       } else result = { conversation: summary(root), subject: root.recognition && root.recognition !== 'ready' ? null : subject(row), progress: { stage: row.confirmedAt === null ? 'clarifying' : 'guiding' }, artifacts: [
         ...(row.lesson ? [{ id: 'preview-lesson', type: 'lesson', publishStatus: 'published', subjectRevisionId: subject(row).id }] : []),
         ...(row.practice ? [{ id: 'preview-practice', type: 'exercise_set', publishStatus: 'published', subjectRevisionId: subject(row).id }] : []),
@@ -145,3 +147,15 @@ export function saveTopicDraft(id: string, text: string): void { mutateRoot(id, 
 export function previewExampleKey(id: string): string { return previewRecords().find((row) => row.id === id)?.exampleKey ?? 'quadratic'; }
 
 export function planPreviewTopics(id: string): void { mutateRoot(id, (root) => { root.learnAll = true; }); }
+
+export function rememberPreviewLocation(scope: string, view: 'chat' | 'reader' | 'practice'): void {
+  const root = previewRoot(scope); if (!root) return;
+  mutateRoot(root.id, (row) => {
+    const topic = row.topics?.find((item) => item.id === scope) ?? row;
+    row.resume = { scope: topic.id, view, revision: topic.version ?? 1 };
+    row.lastActiveAt = topic.lastActiveAt = new Date().toISOString();
+  });
+}
+export function savePreviewProcess(scope: string, images: LocalAttachment[], text: string, confirmed: boolean): void {
+  mutateRoot(scope, (row) => { row.processes ??= {}; row.processes[String(row.version ?? 1)] = { images, text, confirmed }; });
+}
