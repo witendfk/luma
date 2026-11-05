@@ -1,16 +1,25 @@
-# Luma 本地联调
+# Luma 本地开发手册
 
-每完成一个环节，就同时检查页面、接口和数据库。先走通文字教学，再接真实 GPT，随后接图片与练习页面；不等全部功能写完才联调。
+**职责：说明怎么安装、启动、切换调试模式和排查故障。** 当前完成情况见 [进度](delivery/progress.md)，已验证结果见 [验证记录](delivery/verification.md)。命令均从仓库根目录执行。
 
-## 1 当前可以验证什么
+前置：Node.js ≥ 18.20、pnpm ≥ 9、微信开发者工具；本地集成另需 Docker/Colima 运行 PostgreSQL。
 
-2026-11-01：Next.js 开发服务、PostgreSQL、worker 和 uni-app 微信开发编译已实际启动。使用**小程序实际 API、Pinia store、SSE 解码器**连接真实本地服务，已验证：开发身份登录 → 新建对话 → 首题发送 → 核对 → 引导 → 追问 → 历史恢复 → 后台题组生成及轮询 → 退出清理。
+## 1 两种调试模式
 
-网络宿主 wx/uni 由测试脚本适配，教学内容使用明确开启的模拟模型。上述脚本验证不代表微信模拟器 UI、真机或真实 GPT 验收。图文配图、真实登录、拍照识别、正式阅读与练习页面仍待接入。
+| 模式 | 配置 | 启动范围 | 用途 |
+| --- | --- | --- | --- |
+| UI mock | 小程序开发环境 `VITE_UI_MOCK=true` | 仅小程序编译 | 页面/交互及本机恢复，不调用真实接口 |
+| 本地集成 | `VITE_UI_MOCK=false`，开发身份和模型 mock 按需打开 | API + 数据库 + worker + 小程序 | 页面到正式服务逻辑、数据库及任务验证 |
 
-登录页已按移动端原型还原，并在 ARM64 微信开发者工具中显示；实际点击验证了未勾选协议时拦截登录、登录帮助弹窗。新版登录页勾选后的完整登录流程仍需单独验收，真实微信换码与真机尚未验证。
+UI mock 配置在 `apps/miniapp/.env.local`，生产构建不启用。UI mock 中未覆盖操作不回退真实网络；不将演示数据写入正式学习记录。
 
-2026-11-02 页面进展：首页、侧栏、账号底部面板及对话页主体已按原型调整；模拟器已检查菜单开关和账号面板，实点示例题进入对话并完成核对确认，展示后续引导消息。当前优先页面还原，未新增后端能力；题目编辑、归档管理、阅读、练习与错题本等页面仍待完成。
+只看前端时：
+
+```bash
+pnpm dev:miniapp
+```
+
+文件变化未触发编译时可使用 `CHOKIDAR_USEPOLLING=true pnpm dev:miniapp`。切换开关后重启编译器，等待 `Build complete` 再在微信工具编译。
 
 ## 2 工具与导入
 
@@ -35,19 +44,20 @@ ARM64 微信开发者工具已安装，项目已导入。已注册个人小程�
 
 ```bash
 pnpm install
+cp apps/server/.env.example apps/server/.env
 pnpm db:generate
 pnpm db:up
 pnpm --filter @luma/server exec prisma migrate deploy
 ```
 
-`apps/server/.env` 保留数据库地址等配置，密钥仅放服务端。本轮已创建未跟踪的 `apps/server/.env.local`：
+`apps/server/.env` 保留数据库地址等配置，密钥仅放服务端。需要模型 mock 的本地集成时，在未跟踪的 `apps/server/.env.local` 配置：
 
 ```dotenv
 LUMA_DEV_FAKE_LOGIN=true
 LUMA_MOCK_AGENT=true
 ```
 
-同时已创建未跟踪的 `apps/miniapp/.env.local`：
+小程序 `apps/miniapp/.env.local` 配置：
 
 ```dotenv
 VITE_API_BASE=http://localhost:4000
@@ -77,23 +87,7 @@ pnpm dev:miniapp
 
 浏览器访问 `http://localhost:4000/api/health`，应返回 `ok: true` 和 `db: up`。在开发者工具点击编译；改动源码后由 uni-app 重新生成小程序文件。
 
-## 5 按环节验收
-
-已在模拟器点击验证的范围为：登录页部分操作、首页示例题进入对话、核对确认、侧栏开关与账号面板。下表其余步骤仍待逐项验收；逻辑层脚本通过不代替页面点击与真机验收。
-
-| 环节 | 页面操作 | 接口与可见结果 |
-| --- | --- | --- |
-| 登录 | 先验证未勾选拦截，再勾选协议并点击「微信登录」 | 开发模式使用测试身份；login、me 返回 200 并进入学习页。未勾选拦截已实点验证，勾选后的新版页面跳转待验收 |
-| 首题 | 输入「已知 f(x)=x²-2x+3，求最小值」并发送 | 创建会话、发送 turns；出现完整回复与待核对题目 |
-| 确认 | 点击「内容正确，开始学习」 | subjects 确认成功，再发 turns；核对卡消失，收到引导 |
-| 追问 | 连续发送两次思路或疑问 | 每次回复正常结束；数据库记录多轮消息 |
-| 恢复 | 返回首页，点击继续上次学习 | 恢复标题、题目与最近消息；有后台任务时继续查询 |
-| 停止 | 回复过程中点击停止本次生成 | cancel 接口取消运行；迟到回复不写入历史 |
-| 退出 | 退出账号 | 本地消息、题目和凭据清空 |
-
-模拟回复是固定的联调内容，无法用它判断数学教学质量。当前正文采用**校验后整段发送**，SSE 传输与等待事件保留；逐字展示后续独立验证。首页拍照入口暂有明确提示，尚未上传。
-
-## 6 可重复执行的检查
+## 5 自动检查
 
 ```bash
 pnpm test          # SDK 工具协议、复核布尔值、账号隔离、SSE 等自动回归
@@ -104,15 +98,15 @@ pnpm test:runtime # 真库检查取消、超时、中断、段落读取、并发
 
 后两个脚本用于当前模拟模型环境；`test:local` 创建带 `dev:smoke-` 前缀的独立测试账号和学习记录，便于检查；`test:runtime` 仅清理自己创建的唯一测试账号。它们不替代微信工具中的点击、公式显示和真机检查。
 
-## 7 接真实 GPT 与真机
+## 6 真实依赖调试
 
 真实模型联调时替换模型依赖：服务端设置 `OPENAI_API_KEY`、所选 `LUMA_MODEL_ID` 和必要的 `OPENAI_BASE_URL`，关闭 `LUMA_MOCK_AGENT`，重启 API 与 worker。先验证一题三轮引导和工具调用，再测材料生成；不把模拟通过记作真实模型通过。工具协议参考 [OpenAI 官方文档](https://developers.openai.com/api/docs/guides/function-calling)。
 
 手机里的 `localhost` 指手机本身，不能访问电脑。真机与电脑在同一网络时，将 `VITE_API_BASE` 换为电脑局域网地址，例如开发服务启动时打印的 Network 地址，重新编译；实际设备不允许 HTTP 或需要远程访问时，使用 HTTPS 测试域名及小程序后台合法域名配置。最终体验版必须验证电脑关闭后，线上 API、数据库与 worker 仍能正常工作。
 
-## 8 白屏与启动依赖排查
+## 7 故障排查
 
-- 出现 `module … is not defined` 时，先等 uni-app 输出 `Build complete`，检查报错文件是否真实存在；存在时可清除微信工具的“编译缓存”和“项目文件列表缓存”再重编译。不要直接清全部缓存或学生数据。2026-11-02 该操作与重启重建后已恢复，具体触发机制未确认。
+- 出现 `module … is not defined` 时，先等 uni-app 输出 `Build complete`，检查报错文件是否真实存在；存在时可清除微信工具的“编译缓存”和“项目文件列表缓存”再重编译。不要直接清全部缓存或学生数据。此处理曾恢复模块异常，但具体触发机制未确认。
 - `localhost:4000 … ERR_CONNECTION_REFUSED`：检查 `pnpm dev:server` 是否仍运行。健康接口 `db: down` 时，若使用 Colima，先 `colima start`，再 `pnpm db:up`；保留原数据库卷。
 - 页面可显示但生成一直等待：检查现有 `worker:dev` 进程。重启电脑或开发工具不会自动恢复 API、数据库和 worker。
 - `report-online.sh.wxgateway.com/SdkReport … ERR_TIMED_OUT` 属于微信工具上报请求；与业务 `/api` 请求分开排查，不能仅根据红字数量判断业务失败。
