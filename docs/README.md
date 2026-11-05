@@ -16,7 +16,7 @@
 | [delivery/plan.md](delivery/plan.md) | 下一步谁做什么、先后如何 | 任务、依赖、产出、完成条件及职责分工 | 已完成流水和功能定义 |
 | [delivery/progress.md](delivery/progress.md) | 现在做到哪里 | 当前模块状态、基线、差距及下一步 | 需求全文、架构方案 |
 | [delivery/verification.md](delivery/verification.md) | 实际验证过什么 | 环境、版本、操作、结果、限制和证据 | 新增需求、猜测完成状态 |
-| [delivery/release.md](delivery/release.md) | 怎样交给老师用 | 部署、平台配置、体验版上传和交付检查 | 当前开发进度 |
+| [delivery/release.md](delivery/release.md) | 怎样扫码独立使用 | 部署、平台配置、体验版上传和交付检查 | 当前开发进度 |
 | [development.md](development.md) | 本地怎样运行和排错 | 依赖、命令、开关、导入及故障排查 | 产品设计、历史验收结论 |
 
 ## 阅读顺序
