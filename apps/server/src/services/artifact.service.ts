@@ -20,6 +20,7 @@ export const artifactService = {
         version: artifact.version,
         publishStatus: artifact.publishStatus,
         subjectRevisionId: artifact.subjectRevisionId,
+        subjectId: artifact.subjectRevision.subjectId,
         subject: {
           text: (artifact.subjectRevision.content as { text?: string }).text ?? '',
           tags: artifact.subjectRevision.tags,
@@ -44,6 +45,7 @@ export const artifactService = {
         version: artifact.version,
         publishStatus: artifact.publishStatus,
         subjectRevisionId: artifact.subjectRevisionId,
+        subjectId: artifact.subjectRevision.subjectId,
         answersHidden: !includeAnswers,
         attemptId: activeAttempt?.id ?? null,
         exercises: artifact.exercises.map((ex) => ({

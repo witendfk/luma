@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { PreviewRecord } from '@/mocks/workspace';
+interface TopicRoot {
+  intent?: string; activeTopicId?: string; learnAll?: boolean;
+  topics?: Array<{ id: string; title: string; confirmedAt?: string | null; lesson?: unknown; practice?: unknown; messages?: unknown[]; started?: boolean }>;
+}
 import LumaIcon from './LumaIcon.vue';
-const props = defineProps<{ root: PreviewRecord; disabled?: boolean }>();
+const props = defineProps<{ root: TopicRoot; disabled?: boolean }>();
 const emit = defineEmits<{ (e: 'select', id: string): void; (e: 'all'): void }>();
 const open = ref(false);
 const topics = computed(() => props.root.topics ?? []);
@@ -13,7 +16,7 @@ function select(id: string): void { open.value = false; emit('select', id); }
 <template>
   <view class="topic-navigation">
     <button class="topic-current" :disabled="disabled" :class="{ disabled }" aria-label="切换当前学习内容" @tap="open = true"><view class="topic-copy"><text class="focus-label">{{ root.intent === 'knowledge' ? '正在理解' : root.intent === 'practice' ? '当前参考题' : '正在学习' }} · 第 {{ index + 1 }} {{ unit }} / 共 {{ topics.length }} {{ unit }}</text><text class="focus-title">{{ topics[index]?.title }}</text></view><text class="switch-label">切换</text></button>
-    <view v-if="open" class="topic-layer"><view class="topic-scrim" @tap="open = false" /><view class="topic-sheet"><view class="sheet-heading"><view><text class="sheet-title">{{ root.intent === 'knowledge' ? '想先理解哪一部分？' : '这次先看哪一道？' }}</text><text class="sheet-note">切换会保留各自的草稿和学习进度</text></view><button class="close" aria-label="关闭题目列表" @tap="open = false"><LumaIcon name="close" :size="18" /></button></view><scroll-view class="topic-list" scroll-y :show-scrollbar="false"><button v-for="(topic, i) in topics" :key="topic.id" class="topic-row" :class="{ selected: topic.id === root.activeTopicId }" @tap="select(topic.id)"><text class="topic-number">{{ String(i + 1).padStart(2, '0') }}</text><view class="row-copy"><text class="row-title">{{ topic.title }}</text><text class="row-status">{{ topic.confirmedAt ? topic.lesson || topic.practice || topic.messages.length ? '已开始 · 可继续' : '已核对' : '待核对' }}</text></view><text class="selected-dot">{{ topic.id === root.activeTopicId ? '●' : '' }}</text></button></scroll-view><button class="all-link" @tap="open = false; emit('all')">{{ root.learnAll ? '已安排逐项学习 · 继续当前内容' : '这些都想学，按顺序来' }}</button><text class="sheet-note bottom-note">每次只处理当前内容，切换不会自动生成讲解。</text></view></view>
+    <view v-if="open" class="topic-layer"><view class="topic-scrim" @tap="open = false" /><view class="topic-sheet"><view class="sheet-heading"><view><text class="sheet-title">{{ root.intent === 'knowledge' ? '想先理解哪一部分？' : '这次先看哪一道？' }}</text><text class="sheet-note">切换会保留各自的草稿和学习进度</text></view><button class="close" aria-label="关闭题目列表" @tap="open = false"><LumaIcon name="close" :size="18" /></button></view><scroll-view class="topic-list" scroll-y :show-scrollbar="false"><button v-for="(topic, i) in topics" :key="topic.id" class="topic-row" :disabled="disabled" :class="{ selected: topic.id === root.activeTopicId }" @tap="select(topic.id)"><text class="topic-number">{{ String(i + 1).padStart(2, '0') }}</text><view class="row-copy"><text class="row-title">{{ topic.title }}</text><text class="row-status">{{ topic.confirmedAt ? topic.lesson || topic.practice || (topic.started || topic.messages?.length) ? '已开始 · 可继续' : '已核对' : '待核对' }}</text></view><text class="selected-dot">{{ topic.id === root.activeTopicId ? '●' : '' }}</text></button></scroll-view><button class="all-link" :disabled="disabled" @tap="open = false; emit('all')">{{ root.learnAll ? '已安排逐项学习 · 继续当前内容' : '这些都想学，按顺序来' }}</button><text class="sheet-note bottom-note">每次只处理当前内容，切换不会自动生成讲解。</text></view></view>
   </view>
 </template>
 <style scoped>

@@ -2,6 +2,42 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { miniappSandbox, storageMock } from './helpers/miniapp';
 
+test('切题先保存草稿；保存失败保留原题，生成中不切换', async () => {
+  let focuses = 0;
+  const sandbox = miniappSandbox({ '@/api/conversations': {
+    saveProgress: async () => { throw new Error('草稿保存失败'); },
+    focusSubject: async () => { focuses += 1; },
+  } }, { uni: storageMock(), Error });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.activeSubjectId = 'first';
+  chat.subject = { id: 'r1', version: 1 }; chat.progress = { version: 0, draft: '' };
+  await assert.rejects(chat.switchSubject('second', '未保存思路'), /草稿保存失败/);
+  assert.equal(chat.activeSubjectId, 'first'); assert.equal(focuses, 0);
+  assert.equal(chat.switchingSubject, false);
+  chat.waitingJob = true;
+  await chat.switchSubject('second', '');
+  assert.equal(focuses, 0);
+  chat.$dispose();
+});
+
+test('切题响应迟到时不能覆盖同一会话重新打开后的状态', async () => {
+  let finish!: (value: any) => void;
+  const sandbox = miniappSandbox({ '@/api/conversations': {
+    focusSubject: () => new Promise((resolve) => { finish = resolve; }),
+  } }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.activeSubjectId = 'first';
+  const switching = chat.switchSubject('second', '');
+  await Promise.resolve();
+  chat.reset(); chat.currentId = 'c'; chat.activeSubjectId = 'reopened';
+  finish({ conversation: { activeSubjectId: 'second' }, subject: { id: 'late' }, subjects: [], artifacts: [] });
+  await switching;
+  assert.equal(chat.activeSubjectId, 'reopened'); assert.equal(chat.subject, null);
+  chat.$dispose();
+});
+
 test('修改题目期间禁止发送；旧刷新不能覆盖新版本，失败保留原对象', async () => {
   let resolveDetail!: (value: any) => void, resolveEdit!: (value: any) => void;
   let fail = false;
@@ -216,41 +252,36 @@ test('退出后迟到的登录结果不写入凭据，也不报告登录成功',
   auth.$dispose();
 });
 
-test('查看归档不恢复；发言恢复成功后再发送，恢复失败不发送', async () => {
-  for (const fails of [false, true]) {
-    const calls: string[] = [];
-    const row = { id: 'archived', title: '函数', archivedAt: '2026-11-01', lastActiveAt: '2026-11-01' };
-    const sandbox = miniappSandbox({
-      '@/api/conversations': {
-        getConversation: async () => ({ conversation: row, artifacts: [], subject: null }),
-        listMessages: async () => ({ items: [] }),
-        updateConversation: async () => { calls.push('restore'); if (fails) throw new Error('恢复失败'); return { ...row, archivedAt: null }; },
-      },
-      '@/utils/sse': { openTurnStream: () => { calls.push('stream'); return { abort() {} }; } },
-    }, { uni: { ...storageMock(), showToast() {} }, Error });
-    const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
-    const chat = sandbox.load('@/stores/conversation').useConversationStore();
-    await chat.open(row.id);
-    assert.deepEqual(calls, []);
-    assert.equal(chat.archivedAt, row.archivedAt);
-    await chat.send('为什么？');
-    assert.deepEqual(calls, fails ? ['restore'] : ['restore', 'stream']);
-    assert.equal(chat.archivedAt, fails ? row.archivedAt : null);
-    assert.equal(chat.messages.length, fails ? 0 : 1);
-    if (fails) assert.match(chat.error, /恢复失败/);
-    chat.$dispose();
-  }
+test('查看归档不恢复；发送不预先修改归档，恢复由服务端消息事务负责', async () => {
+  const calls: string[] = [];
+  const row = { id: 'archived', title: '函数', archivedAt: '2026-11-01', lastActiveAt: '2026-11-01' };
+  const sandbox = miniappSandbox({
+    '@/api/conversations': {
+      getConversation: async () => ({ conversation: row, artifacts: [], subject: null }),
+      listMessages: async () => ({ items: [] }),
+      updateConversation: async () => { calls.push('unexpected-restore'); },
+    },
+    '@/utils/sse': { openTurnStream: () => { calls.push('stream'); return { abort() {} }; } },
+  }, { uni: { ...storageMock(), showToast() {} }, Error });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  await chat.open(row.id);
+  assert.deepEqual(calls, []);
+  assert.equal(chat.archivedAt, row.archivedAt);
+  await chat.send('为什么？');
+  assert.deepEqual(calls, ['stream']);
+  assert.equal(chat.archivedAt, row.archivedAt); // client never claims success before server confirmation
+  chat.$dispose();
 });
 
-test('恢复期间切换会话，迟到结果不覆盖新会话或继续发送', async () => {
+test('创建会话期间切换页面，迟到结果不覆盖新会话或继续发送', async () => {
   let finish!: (value: any) => void, streams = 0;
   const sandbox = miniappSandbox({
-    '@/api/conversations': { updateConversation: () => new Promise((resolve) => { finish = resolve; }) },
+    '@/api/conversations': { createConversation: () => new Promise((resolve) => { finish = resolve; }) },
     '@/utils/sse': { openTurnStream: () => { streams += 1; return { abort() {} }; } },
   }, { uni: { ...storageMock(), showToast() {} }, Error });
   const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
   const chat = sandbox.load('@/stores/conversation').useConversationStore();
-  chat.currentId = 'old'; chat.archivedAt = 'today';
   const sending = chat.send('旧会话问题');
   chat.reset(); chat.currentId = 'new'; chat.title = '新会话';
   finish({ id: 'old', title: '旧标题', archivedAt: null });

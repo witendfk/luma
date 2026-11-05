@@ -6,6 +6,7 @@ import type { ExplicitAction } from '@luma/shared';
  */
 
 export interface TurnPolicy {
+  subjectId: string;
   stage: string;
   subjectRevisionId: string | null;
   subjectConfirmed: boolean;
@@ -25,13 +26,14 @@ export interface TurnPolicy {
 
 export async function buildPolicy(input: {
   conversationId: string;
+  subjectId: string;
   action?: ExplicitAction;
   focus?: { artifactId?: string; sectionId?: string; attemptId?: string; exerciseId?: string };
 }): Promise<TurnPolicy> {
   const [progress, subject] = await Promise.all([
-    db.learningProgress.findUnique({ where: { conversationId: input.conversationId } }),
+    db.learningProgress.findUnique({ where: { subjectId: input.subjectId } }),
     db.subjectRevision.findFirst({
-      where: { conversationId: input.conversationId },
+      where: { subjectId: input.subjectId },
       orderBy: { version: 'desc' },
     }),
   ]);
@@ -44,6 +46,7 @@ export async function buildPolicy(input: {
     : ['readLearningContext', 'recognizeMaterial'];
 
   return {
+    subjectId: input.subjectId,
     stage,
     subjectRevisionId: subject?.id ?? null,
     subjectConfirmed: confirmed,

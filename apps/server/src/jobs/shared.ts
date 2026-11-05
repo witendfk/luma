@@ -65,7 +65,7 @@ export async function publishArtifact(
     if (claimed.count !== 1) throw new JobLeaseLostError();
 
     const current = await tx.subjectRevision.findFirst({
-      where: { conversationId: job.conversationId },
+      where: { subjectId: job.subjectId },
       orderBy: { version: 'desc' },
       select: { id: true },
     });

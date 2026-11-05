@@ -106,6 +106,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       }
       const policy = await buildPolicy({
         conversationId: run.conversationId,
+        subjectId: run.subjectId,
         action: taskFrame.action,
         focus: taskFrame.focus,
       });
@@ -130,7 +131,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
           }));
           for (const job of outcome.jobs) {
             if (job.artifactId) {
-              emit?.({ type: 'artifact.updated', runId, artifactId: job.artifactId, artifactType: job.artifactType as 'lesson' | 'exercise_set', status: 'generating' });
+              emit?.({ type: 'artifact.updated', runId, subjectId: run.subjectId, subjectRevisionId: run.subjectRevisionId!, artifactId: job.artifactId, artifactType: job.artifactType as 'lesson' | 'exercise_set', status: 'generating' });
             }
             emit?.({ type: 'job.created', runId, jobId: job.jobId, artifactId: job.artifactId, artifactType: (job.artifactType as 'lesson' | 'exercise_set') ?? null });
           }
@@ -221,7 +222,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         await withActiveRun(runId, owner, async (tx) => {
           await tx.message.create({
             data: {
-              conversationId: run.conversationId, role: 'assistant',
+              conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
               content: { blocks } as Prisma.InputJsonValue, runId, status: 'complete',
               subjectRevisionId: run.subjectRevisionId
             },
@@ -388,7 +389,7 @@ function mergeGoalCompletions(
   }
 }
 
-async function updateStage(tx: Prisma.TransactionClient, conversationId: string, policy: { stage: string; subjectConfirmed: boolean }, taskFrame: TaskFrame): Promise<void> {
+async function updateStage(tx: Prisma.TransactionClient, conversationId: string, policy: { stage: string; subjectConfirmed: boolean; subjectId: string }, taskFrame: TaskFrame): Promise<void> {
   let stage: string = policy.stage;
   if (taskFrame.goals.some((g) => g.type === 'lesson' && g.completedArtifactId) || taskFrame.kind === 'solution') {
     stage = 'explaining';
@@ -398,9 +399,9 @@ async function updateStage(tx: Prisma.TransactionClient, conversationId: string,
     stage = 'guiding';
   }
   await tx.learningProgress.upsert({
-    where: { conversationId },
-    update: { stage: stage as never },
-    create: { conversationId, stage: stage as never },
+    where: { subjectId: policy.subjectId },
+    update: { version: { increment: 1 }, stage: stage as never },
+    create: { conversationId, subjectId: policy.subjectId, stage: stage as never },
   });
 }
 

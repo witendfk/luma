@@ -37,6 +37,8 @@ export const ToolFinishedEvent = z.object({
 
 export const ArtifactUpdatedEvent = z.object({
   type: z.literal('artifact.updated'),
+  subjectId: z.string(),
+  subjectRevisionId: z.string(),
   runId: RunId,
   artifactId: z.string(),
   artifactType: z.enum([ArtifactType.lesson, ArtifactType.exercise_set]),
@@ -71,6 +73,7 @@ export const JobCreatedEvent = z.object({
 /** 学习对象已保存/更新（设计文档 §10 编排补充契约） */
 export const SubjectUpdatedEvent = z.object({
   type: z.literal('subject.updated'),
+  subjectId: z.string(),
   runId: RunId,
   subjectRevisionId: z.string(),
   version: z.number().int(),

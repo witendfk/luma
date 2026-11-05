@@ -6,18 +6,18 @@
 
 ## 1 数据结构
 
-以下为目标逻辑结构；当前 Prisma 与共享契约是既有单对象实现基线，多对象差异见 §4，本文不表示迁移已经实施。
+B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/上传及页面能力见实施计划，不能仅凭路由存在判为完成。
 
 | 实体 | 关键字段及关系 |
 | --- | --- |
 | `User` | 账号标识、微信身份关联、昵称、头像 |
 | `AuthSession` | 用户、会话凭据摘要、过期时间、撤销时间 |
-| `Conversation` | 用户、标题、归档时间、最近学习时间 |
-| `LearningSubject`（目标补充） | 会话、稳定对象标识、题目或知识点类型、当前版本及排序 |
+| `Conversation` | 用户、标题、归档时间、最近学习时间、当前对象、逐项学习意愿 |
+| `LearningSubject` | 会话、稳定对象标识和排序；类型、内容及确认状态在对象版本中 |
 | `SubjectRevision` | 会话、对象标识、版本号、题目或知识点类型、内容、标签、小问、确认时间、原图引用 |
 | `ProcessTranscript` | 会话、作答图片、转写步骤、学生修正、逐步确认状态及来源版本 |
 | `Message` | 会话、对象标识、角色、结构化内容、来源版本、请求标识、完成状态、时间 |
-| `LearningProgress` | 会话、对象标识、教学阶段、当前版本、当前讲义及段落、练习轮次与追问题目 |
+| `LearningProgress` | 会话、对象标识、教学阶段、并发版本、输入草稿、恢复目的地、当前来源版本、当前讲义及段落、练习轮次与追问题目 |
 | `Artifact` | 会话、来源版本、讲义或题组类型、材料版本、结构化内容、发布状态 |
 | `Exercise` | 题组、题序、题干、考点、难度、目的、参考答案与解析 |
 | `PracticeAttempt` | 题组、用户、所选题目、阶段、当前题号、提交与完成时间 |
@@ -61,11 +61,16 @@
 | `GET /auth/me`、`POST /auth/logout` | 当前账号、退出 |
 | `POST /uploads`、`POST /uploads/:id/complete` | 获取受限上传地址，确认文件有效并可引用 |
 | `GET /conversations`、`POST /conversations` | 最近或归档列表、创建会话 |
-| `PATCH /conversations/:id` | 修改名称、归档、恢复 |
+| `PUT /conversations/:id`（兼容 PATCH） | 修改名称、归档、恢复 |
 | `GET /conversations/:id` | 当前题目、进度和材料概览 |
 | `GET /conversations/:id/messages` | 分页读取消息 |
 | `POST /conversations/:id/turns` | 消息或学习操作，返回流式事件 |
-| `POST /conversations/:id/subjects` | 更新或确认学习对象版本 |
+| `POST /conversations/:id/subjects` | 创建独立对象；旧 action=update/confirm 暂保留给 UI mock 适配 |
+| `PUT /conversations/:id/focus` | 切换 subjectId，可保存 learnAll；只恢复不生成 |
+| `POST /conversations/:id/subjects/:subjectId/revisions` | expectedRevision 校验后新增对象版本 |
+| `POST /conversations/:id/subjects/:subjectId/confirm` | 确认指定版本；重复确认幂等 |
+| `PUT /conversations/:id/subjects/:subjectId/progress` | 保存 destination/draft/artifact/section/attempt/exercise；校验 expectedRevision + expectedVersion |
+| `GET /artifacts/:id/attempts` | 本人该题组的历史轮次，不创建轮次、不揭示答案 |
 | `POST /conversations/:id/process-transcripts/:transcriptId/confirm` | 确认或修正解题过程步骤 |
 | `GET /artifacts/:id` | 按权限与当前阶段返回讲义或题组 |
 | `GET /jobs/:id`、`POST /jobs/:id/retry` | 任务状态、重试 |
@@ -76,8 +81,8 @@
 | `PUT /practice-attempts/:id/answers/:exerciseId` | 保存草稿、图片、提示记录或自评 |
 | `POST /practice-attempts/:id/submit` | 提交作答，进入自评 |
 | `POST /practice-attempts/:id/complete` | 校验自评齐全并完成本轮 |
-| `GET /collections`、`PUT /collections/:conversationId` | 现有单对象路由；目标按学习对象定位收藏，调整方案见 §4 |
-| `DELETE /collections/:conversationId` | 现有单对象路由；取消对象收藏后保留会话及历史，调整方案见 §4 |
+| `GET /collections`、`GET/PUT /collections/:subjectId` | 对象级查询/保存；支持 view=all/question/knowledge、keyword、reviewStatus |
+| `DELETE /collections/:subjectId` | 软取消收藏，保留笔记、复习状态、材料和练习 |
 | `POST /feedback` | 记录模型内容错误反馈 |
 
 对话在微信目标端通过 wx.request 的 enableChunked 与 onChunkReceived 接收 `text/event-stream`，在 uni-app 平台适配层实现增量 UTF-8 解码和事件拼接，处理跨块字符及半条事件。事件类型为 `run.started`、`text.delta`、`tool.started`、`tool.finished`、`artifact.updated`、`run.completed`、`run.failed`、`run.cancelled`。服务端代理关闭响应缓冲；真机需验证首段、停止及断线恢复。只返回操作说明和结果，不返回模型内部推理。
@@ -86,7 +91,7 @@
 
 断线后通过会话和任务接口重新拉取状态，不重放原请求。材料任务在页面可见时每 2 秒查询一次，完成、失败或离开后停止轮询；返回时立即查询。
 
-共享事件契约包括：`subject.updated` 返回已保存的题目版本及核对状态；`job.created` 返回可查询的任务引用；`run.waiting` 区分等待学生与等待材料，前者结束自动执行，后者仅结束当前流并保留后续决策；运行状态查询返回目标进度与新增消息。运行失败显式重试携带新的 `requestId` 及 `retryOfRunId`。这些事件已在共享契约基线中定义，多对象标识与真实流式细节仍需按 §4 对齐。显式重试复用原用户消息和经过验证的输入；修改内容应发送新消息，不伪装成重试。重复请求的已完成结果可按存储内容重放，运行中仅返回已有运行引用，不再启动一次模型调用。
+共享事件契约包括：`subject.updated` 返回已保存的题目版本及核对状态；`job.created` 返回可查询的任务引用；`run.waiting` 区分等待学生与等待材料，前者结束自动执行，后者仅结束当前流并保留后续决策；运行状态查询返回目标进度与新增消息。运行失败显式重试携带新的 `requestId` 及 `retryOfRunId`。这些事件已在共享契约基线中定义，subject.updated/artifact.updated 已包含稳定 subjectId 和 subjectRevisionId；真实正文流仍归 B02。显式重试复用原用户消息和经过验证的输入；修改内容应发送新消息，不伪装成重试。重复请求的已完成结果可按存储内容重放，运行中仅返回已有运行引用，不再启动一次模型调用。
 
 错误返回 `code`、用户可读的 `message`、`retryable` 和请求引用。重点区分未登录、无权限、版本已更新、会话忙碌、格式错误、超限、模型不可用及生成中断。
 
@@ -104,27 +109,14 @@
 - 退出使登录态失效，清除页面内存与该账号本地草稿缓存；已同步服务端的数据保留。
 - 服务端存储只返回必要字段；运行日志记录引用、错误和消耗，避免复制原图、密钥和完整学生内容。
 
-## 4 多对象契约对齐
+## 4 B01 已实施约定与后续边界
 
-已确认的产品和前端以“会话 → 学习对象 → 对象版本 → 材料/练习轮次”定位；正式服务仍有会话级单对象约束，接入前需统一修订。
-
-| 位置 | 既有实现基线 | 目标约束 |
-| --- | --- | --- |
-| 学习对象 | 会话下的 `SubjectRevision`，版本会话级唯一 | 增加稳定对象标识，版本在对象内递增；小问仍属于同一题 |
-| 学习进度 | 每会话一条 `LearningProgress` | 各对象独立进度，另存会话当前焦点与最近有效续学位置 |
-| 消息及生成 | 会话和版本引用 | 明确对象、版本及局部追问引用；迟到结果不串题 |
-| 收藏与笔记 | 用户和会话唯一 | 用户和对象唯一；一段多题对话可分别收藏及记笔记 |
-| 查询与操作 | 部分路由只传会话 ID | 共享请求与响应补对象引用；已有轮次/材料标识也须验证对应对象 |
-| 旧记录 | 单对象会话 | 迁移为该会话的首个对象，原材料、收藏及轮次关系保留 |
-
-目标路由、页面动作和迁移原则已在 [服务端评审 §4](backend-review.md#4-页面动作与服务契约映射) 确定。B01 实施时将目标字段落实为共享 Zod schema 与 Prisma 迁移，再替换本节既有单对象接口基线；当前尚未修改代码。不得只在前端增加对象 ID 而让服务端继续按整个会话覆盖。
-
-## 5 本轮已确定的接入约束
-
-- 本地微信开发者工具与开发身份可联调正式业务接口；真实微信换码和线上合法域名不作为开发启动条件。
-- TurnRequest 补稳定 subjectId 和结构化焦点；对象相关事件补对象与版本，运行事件按 runId 定位。
-- 练习响应采用服务端现有 `exercises[].myAnswer` 结构作为统一基线，进入共享 schema；review/summary 才含参考解析，不再保留前端虚构的顶层 answers 数组。
-- 开始/重做携 requestId，明确重做可携 redoOfAttemptId；继续练习只读指定轮次。补按题组查询轮次及保存对象学习位置，不以重开轮次完成导航。
-- 收藏按用户与对象唯一，增加可恢复的收藏状态；取消收藏保留笔记和复习记录；详情和过滤接口按对象返回材料。
-- 对话管理接受小程序现用 PUT；归档/恢复/重命名不更新学习时间，发消息时服务端恢复归档，避免客户端两次请求的不一致。
-- 目标迁移按旧会话建立首对象并保留原关联；实现完成后将实际 schema、路由与本文件同步，禁止以评审的目标契约冒充已提供接口。
+- 会话详情返回 `subjects[]`、当前 `subject`（版本）、`progress`、当前对象材料和 `activeRun`。`SubjectView.id` 是版本 ID，`subjectId` 是稳定对象 ID；禁止混用。
+- 消息按 `subjectId` 筛选，省略时取当前焦点；发送带 `subjectId` 与 `expectedRevision`。与当前焦点不符的迟到输入被拒绝。
+- 修改题干只增加当前对象版本并清除该对象的材料定位；旧材料和轮次继续保留。后台发布及运行保护按来源对象内的最新版本检查，不按整段会话最大版本检查。
+- 学习进度并发版本独立于题干版本。材料/章节/轮次/题号必须属于该版本；损坏或过期定位在读取时回退对话入口，不以 GET 改写历史。
+- `PracticeAttempt` 共享 DTO 使用 `exercises[].myAnswer`，无顶层 answers；历史接口已提供。开始/重做的 requestId 和 redoOfAttemptId 尚待 B05。
+- 取消收藏记录 `removedAt`，重新收藏复用原行。列表只展示未取消项，详情可读回保留的笔记。
+- 归档/恢复/重命名不更新学习时间；真实新消息在创建运行事务内取消归档，前端不预先发恢复请求。
+- 迁移 `20261105090000_learning_subjects` 为每个旧会话建立首对象，保留所有旧字段和既有材料/练习；隔离 schema 的旧结构+旧数据迁移验证已通过。本地开发库已应用，其他环境需执行 migrate deploy，不使用 reset。
+- UI mock 保留前端示例行为；正式小程序对话已接焦点与草稿接口。阅读/练习页面定位接线、首页精准续学、错题本完整正式数据接入依 B04～B06 实施；图片识别建多对象依 B03。

@@ -15,7 +15,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "test:local": "tsx scripts/local-smoke.ts",
-    "test:runtime": "tsx scripts/runtime-check.ts"
+    "test:runtime": "tsx scripts/runtime-check.ts",
+    "test:migration": "tsx scripts/migration-check.ts",
+    "test:subjects": "tsx scripts/subjects-check.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",

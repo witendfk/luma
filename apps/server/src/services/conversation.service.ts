@@ -1,5 +1,7 @@
 import { db } from '../lib/db';
-import { invalidFormat, notFound } from '../lib/errors';
+import { ApiError, invalidFormat, notFound } from '../lib/errors';
+import { resolveSubject } from './subject-context';
+import { validateFocus } from './focus';
 import { createConversationTitle, restoreLegacyTitle } from '../lib/conversation-title';
 
 /** 会话与消息（FR-02 / FR-10 / 设计文档 §10）：真实实现 */
@@ -69,33 +71,16 @@ export const conversationService = {
       input.title?.trim() ||
       createConversationTitle(input.initialText ?? '');
 
-    const conversation = await db.conversation.create({
-      data: {
-        userId,
-        title,
-        subjectRevisions: input.initialText
-          ? {
-              create: {
-                version: 1,
-                type: subjectType,
-                content: { text: input.initialText, intent: input.intent ?? subjectType },
-                tags: [],
-              },
-            }
-          : undefined,
-        progress: {
-          create: { stage: 'clarifying' },
-        },
-      },
-      include: { subjectRevisions: { orderBy: { version: 'desc' }, take: 1 }, progress: true },
+    const conversation = await db.$transaction(async (tx) => {
+      const row = await tx.conversation.create({ data: { userId, title } });
+      const subject = await tx.learningSubject.create({ data: { conversationId: row.id, order: 0 } });
+      const revision = input.initialText ? await tx.subjectRevision.create({ data: {
+        conversationId: row.id, subjectId: subject.id, version: 1, type: subjectType,
+        content: { text: input.initialText, intent: input.intent ?? subjectType }, tags: [],
+      } }) : null;
+      await tx.learningProgress.create({ data: { conversationId: row.id, subjectId: subject.id, subjectRevisionId: revision?.id } });
+      return tx.conversation.update({ where: { id: row.id }, data: { activeSubjectId: subject.id } });
     });
-
-    if (conversation.subjectRevisions[0]) {
-      await db.learningProgress.update({
-        where: { conversationId: conversation.id },
-        data: { subjectRevisionId: conversation.subjectRevisions[0].id },
-      });
-    }
     return {
       id: conversation.id,
       title: conversation.title,
@@ -106,36 +91,51 @@ export const conversationService = {
 
   /** GET /conversations/:id —— 当前题目、进度和材料概览（设计文档 §10） */
   async get(userId: string, conversationId: string) {
-    const conversation = await this.getOwned(userId, conversationId);
-    const [progress, subject, artifacts, activeRun] = await Promise.all([
-      db.learningProgress.findUnique({ where: { conversationId } }),
-      db.subjectRevision.findFirst({ where: { conversationId }, orderBy: { version: 'desc' } }),
-      db.artifact.findMany({
-        where: { conversationId },
-        orderBy: [{ updatedAt: 'desc' }],
-        select: {
-          id: true,
-          type: true,
-          version: true,
-          publishStatus: true,
-          subjectRevisionId: true,
-          jobId: true,
-        },
-      }),
-      db.agentRun.findFirst({
-        where: { conversationId, status: { in: ['running', 'waiting_job'] } },
-        orderBy: { startedAt: 'desc' }, select: { id: true, status: true },
-      }),
-    ]);
-    return { conversation, progress, subject, artifacts, activeRun };
+    await this.getOwned(userId, conversationId);
+    return db.$transaction(async (tx) => {
+      const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: conversationId } });
+      const objects = await tx.learningSubject.findMany({
+        where: { conversationId }, orderBy: { order: 'asc' },
+        include: { revisions: { orderBy: { version: 'desc' }, take: 1 }, progress: true, collections: { where: { userId, removedAt: null }, select: { id: true } } },
+      });
+      const subjects = await Promise.all(objects.map(async ({ revisions, collections, ...row }) => {
+        const revision = revisions[0] ?? null;
+        let progress = row.progress;
+        if (progress) {
+          let valid = progress.subjectRevisionId === (revision?.id ?? null);
+          try {
+            if (valid && revision) await validateFocus(tx, userId, conversationId, revision.id, {
+              artifactId: progress.currentArtifactId ?? undefined, sectionId: progress.currentSectionId ?? undefined,
+              attemptId: progress.currentAttemptId ?? undefined, exerciseId: progress.currentExerciseId ?? undefined,
+            });
+          } catch (error) {
+            if (!(error instanceof ApiError)) throw error;
+            valid = false;
+          }
+          // Old/damaged navigation pointers fall back to chat. A GET never rewrites history.
+          if (!valid) progress = { ...progress, subjectRevisionId: revision?.id ?? null,
+            stage: revision?.confirmedAt ? 'guiding' : 'clarifying', destination: 'chat',
+            currentArtifactId: null, currentSectionId: null, currentAttemptId: null, currentExerciseId: null };
+        }
+        return { id: row.id, order: row.order, revision, progress, collected: collections.length > 0 };
+      }));
+      const active = subjects.find((row) => row.id === conversation.activeSubjectId);
+      const artifacts = active ? await tx.artifact.findMany({
+        where: { conversationId, subjectRevision: { subjectId: active.id } }, orderBy: { updatedAt: 'desc' },
+        select: { id: true, type: true, version: true, publishStatus: true, subjectRevisionId: true, jobId: true },
+      }) : [];
+      const activeRun = await tx.agentRun.findFirst({
+        where: { conversationId, status: { in: ['running', 'waiting_job'] } }, orderBy: { startedAt: 'desc' }, select: { id: true, status: true },
+      });
+      return { conversation, subjects, subject: active?.revision ?? null, progress: active?.progress ?? null,
+        artifacts: artifacts.map((row) => ({ ...row, subjectId: active!.id })), activeRun };
+    }, { isolationLevel: 'RepeatableRead' });
   },
 
-  /** FR-10：重命名、归档、恢复；恢复/重命名都算学习活动，刷新排序 */
+  /** FR-10：重命名、归档、恢复；管理操作不改变最近学习时间 */
   async update(userId: string, conversationId: string, input: { title?: string; archived?: boolean }) {
     const conversation = await this.getOwned(userId, conversationId);
-    const data: { title?: string; archivedAt?: Date | null; lastActiveAt: Date } = {
-      lastActiveAt: new Date(),
-    };
+    const data: { title?: string; archivedAt?: Date | null } = {};
     if (input.title !== undefined) {
       const t = input.title.trim();
       if (!t) throw invalidFormat('标题不能为空');
@@ -148,9 +148,10 @@ export const conversationService = {
   },
 
   /** FR-10：消息分页（游标往前翻），按时间正序返回 */
-  async messages(userId: string, conversationId: string, opts: { cursor?: string; limit: number }) {
+  async messages(userId: string, conversationId: string, opts: { cursor?: string; limit: number; subjectId?: string }) {
     await this.getOwned(userId, conversationId);
-    const where: Record<string, unknown> = { conversationId };
+    const subject = await resolveSubject(db, conversationId, opts.subjectId);
+    const where: Record<string, unknown> = { conversationId, subjectId: subject.id };
     if (opts.cursor) where.id = { lt: opts.cursor };
 
     const rows = await db.message.findMany({

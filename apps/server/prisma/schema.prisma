@@ -1,4 +1,4 @@
-// Luma 数据模型 —— 对应 [设计文档](../../../设计文档.md) §9。
+// Luma 数据模型 —— 对应 docs/design/data-api.md。
 // 字段命名与文档术语一致；业务约束（版本唯一、收藏唯一、轮次+题目唯一等）见文件末尾。
 
 generator client {
@@ -109,7 +109,7 @@ model AuthSession {
   @@index([userId])
 }
 
-/// 会话：一次围绕一题或一个知识点的学习（FR-02 / FR-10）
+/// 会话容纳多个独立学习对象；activeSubjectId 仅记录当前焦点。
 model Conversation {
   id           String    @id @default(cuid())
   userId       String
@@ -119,24 +119,48 @@ model Conversation {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  activeSubjectId    String?
+  learnAll           Boolean             @default(false)
+  activeSubject      LearningSubject?    @relation("ActiveSubject", fields: [activeSubjectId], references: [id], onDelete: SetNull)
+  subjects           LearningSubject[]   @relation("ConversationSubjects")
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   subjectRevisions   SubjectRevision[]
   processTranscripts ProcessTranscript[]
   messages           Message[]
-  progress           LearningProgress?
+  progress           LearningProgress[]
   artifacts          Artifact[]
   runs               AgentRun[]
   generationJobs     GenerationJob[]
-  collection         CollectionEntry?
+  collections        CollectionEntry[]
 
   @@index([userId, lastActiveAt])
   @@index([userId, archivedAt])
+}
+
+/// 独立题目/知识范围的稳定身份；编辑只增加 revision，不更换 subjectId。
+model LearningSubject {
+  id             String @id @default(cuid())
+  conversationId String
+  order          Int
+  createdAt      DateTime @default(now())
+  conversation Conversation @relation("ConversationSubjects", fields: [conversationId], references: [id], onDelete: Cascade)
+  activeIn     Conversation[] @relation("ActiveSubject")
+  revisions    SubjectRevision[]
+  progress     LearningProgress?
+  messages     Message[]
+  collections  CollectionEntry[]
+  runs         AgentRun[]
+  jobs         GenerationJob[]
+
+  @@unique([conversationId, order])
 }
 
 /// 学习对象版本（设计文档 §3.1 / §9）：题目更新创建新版本，旧材料继续指向旧版本
 model SubjectRevision {
   id                     String      @id @default(cuid())
   conversationId         String
+  subjectId              String
+  subject                LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   version                Int
   type                   SubjectType
   /// 题干或知识点内容（结构化 JSON：文本、LaTeX、图形条件、澄清范围）
@@ -160,7 +184,7 @@ model SubjectRevision {
   jobs             GenerationJob[]
   progress         LearningProgress[]
 
-  @@unique([conversationId, version])
+  @@unique([subjectId, version])
 }
 
 /// 解题过程转写：逐步确认后才作纠错依据（FR-04 / 设计文档 §3.1）
@@ -189,6 +213,8 @@ model ProcessTranscript {
 model Message {
   id                String        @id @default(cuid())
   conversationId    String
+  subjectId         String
+  subject           LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   role              MessageRole
   /// 结构化内容块（文本 / 核对卡 / 成果引用 / 失败说明）
   content           Json
@@ -207,10 +233,15 @@ model Message {
   @@index([conversationId, createdAt])
 }
 
-/// 学习进度：每会话一条（设计文档 §7.2）
+/// 每个学习对象一条进度；独立保存阅读/练习定位及输入草稿。
 model LearningProgress {
   id                String        @id @default(cuid())
-  conversationId    String        @unique
+  conversationId    String
+  subjectId         String        @unique
+  subject           LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  version           Int           @default(0)
+  destination       String        @default("chat")
+  draft             String        @default("")
   stage             TeachingStage @default(clarifying)
   subjectRevisionId String?
   currentArtifactId String?       @unique
@@ -310,11 +341,14 @@ model PracticeAnswer {
   @@unique([attemptId, exerciseId])
 }
 
-/// 错题收藏：(用户, 会话) 唯一；重复保存恢复或更新原记录（FR-09）
+/// 对象级收藏；软取消保留笔记和复习状态。
 model CollectionEntry {
   id             String       @id @default(cuid())
   userId         String
-  conversationId String       @unique
+  conversationId String
+  subjectId      String
+  subject        LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  removedAt      DateTime?
   note           String?
   reviewStatus   ReviewStatus @default(to_review)
   collectedAt    DateTime     @default(now())
@@ -323,7 +357,7 @@ model CollectionEntry {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, conversationId])
+  @@unique([userId, subjectId])
   @@index([userId, reviewStatus])
 }
 
@@ -346,6 +380,8 @@ model Attachment {
 /// 一次 Agent 运行（设计文档 §4.3 / §4.11 / §9.1）：任务记录、协议快照、分项计数与租约
 model AgentRun {
   id                String    @id @default(cuid())
+  subjectId         String
+  subject           LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   conversationId    String
   subjectRevisionId String?
   requestId         String
@@ -418,6 +454,8 @@ model GenerationJob {
   runId             String?
   /// lesson | exercise_set | illustration
   type              String
+  subjectId         String
+  subject           LearningSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   conversationId    String
   subjectRevisionId String?
   status            JobStatus @default(queued)

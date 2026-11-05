@@ -92,10 +92,14 @@ pnpm --filter @luma/server worker:dev
 
 ```bash
 # 终端 3：小程序开发编译，保持运行以增量更新
-pnpm dev:miniapp
+VITE_UI_MOCK=false CHOKIDAR_USEPOLLING=true pnpm dev:miniapp
 ```
 
 浏览器访问 `http://localhost:4000/api/health`，应返回 `ok: true` 和 `db: up`。在开发者工具点击编译；改动源码后由 uni-app 重新生成小程序文件。
+
+上面的终端 3 命令显式使用正式接口，优先于 `.env.local` 中的 UI mock 设置。若编译器未响应源码变更，重启该命令，看到 `Build complete` 后再编译小程序。API 与非 watch worker 的代码变更也要确认已加载；worker 可使用上面的 watch 命令。
+
+需要双题点击样例时，API 开启开发身份后运行 `pnpm seed:demo`。它在 `dev:local-student` 账号下新增标题为「B01 联调 · 两道题独立学习」的记录，每次执行都会新建；不会启动时自动插入，也不代表图片识别。
 
 ## 5 自动检查
 
@@ -104,9 +108,11 @@ pnpm test          # SDK 工具协议、复核布尔值、账号隔离、SSE 等
 pnpm typecheck    # 前后端及共享类型
 pnpm test:local   # 服务端、数据库、worker 已启动时，验证实际小程序逻辑到真实 HTTP
 pnpm test:runtime # 真库检查取消、超时、中断、段落读取、并发草稿、只读历史、材料重试
+pnpm test:migration # 独立 schema 验证实际旧数据迁移，不重置本地数据库
+pnpm test:subjects  # 真库检查逐题版本/进度/来源、权限、收藏及导航恢复
 ```
 
-后两个脚本用于当前模拟模型环境；`test:local` 创建带 `dev:smoke-` 前缀的独立测试账号和学习记录，便于检查；`test:runtime` 仅清理自己创建的唯一测试账号。它们不替代微信工具中的点击、公式显示和真机检查。
+集成脚本用于当前模拟模型环境；`test:local` 创建带 `dev:smoke-` 前缀的独立测试账号和学习记录，便于检查；`test:runtime`、`test:subjects` 仅清理自己创建的唯一测试账号，`test:migration` 清理自己的隔离 schema。它们不替代微信工具中的点击、公式显示和真机检查。
 
 ## 6 真实依赖调试
 

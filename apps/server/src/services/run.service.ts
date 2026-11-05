@@ -12,6 +12,8 @@ import { userTextMessage } from '../agent/protocol';
 import { PROMPT_VERSION } from '../agent/prompts';
 import type { TaskFrame, TaskFrameGoal } from '../agent/types';
 import { conversationService } from './conversation.service';
+import { resolveSubject, latestRevision } from './subject-context';
+import { validateFocus } from './focus';
 import { createConversationTitle } from '../lib/conversation-title';
 
 /**
@@ -45,24 +47,22 @@ export const runService = {
         throw invalidFormat('消息不能为空');
       }
 
-      let subject = await tx.subjectRevision.findFirst({
-        where: { conversationId },
-        orderBy: { version: 'desc' },
-      });
-
-      if (input.expectedRevision !== undefined && subject && input.expectedRevision !== subject.version) throw revisionConflict();
+      const object = await resolveSubject(tx, conversationId, input.subjectId);
+      const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: conversationId } });
+      if (conversation.activeSubjectId !== object.id) throw revisionConflict('当前题目已切换，请刷新后重试');
+      let subject = await latestRevision(tx, object.id);
+      if (input.expectedRevision !== undefined && input.expectedRevision !== subject?.version) throw revisionConflict();
       if (!subject && input.text?.trim()) {
         subject = await tx.subjectRevision.create({
-          data: { conversationId, version: 1, type: 'question', content: { text: input.text.trim() }, tags: [] },
+          data: { conversationId, subjectId: object.id, version: 1, type: 'question', content: { text: input.text.trim() }, tags: [] },
         });
-        await tx.learningProgress.upsert({
-          where: { conversationId }, update: { subjectRevisionId: subject.id, stage: 'clarifying' },
-          create: { conversationId, subjectRevisionId: subject.id, stage: 'clarifying' },
-        });
+        await tx.learningProgress.update({ where: { subjectId: object.id }, data: { subjectRevisionId: subject.id, stage: 'clarifying', version: { increment: 1 } } });
         await tx.conversation.updateMany({ where: { id: conversationId, title: '新对话' }, data: { title: createConversationTitle(input.text) } });
       }
+      if (subject) await validateFocus(tx, userId, conversationId, subject.id, input);
+      else if (input.artifactId || input.attemptId || input.exerciseId || input.sectionId) throw invalidFormat('请先提供学习内容');
       const recent = await tx.message.findMany({
-        where: { conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 12,
+        where: { conversationId, subjectId: object.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 12,
       });
       const history = recent.reverse().map((m) => ({ role: m.role, content: textOf(m.content).slice(0, 6000) })).filter((m) => m.content);
 
@@ -77,7 +77,7 @@ export const runService = {
       });
       if (!userMessage) {
         userMessage = await tx.message.create({
-          data: { conversationId, role: 'user', content: { blocks } as Prisma.InputJsonValue, requestId: input.requestId },
+          data: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, role: 'user', content: { blocks } as Prisma.InputJsonValue, requestId: input.requestId },
         });
       }
 
@@ -104,6 +104,7 @@ export const runService = {
       const run = await tx.agentRun.create({
         data: {
           conversationId,
+          subjectId: object.id,
           subjectRevisionId: subject?.id,
           requestId: input.requestId,
           status: 'running',
@@ -117,7 +118,7 @@ export const runService = {
           inputDigest: input.text ? createHash('sha256').update(input.text).digest('hex').slice(0, 32) : null,
         },
       });
-      await tx.conversation.update({ where: { id: conversationId }, data: { lastActiveAt: new Date() } });
+      await tx.conversation.update({ where: { id: conversationId }, data: { lastActiveAt: new Date(), archivedAt: null } });
       return { run, existing: false as const };
     });
   },

@@ -1,15 +1,10 @@
-import type { TurnRequest } from '@luma/shared';
+import type { TurnRequest, ConversationDetail, ConversationSummary, SubjectView, ProgressView, ProgressRequest, LearningIntent } from '@luma/shared';
+export type { ConversationDetail, ConversationSummary, SubjectView, ProgressView, LearningIntent } from '@luma/shared';
+import { UI_MOCK } from '@/config';
 import { request } from '@/utils/request';
 import { queryString } from '@/utils/query';
 
 /** 会话与消息接口（FR-02 / FR-10） */
-
-export interface ConversationSummary {
-  id: string;
-  title: string;
-  lastActiveAt: string;
-  archivedAt: string | null;
-}
 
 export interface MessageView {
   id: string;
@@ -31,27 +26,6 @@ export function listConversations(archived: boolean, cursor?: string): Promise<P
   return request<Paged<ConversationSummary>>({ method: 'GET', path: `/api/conversations?${query}` });
 }
 
-export interface SubjectView {
-  id: string;
-  version: number;
-  type: 'question' | 'knowledge';
-  content: { text?: string; intent?: LearningIntent; [key: string]: unknown };
-  tags: string[];
-  subquestions?: string[] | null;
-  activeSubquestionIndex?: number | null;
-  confirmedAt: string | null;
-}
-
-export interface ConversationDetail {
-  conversation: ConversationSummary;
-  subject: SubjectView | null;
-  progress: { stage: string } | null;
-  artifacts: Array<{ id: string; type: 'lesson' | 'exercise_set'; publishStatus: string; subjectRevisionId?: string }>;
-  activeRun?: { id: string; status: string } | null;
-}
-
-export type LearningIntent = 'question' | 'knowledge' | 'practice';
-
 export interface SubjectEdit {
   content: SubjectView['content'];
   tags: string[];
@@ -60,8 +34,8 @@ export interface SubjectEdit {
   expectedRevision: number;
 }
 
-export function updateSubject(id: string, input: SubjectEdit): Promise<{ subject: SubjectView }> {
-  return request({ method: 'POST', path: `/api/conversations/${id}/subjects`, data: { ...input, action: 'update' } });
+export function updateSubject(id: string, input: SubjectEdit, subjectId?: string): Promise<{ subject: SubjectView; progress?: ProgressView | null }> {
+  return request({ method: 'POST', path: subjectId && !UI_MOCK ? `/api/conversations/${id}/subjects/${subjectId}/revisions` : `/api/conversations/${id}/subjects`, data: { ...input, subjectId, action: 'update' } });
 }
 
 export function createConversation(input: { title?: string; initialText?: string; subjectType?: 'question' | 'knowledge'; intent?: LearningIntent } = {}): Promise<ConversationSummary> {
@@ -72,8 +46,8 @@ export function getConversation(id: string): Promise<ConversationDetail> {
   return request<ConversationDetail>({ method: 'GET', path: `/api/conversations/${id}` });
 }
 
-export function confirmSubject(id: string, version: number) {
-  return request({ method: 'POST', path: `/api/conversations/${id}/subjects`, data: { action: 'confirm', expectedRevision: version } });
+export function confirmSubject(id: string, version: number, subjectId?: string) {
+  return request({ method: 'POST', path: subjectId && !UI_MOCK ? `/api/conversations/${id}/subjects/${subjectId}/confirm` : `/api/conversations/${id}/subjects`, data: { action: 'confirm', subjectId, expectedRevision: version } });
 }
 
 export function cancelRun(id: string) {
@@ -92,8 +66,8 @@ export function updateConversation(
   return request<ConversationSummary>({ method: 'PUT', path: `/api/conversations/${id}`, data: patch });
 }
 
-export function listMessages(id: string, cursor?: string): Promise<Paged<MessageView>> {
-  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+export function listMessages(id: string, cursor?: string, subjectId?: string): Promise<Paged<MessageView>> {
+  const query = `?${queryString({ cursor, subjectId })}`;
   return request<Paged<MessageView>>({ method: 'GET', path: `/api/conversations/${id}/messages${query}` });
 }
 
@@ -102,3 +76,10 @@ export const turnRequestPath = (conversationId: string): string =>
   `/api/conversations/${conversationId}/turns`;
 
 export type { TurnRequest };
+
+export function focusSubject(id: string, subjectId: string, learnAll?: boolean): Promise<ConversationDetail> {
+  return request({ method: 'PUT', path: `/api/conversations/${id}/focus`, data: { subjectId, learnAll } });
+}
+export function saveProgress(id: string, subjectId: string, input: ProgressRequest): Promise<ProgressView> {
+  return request({ method: 'PUT', path: `/api/conversations/${id}/subjects/${subjectId}/progress`, data: input });
+}

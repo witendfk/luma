@@ -25,7 +25,7 @@ export async function withActiveRun<T>(
     });
     if (claimed.count !== 1) throw new RunStoppedError('本轮执行已停止');
     const latest = await tx.subjectRevision.findFirst({
-      where: { conversationId: run.conversationId }, orderBy: { version: 'desc' }, select: { id: true },
+      where: { subjectId: run.subjectId }, orderBy: { version: 'desc' }, select: { id: true },
     });
     if (run.subjectRevisionId !== (latest?.id ?? null)) throw new RunStoppedError('学习对象已更新');
     return mutate(tx);

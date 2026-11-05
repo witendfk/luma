@@ -37,7 +37,7 @@ export function editPreview(id: string, patch: Partial<Pick<PreviewRecord, 'coll
   try { persist(); } catch { Object.assign(row, previous); throw new Error('本机保存失败，请重试'); } }
 function find(id: string): PreviewRecord { const row = data().flatMap((r) => [r, ...(r.topics ?? [])]).find((r) => r.id === id); if (!row) throw new Error('这条示例记录已不存在'); return row; }
 const summary = (r: PreviewRecord) => ({ id: r.id, title: r.title, archivedAt: r.archivedAt, lastActiveAt: r.lastActiveAt });
-const subject = (r: PreviewRecord) => ({ id: `${r.id}-subject-v${r.version ?? 1}`, version: r.version ?? 1, type: r.type, content: { text: r.text, intent: r.intent }, tags: r.tags, confirmedAt: r.confirmedAt === undefined ? '2026-11-01T08:00:00Z' : r.confirmedAt });
+const subject = (r: PreviewRecord) => ({ id: `${r.id}-subject-v${r.version ?? 1}`, subjectId: r.id, version: r.version ?? 1, type: r.type, content: { text: r.text, intent: r.intent }, tags: r.tags, confirmedAt: r.confirmedAt === undefined ? '2026-11-01T08:00:00Z' : r.confirmedAt });
 
 /** 开发预览的传输替身：不执行网络请求，未覆盖的请求明确报错，不回退真实接口。 */
 export async function mockRequest<T>(opts: RequestOptions): Promise<T> {
@@ -70,7 +70,7 @@ export async function mockRequest<T>(opts: RequestOptions): Promise<T> {
         if (body.title !== undefined) { if (!body.title.trim() || body.title.length > 60) throw new Error('名称须为 1–60 个字'); root.title = body.title.trim(); }
         if (body.archived !== undefined) root.archivedAt = body.archived ? new Date().toISOString() : null;
         persist(); result = summary(root);
-      } else result = { conversation: summary(root), subject: root.recognition && root.recognition !== 'ready' ? null : subject(row), progress: { stage: row.confirmedAt === null ? 'clarifying' : 'guiding' }, artifacts: [
+      } else result = { conversation: { ...summary(root), activeSubjectId: row.id, learnAll: root.learnAll ?? false }, subjects: (root.topics ?? [root]).map((r, order) => ({ id: r.id, order, revision: subject(r), collected: r.collected, progress: null })), subject: root.recognition && root.recognition !== 'ready' ? null : subject(row), progress: { stage: row.confirmedAt === null ? 'clarifying' : 'guiding' }, artifacts: [
         ...(row.lesson ? [{ id: 'preview-lesson', type: 'lesson', publishStatus: 'published', subjectRevisionId: subject(row).id }] : []),
         ...(row.practice ? [{ id: 'preview-practice', type: 'exercise_set', publishStatus: 'published', subjectRevisionId: subject(row).id }] : []),
       ] };

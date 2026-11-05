@@ -9,13 +9,13 @@ import { invalidFormat, notFound, revisionConflict } from '../lib/errors';
  */
 
 type LoadedAttempt = Prisma.PracticeAttemptGetPayload<{
-  include: { artifact: { include: { exercises: true } }; answers: true };
+  include: { artifact: { include: { exercises: true; subjectRevision: true } }; answers: true };
 }>;
 
 async function loadAttempt(userId: string, attemptId: string, client: Prisma.TransactionClient = db): Promise<LoadedAttempt> {
   const attempt = await client.practiceAttempt.findFirst({
     where: { id: attemptId, userId },
-    include: { artifact: { include: { exercises: { orderBy: { order: 'asc' } } } }, answers: true },
+    include: { artifact: { include: { exercises: { orderBy: { order: 'asc' } }, subjectRevision: true } }, answers: true },
   });
   if (!attempt) throw notFound('练习轮次');
   return attempt;
@@ -52,6 +52,8 @@ function buildView(attempt: LoadedAttempt, includeAnswers: boolean) {
   return {
     id: attempt.id,
     artifactId: attempt.artifactId,
+    subjectId: attempt.artifact.subjectRevision.subjectId,
+    subjectRevisionId: attempt.artifact.subjectRevisionId,
     stage: attempt.stage,
     currentExerciseId: attempt.currentExerciseId,
     submittedAt: attempt.submittedAt,
@@ -62,6 +64,12 @@ function buildView(attempt: LoadedAttempt, includeAnswers: boolean) {
 }
 
 export const practiceService = {
+  async history(userId: string, artifactId: string) {
+    const artifact = await db.artifact.findFirst({ where: { id: artifactId, type: 'exercise_set', conversation: { userId } } });
+    if (!artifact) throw notFound('题组');
+    return db.practiceAttempt.findMany({ where: { userId, artifactId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, artifactId: true, stage: true, currentExerciseId: true, createdAt: true, submittedAt: true, completedAt: true } });
+  },
   /** 开始或重做（FR-07：重做创建新轮次，沿用原题或所选需巩固题） */
   async start(userId: string, input: { artifactId: string; exerciseIds?: string[] }) {
     const artifact = await db.artifact.findFirst({

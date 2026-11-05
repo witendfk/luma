@@ -25,13 +25,17 @@ import { useConversationStore } from '@/stores/conversation';
 const store = useConversationStore();
 const notebook = useNotebookPreviewStore();
 onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } });
-const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : saved.value);
+const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : (saved.value || store.subjects.some((row) => row.id === store.activeSubjectId && row.collected)));
 const previewStudy = ref(false);
 const previewMeta = ref<PreviewRecord | null>(null);
 const activeTopic = computed(() => previewMeta.value?.topics?.find((topic) => topic.id === previewMeta.value?.activeTopicId));
 const switchingTopic = ref(false);
 let pageActive = true, recognitionTimer: ReturnType<typeof setTimeout> | undefined;
-const unit = computed(() => previewMeta.value?.intent === 'knowledge' ? '部分' : '题');
+const topicNavigation = computed(() => previewMeta.value ?? (store.subjects.length > 1 ? {
+  intent: store.subject?.content.intent ?? store.subject?.type, activeTopicId: store.activeSubjectId ?? undefined, learnAll: store.learnAll,
+  topics: store.subjects.map((row) => ({ id: row.id, title: row.revision?.content.text ?? '待核对内容', confirmedAt: row.revision?.confirmedAt, started: !!row.progress && row.progress.stage !== 'clarifying' && row.progress?.stage !== 'guiding' })),
+} : null));
+const unit = computed(() => (previewMeta.value?.intent ?? store.subject?.type) === 'knowledge' ? '部分' : '题');
 const nextTopic = computed(() => { const root = previewMeta.value; const index = root?.topics?.findIndex((topic) => topic.id === root.activeTopicId) ?? -1; return root?.topics?.[index + 1]; });
 const draft = ref('');
 const busy = ref(false);
@@ -59,7 +63,7 @@ const subquestions = computed(() => store.subject?.subquestions ?? []);
 const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
 const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
 const lastReply = computed(() => [...store.messages].reverse().find((message) => message.role === 'assistant'));
-onHide(() => { pageActive = false; clearTimeout(recognitionTimer); });
+onHide(() => { if (!UI_MOCK) void store.saveDraft(draft.value).catch(() => { store.error = '草稿暂未保存，请重试'; }); pageActive = false; clearTimeout(recognitionTimer); });
 onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
   if (import.meta.env.DEV && query?.preview === 'study') { previewStudy.value = true; return; }
@@ -149,7 +153,7 @@ function confirmProcess(text: string): void { rememberChat(); void store.send(`�
 async function save(): Promise<void> {
   if (!store.currentId || !store.subject?.confirmedAt || saving.value) return;
   saving.value = true;
-  try { await saveCollection(activeTopic.value?.id ?? store.currentId, {}); saved.value = true; if (UI_MOCK) notebook.refresh(); uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
+  try { await saveCollection(activeTopic.value?.id ?? store.activeSubjectId ?? store.currentId, {}); saved.value = true; if (UI_MOCK) notebook.refresh(); uni.showToast({ title: '已保存学习记录', icon: 'none' }); }
   catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存失败，请重试', icon: 'none' }); }
   finally { saving.value = false; }
 }
@@ -173,8 +177,10 @@ async function openLearning(id: string, topicId?: string): Promise<void> {
   switchingTopic.value = true;
   try {
     if (root?.topics?.length && (topicId || root.id !== id)) selectPreviewTopic(root.id, topicId ?? id);
+    if (!UI_MOCK && store.currentId && store.currentId !== id) await store.saveDraft(draft.value);
     await store.open(root?.id ?? id);
-    syncPreview(); draft.value = activeTopic.value?.draft ?? '';
+    if (!UI_MOCK && topicId && topicId !== store.activeSubjectId) await store.switchSubject(topicId, store.progress?.draft ?? '');
+    syncPreview(); draft.value = UI_MOCK ? activeTopic.value?.draft ?? '' : store.progress?.draft ?? '';
     beginRecognition();
   } finally { switchingTopic.value = false; }
 }
@@ -196,19 +202,25 @@ function recognitionAction(action: 'retry' | 'cancel' | 'fail'): void {
   catch { uni.showToast({ title: '状态未能保存，请重试', icon: 'none' }); }
 }
 async function selectTopic(id: string): Promise<void> {
-  if (!previewMeta.value || switchingTopic.value || store.generating || id === activeTopic.value?.id) return;
-  const rootId = previewMeta.value.id;
+  if (switchingTopic.value || store.generating || store.waitingJob || id === (activeTopic.value?.id ?? store.activeSubjectId)) return;
+  const rootId = previewMeta.value?.id;
   switchingTopic.value = true; focused.value = false; keyboardHeight.value = 0;
   try {
-    selectPreviewTopic(rootId, id); await store.open(rootId); syncPreview();
+    if (rootId) { selectPreviewTopic(rootId, id); await store.open(rootId); syncPreview(); }
+    else { await store.switchSubject(id, draft.value); saved.value = false; }
     rememberChat();
-    draft.value = activeTopic.value?.draft ?? ''; scrollTarget.value = '';
+    draft.value = UI_MOCK ? activeTopic.value?.draft ?? '' : store.progress?.draft ?? ''; scrollTarget.value = '';
     scrollToEnd();
   } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '切换失败，原进度仍保留', icon: 'none' }); }
   finally { switchingTopic.value = false; }
 }
-function learnAll(): void {
-  if (!previewMeta.value) return;
+async function learnAll(): Promise<void> {
+  if (!previewMeta.value) {
+    if (!store.activeSubjectId) return;
+    try { await store.switchSubject(store.activeSubjectId, draft.value, true); uni.showToast({ title: '已记下，按顺序逐项学习', icon: 'none' }); }
+    catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存失败，请重试', icon: 'none' }); }
+    return;
+  }
   try { planPreviewTopics(previewMeta.value.id); syncPreview(); uni.showToast({ title: '已记下，按顺序逐项学习', icon: 'none' }); }
   catch { uni.showToast({ title: '未能保存安排，请重试', icon: 'none' }); }
 }
@@ -222,7 +234,7 @@ function simulate(): void {
   <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
     <PreviewNotice />
-    <TopicNavigator v-if="previewMeta?.recognition === 'ready'" :root="previewMeta" :disabled="store.generating || switchingTopic || store.editingSubject || busy" @select="selectTopic" @all="learnAll" />
+    <TopicNavigator v-if="topicNavigation && (!previewMeta || previewMeta.recognition === 'ready')" :root="topicNavigation" :disabled="store.generating || store.waitingJob || switchingTopic || store.editingSubject || busy" @select="selectTopic" @all="learnAll" />
     <view class="task-toolbar">
       <text class="stage">{{ previewMeta && previewMeta.recognition !== 'ready' ? '先读取图片，再核对内容' : status }}</text>
       <view class="toolbar-actions">
@@ -248,7 +260,7 @@ function simulate(): void {
           <button class="summary-toggle" :aria-label="summaryOpen ? '收起已确认内容' : '展开已确认内容'" @tap="summaryOpen = !summaryOpen"><view><text class="summary-label">{{ isKnowledge ? '学习范围已确认' : '题目已确认' }}<text v-if="activePart"> · 第 {{ (store.subject.activeSubquestionIndex ?? 0) + 1 }} 问</text></text><view v-if="!summaryOpen" class="summary-preview">{{ store.subject.content.text }}</view></view><LumaIcon :name="summaryOpen ? 'chevron-up' : 'chevron-down'" :size="14" /></button>
           <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
         </view>
-        <view v-if="!store.messages.length && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
+        <view v-if="!store.messages.length && !store.subject && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
         <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :incomplete="msg.incomplete" />
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>

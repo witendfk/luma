@@ -93,6 +93,27 @@ async function main() {
   await chat.open(id);
   assert.match(chat.subject.content.text, /x²-2x\+6/);
   console.log('PASS 已确认题目修改后重置确认、旧材料保留原版本，离开重进恢复修改');
+  const transport = sandbox.load('@/utils/request');
+  const firstId = chat.activeSubjectId;
+  const firstRevision = chat.subject.id;
+  const firstMessages = chat.messages.length;
+  const second = await transport.request({ method: 'POST', path: `/api/conversations/${id}/subjects`, data: { type: 'knowledge', content: { text: '交集为什么表示并且', intent: 'knowledge' } } });
+  await chat.refresh();
+  await chat.switchSubject(second.subject.subjectId, '第一题还没发出的思路');
+  assert.equal(chat.subject.id, second.subject.id);
+  assert.equal(chat.messages.length, 0);
+  assert.equal(chat.progress.draft, '');
+  await chat.switchSubject(firstId, '第二题的草稿');
+  assert.equal(chat.subject.id, firstRevision);
+  assert.equal(chat.messages.length, firstMessages);
+  assert.equal(chat.progress.draft, '第一题还没发出的思路');
+  await chat.open(id);
+  assert.equal(chat.activeSubjectId, firstId);
+  assert.equal(chat.progress.draft, '第一题还没发出的思路');
+  await chat.switchSubject(second.subject.subjectId, chat.progress.draft);
+  assert.equal(chat.progress.draft, '第二题的草稿');
+  console.log('PASS 真实小程序 store 经焦点/进度接口切题，逐题草稿/对话与重进恢复正确');
+
   chat.reset();
   await chat.send('集合的交集与并集', undefined, 'knowledge', 'practice');
   await until(() => !chat.generating && Boolean(chat.subject), '练习意图持久化');

@@ -48,7 +48,7 @@ export const jobService = {
       await tx.$queryRaw`SELECT id FROM "Conversation" WHERE id = ${job.conversationId} FOR UPDATE`;
       const existing = await tx.generationJob.findUnique({ where: { idempotencyKey: `retry:${job.id}` } });
       if (existing) return existing;
-      const latest = await tx.subjectRevision.findFirst({ where: { conversationId: job.conversationId }, orderBy: { version: 'desc' } });
+      const latest = await tx.subjectRevision.findFirst({ where: { subjectId: job.subjectId }, orderBy: { version: 'desc' } });
       if (!latest?.confirmedAt || latest.id !== job.subjectRevisionId) throw revisionConflict();
       const active = await tx.agentRun.findFirst({ where: { conversationId: job.conversationId, status: { in: ['running', 'waiting_job'] } } });
       if (active && active.id !== job.runId) throw conversationBusy();
@@ -60,7 +60,7 @@ export const jobService = {
       if (!payload.subjectText) throw invalidFormat('原任务缺少输入快照，请重新生成');
       const call = { toolCallId: callId, toolName, input: job.type === 'lesson' ? { target: String(payload.target ?? '生成讲义') } : { count: Number(payload.count ?? 2) } };
       const run = await tx.agentRun.create({ data: {
-        conversationId: job.conversationId, subjectRevisionId: job.subjectRevisionId,
+        conversationId: job.conversationId, subjectId: job.subjectId, subjectRevisionId: job.subjectRevisionId,
         requestId: `retry_${randomUUID()}`, status: 'waiting_job', promptVersion: PROMPT_VERSION,
         retryOfRunId: job.runId, userMessageId: original?.userMessageId,
         deadlineAt: new Date(Date.now() + env().TURN_TOTAL_MS), counters: initialCounters() as unknown as Prisma.InputJsonValue,
@@ -68,7 +68,7 @@ export const jobService = {
         taskFrame: { kind: 'material', focus: {}, goals: [{ type: job.type === 'lesson' ? 'lesson' : 'practice' }] },
       } });
       const retry = await tx.generationJob.create({ data: {
-        type: job.type, conversationId: job.conversationId, subjectRevisionId: job.subjectRevisionId,
+        type: job.type, conversationId: job.conversationId, subjectId: job.subjectId, subjectRevisionId: job.subjectRevisionId,
         runId: run.id, status: 'queued', idempotencyKey: `retry:${job.id}`, retryOfJobId: job.id,
         payload: job.payload as Prisma.InputJsonValue,
         deadlineAt: new Date(Date.now() + env().JOB_TOTAL_MS),

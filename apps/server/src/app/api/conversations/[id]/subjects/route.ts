@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import { CreateSubjectRequest } from '@luma/shared';
 import { z } from 'zod';
 import { subjectService } from '../../../../../services/subject.service';
 import { json, requireUser, withRoute } from '../../../../../lib/http';
@@ -6,6 +7,7 @@ import { json, requireUser, withRoute } from '../../../../../lib/http';
 export const dynamic = 'force-dynamic';
 
 const SubjectBody = z.object({
+  subjectId: z.string().optional(),
   action: z.enum(['update', 'confirm']),
   content: z.object({ text: z.string().trim().min(1).max(8000) }).passthrough().optional(),
   tags: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
@@ -19,7 +21,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return withRoute(req, async () => {
     const { userId } = await requireUser(req);
     const { id } = await params;
-    const body = SubjectBody.parse(await req.json());
+    const raw = await req.json();
+    if (!raw.action) return json(await subjectService.create(userId, id, CreateSubjectRequest.parse(raw)));
+    const body = SubjectBody.parse(raw);
     return json(await subjectService.update(userId, id, body));
   });
 }

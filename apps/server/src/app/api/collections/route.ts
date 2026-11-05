@@ -7,6 +7,7 @@ import { json, requireUser, withRoute } from '../../../lib/http';
 export const dynamic = 'force-dynamic';
 
 const QuerySchema = z.object({
+  view: z.enum(['all', 'question', 'knowledge']).optional(),
   keyword: z.string().max(60).optional(),
   reviewStatus: z.nativeEnum(ReviewStatus).optional(),
   cursor: z.string().optional(),
@@ -19,6 +20,7 @@ export async function GET(req: NextRequest) {
     const { userId } = await requireUser(req);
     const sp = req.nextUrl.searchParams;
     const query = QuerySchema.parse({
+      view: sp.get('view') ?? undefined,
       keyword: sp.get('keyword') ?? undefined,
       reviewStatus: sp.get('reviewStatus') ?? undefined,
       cursor: sp.get('cursor') ?? undefined,

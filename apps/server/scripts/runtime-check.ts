@@ -25,6 +25,7 @@ async function main() {
   try {
     const conversation = await conversationService.create(uid, {});
     const cid = conversation.id;
+    const sid = (await db.conversation.findUniqueOrThrow({ where: { id: cid } })).activeSubjectId!;
     const input = { requestId: requestId(), text: '已知 f(x)=x²-2x+3，求最小值。' };
     const pair = await Promise.all([runService.startRun(uid, cid, input), runService.startRun(uid, cid, input)]);
     assert.equal(pair[0].run.id, pair[1].run.id);
@@ -32,8 +33,9 @@ async function main() {
     assert.equal(await db.message.count({ where: { conversationId: cid, role: 'user' } }), 1);
     const events: any[] = [];
     await drive(pair[0].run.id, (event) => events.push(event));
-    assert.ok(events.some((event) => event.type === 'text.delta' && event.delta.includes('f(x)')));
-    assert.equal((await db.learningProgress.findUniqueOrThrow({ where: { conversationId: cid } })).stage, 'clarifying');
+    assert.ok(events.some((event) => event.type === 'text.delta' && event.delta.includes('核对')), JSON.stringify(events));
+    assert.equal(((await db.subjectRevision.findFirstOrThrow({ where: { subjectId: sid } })).content as { text: string }).text, input.text);
+    assert.equal((await db.learningProgress.findUniqueOrThrow({ where: { subjectId: sid } })).stage, 'clarifying');
     await subjectService.update(uid, cid, { action: 'confirm', expectedRevision: 1 });
     const next = await runService.startRun(uid, cid, { requestId: requestId(), text: '为什么这样想？' });
     assert.equal((next.run.protocol as any[]).length, 3);
@@ -41,14 +43,14 @@ async function main() {
     console.log('PASS 真库首题建立、并发请求幂等、核对阶段、历史上下文');
 
     const cancelled = await runService.startRun(uid, cid, { requestId: requestId(), text: '取消测试' });
-    const before = await db.learningProgress.findUniqueOrThrow({ where: { conversationId: cid } });
+    const before = await db.learningProgress.findUniqueOrThrow({ where: { subjectId: sid } });
     const pending = drive(cancelled.run.id);
     await wait(50);
     await runService.cancel(uid, cancelled.run.id);
     await pending;
     assert.equal(await db.message.count({ where: { runId: cancelled.run.id, role: 'assistant' } }), 0);
     assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: cancelled.run.id } })).status, 'cancelled');
-    assert.equal((await db.learningProgress.findUniqueOrThrow({ where: { conversationId: cid } })).updatedAt.getTime(), before.updatedAt.getTime());
+    assert.equal((await db.learningProgress.findUniqueOrThrow({ where: { subjectId: sid } })).updatedAt.getTime(), before.updatedAt.getTime());
     let wrote = false;
     await assert.rejects(withActiveRun(cancelled.run.id, 'old-owner', async () => { wrote = true; }), RunStoppedError);
     assert.equal(wrote, false);
@@ -73,7 +75,7 @@ async function main() {
     const callId = requestId();
     await db.toolExecution.create({ data: { runId: focused.run.id, decisionId: 'test', toolCallId: callId, tool: 'readLearningContext', batchOrder: 0, status: 'pending' } });
     const result = await executeBatch({ userId: uid, conversationId: cid, runId: focused.run.id, leaseOwner: 'test',
-      policy: await buildPolicy({ conversationId: cid, focus: { artifactId: lesson.id, sectionId: 's1' } }), counters: initialCounters() },
+      policy: await buildPolicy({ conversationId: cid, subjectId: sid, focus: { artifactId: lesson.id, sectionId: 's1' } }), counters: initialCounters() },
       { decisionId: 'test', items: [{ toolCallId: callId, toolName: 'readLearningContext', input: { ref: 'artifacts', sectionId: 's1' } }] });
     assert.equal(result.kind, 'results');
     if (result.kind === 'results') {
@@ -109,7 +111,7 @@ async function main() {
     console.log('PASS 真库并发草稿保持最高版本、提交后禁止改草稿、历史只读、未做题答案不泄漏');
 
     const failed = await db.generationJob.create({ data: {
-      type: 'exercise_set', conversationId: cid, subjectRevisionId: subject.id, status: 'failed',
+      type: 'exercise_set', conversationId: cid, subjectId: sid, subjectRevisionId: subject.id, status: 'failed',
       payload: { subjectText: '求二次函数最小值', count: 2, tags: ['二次函数'] },
     } });
     const retry = await jobService.retry(uid, failed.id);

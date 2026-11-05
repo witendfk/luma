@@ -1,89 +1,50 @@
 import { db } from '../lib/db';
-import { notFound } from '../lib/errors';
-import { conversationService } from './conversation.service';
+import { invalidFormat, notFound } from '../lib/errors';
 
-/**
- * 错题收藏（FR-09）：(用户, 会话) 唯一；重复保存恢复或更新原记录；
- * 取消收藏仅删除收藏本身，原对话与练习记录保留。
- */
+/** Collections belong to an object, never to the active object of a conversation. */
+async function owned(userId: string, subjectId: string) {
+  const subject = await db.learningSubject.findFirst({ where: { id: subjectId, conversation: { userId } }, include: { revisions: { orderBy: { version: 'desc' }, take: 1 } } });
+  if (!subject) throw notFound('学习对象');
+  return subject;
+}
 export const collectionService = {
-  async list(
-    userId: string,
-    query: { keyword?: string; reviewStatus?: 'to_review' | 'reviewed'; cursor?: string; limit: number },
-  ) {
-    const where: Record<string, unknown> = { userId };
-    if (query.reviewStatus) where.reviewStatus = query.reviewStatus;
-    if (query.cursor) where.collectedAt = { lt: new Date(query.cursor) };
-    if (query.keyword?.trim()) {
-      const kw = query.keyword.trim();
-      where.conversation = {
-        is: {
-          userId,
-          OR: [
-            { title: { contains: kw, mode: 'insensitive' } },
-            // 知识点标签参与搜索（FR-09）
-            { subjectRevisions: { some: { tags: { has: kw } } } },
-          ],
-        },
-      };
-    }
-
+  async list(userId: string, query: { keyword?: string; reviewStatus?: 'to_review' | 'reviewed'; cursor?: string; limit: number; view?: 'all' | 'question' | 'knowledge' }) {
+    const kw = query.keyword?.trim();
     const rows = await db.collectionEntry.findMany({
-      where,
-      orderBy: [{ collectedAt: 'desc' }],
-      take: query.limit + 1,
-      include: {
-        conversation: {
-          select: { id: true, title: true, subjectRevisions: { orderBy: { version: 'desc' }, take: 1, select: { tags: true } } },
-        },
+      where: { userId, removedAt: null,
+        ...(query.reviewStatus ? { reviewStatus: query.reviewStatus } : {}),
+        ...(query.cursor ? { collectedAt: { lt: new Date(query.cursor) } } : {}),
+        subject: { revisions: { some: { ...(query.view && query.view !== 'all' ? { type: query.view } : {}),
+          ...(kw ? { OR: [{ tags: { has: kw } }, { content: { path: ['text'], string_contains: kw } }] } : {}),
+        } } },
       },
+      orderBy: [{ collectedAt: 'desc' }, { id: 'desc' }], take: query.limit + 1,
+      include: { subject: { include: { revisions: { orderBy: { version: 'desc' }, take: 1 } } } },
     });
     const hasMore = rows.length > query.limit;
     const page = hasMore ? rows.slice(0, query.limit) : rows;
-    return {
-      items: page.map((entry) => ({
-        id: entry.id,
-        conversationId: entry.conversationId,
-        title: entry.conversation.title,
-        tags: entry.conversation.subjectRevisions[0]?.tags ?? [],
-        note: entry.note,
-        reviewStatus: entry.reviewStatus,
-        collectedAt: entry.collectedAt,
-      })),
-      nextCursor:
-        hasMore && page.length > 0
-          ? (page[page.length - 1] as { collectedAt: Date }).collectedAt.toISOString()
-          : null,
-    };
+    return { items: page.map(({ subject, ...entry }) => ({ ...entry,
+      title: (subject.revisions[0]?.content as { text?: string })?.text ?? '学习记录',
+      tags: subject.revisions[0]?.tags ?? [], type: subject.revisions[0]?.type,
+    })), nextCursor: hasMore ? page[page.length - 1]!.collectedAt.toISOString() : null };
   },
-
-  async upsert(
-    userId: string,
-    conversationId: string,
-    input: { note?: string; reviewStatus?: 'to_review' | 'reviewed' },
-  ) {
-    await conversationService.getOwned(userId, conversationId);
-    const entry = await db.collectionEntry.upsert({
-      where: { userId_conversationId: { userId, conversationId } },
-      update: {
-        ...(input.note !== undefined ? { note: input.note } : {}),
-        ...(input.reviewStatus !== undefined ? { reviewStatus: input.reviewStatus } : {}),
-      },
-      create: {
-        userId,
-        conversationId,
-        note: input.note ?? null,
-        reviewStatus: input.reviewStatus ?? 'to_review',
-      },
-    });
-    return entry;
+  async get(userId: string, subjectId: string) {
+    await owned(userId, subjectId);
+    return db.collectionEntry.findUnique({ where: { userId_subjectId: { userId, subjectId } } });
   },
-
-  async remove(userId: string, conversationId: string) {
-    const result = await db.collectionEntry.deleteMany({
-      where: { userId, conversationId },
+  async upsert(userId: string, subjectId: string, input: { note?: string; reviewStatus?: 'to_review' | 'reviewed' }) {
+    const subject = await owned(userId, subjectId);
+    if (!subject.revisions[0]?.confirmedAt) throw invalidFormat('请先核对学习内容');
+    return db.collectionEntry.upsert({
+      where: { userId_subjectId: { userId, subjectId } },
+      update: { removedAt: null, ...(input.note !== undefined ? { note: input.note } : {}), ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}) },
+      create: { userId, subjectId, conversationId: subject.conversationId, note: input.note ?? null, reviewStatus: input.reviewStatus ?? 'to_review' },
     });
-    if (result.count === 0) throw notFound('收藏');
+  },
+  async remove(userId: string, subjectId: string) {
+    await owned(userId, subjectId);
+    const result = await db.collectionEntry.updateMany({ where: { userId, subjectId }, data: { removedAt: new Date() } });
+    if (!result.count) throw notFound('收藏');
     return { removed: true };
   },
 };

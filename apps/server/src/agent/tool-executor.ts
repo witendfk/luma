@@ -184,7 +184,7 @@ interface ReadContextInput {
 async function readLearningContext(ctx: BatchExecutionContext, input: ReadContextInput): Promise<unknown> {
   if (input.ref === 'subject') {
     const subject = await db.subjectRevision.findFirst({
-      where: { conversationId: ctx.conversationId },
+      where: { conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
       orderBy: { version: 'desc' },
     });
     return {
@@ -206,7 +206,7 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
     if (artifactId || input.sectionId) {
       if (!artifactId) return { ok: false, code: 'INVALID_INPUT', message: '读取段落需提供当前材料' };
       const artifact = await db.artifact.findFirst({
-        where: { id: artifactId, conversationId: ctx.conversationId, type: 'lesson', publishStatus: 'published' },
+        where: { id: artifactId, conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '', type: 'lesson', publishStatus: 'published' },
       });
       if (!artifact) return { ok: false, code: 'NOT_FOUND', message: '当前会话中没有该讲义' };
       const lesson = (artifact.content as { lesson?: { title: string; sections: Array<{ id: string }> } }).lesson;
@@ -215,7 +215,7 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
       return { ok: true, artifactId, lesson: { title: lesson?.title, sections } };
     }
     const artifacts = await db.artifact.findMany({
-      where: { conversationId: ctx.conversationId },
+      where: { conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '' },
       orderBy: { updatedAt: 'desc' },
       take: 10,
       select: { id: true, type: true, version: true, publishStatus: true, subjectRevisionId: true },
@@ -226,7 +226,7 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
     if (!input.attemptId) return { ok: false, code: 'INVALID_INPUT', message: '缺少 attemptId' };
     // 答案侧不加载（answerPermission 默认否，§4.6）：只给题干、进度与本人作答
     const attempt = await db.practiceAttempt.findFirst({
-      where: { id: input.attemptId, userId: ctx.userId, artifact: { conversationId: ctx.conversationId } },
+      where: { id: input.attemptId, userId: ctx.userId, artifact: { conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '' } },
       include: { artifact: { include: { exercises: { orderBy: { order: 'asc' } } } }, answers: true },
     });
     if (!attempt) return { ok: false, code: 'NOT_FOUND', message: '练习轮次不存在' };
@@ -249,7 +249,7 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
     };
   }
   const messages = await db.message.findMany({
-    where: { conversationId: ctx.conversationId },
+    where: { conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
     orderBy: { id: 'desc' },
     take: 10,
   });
@@ -299,6 +299,7 @@ async function createMaterialJob(
     data: {
       type,
       conversationId: ctx.conversationId,
+      subjectId: ctx.policy.subjectId,
       subjectRevisionId: subject!.id,
       runId: ctx.runId,
       status: 'queued',

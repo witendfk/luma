@@ -12,6 +12,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const sp = req.nextUrl.searchParams;
     return json(
       await conversationService.messages(userId, id, {
+        subjectId: sp.get('subjectId') ?? undefined,
         cursor: sp.get('cursor') ?? undefined,
         limit: Number(sp.get('limit') ?? 30),
       }),
