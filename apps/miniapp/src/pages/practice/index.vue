@@ -132,7 +132,7 @@ function viewHistory(id: string): void { selectedHistory.value = id; historyOpen
             <text class="eyebrow">{{ selectedHistory ? 'HISTORY' : 'SELF REVIEW' }}</text><text class="page-title">对照过程，再判断。</text><text class="intro">{{ selectedHistory ? '这是已完成轮次，只读查看。' : '参考解析已经展开，请按自己的实际过程自评。' }}</text>
             <view v-for="(exercise, index) in reviewExercises" :id="`review-${exercise.id}`" :key="exercise.id" class="review-section">
               <text class="task-title">0{{ index + 1 }} · {{ exercise.kind }}</text><text class="review-stem">{{ exercise.stem }}</text>
-              <view class="my-answer"><text class="small-label">我的作答</text><text>{{ reviewRound?.answers[exercise.id]?.text || (reviewRound?.answers[exercise.id]?.unknown ? '暂时不会，待讲解' : '未填写作答') }}</text></view>
+              <view class="my-answer"><text class="small-label">我的作答</text><text>{{ reviewRound?.answers[exercise.id]?.text || (reviewRound?.answers[exercise.id]?.images?.length ? '已添加作答照片' : reviewRound?.answers[exercise.id]?.unknown ? '暂时不会，待讲解' : '未填写作答') }}</text></view>
               <AttachmentStrip :images="reviewRound?.answers[exercise.id]?.images ?? []" readonly />
               <view class="reference"><text class="small-label">参考答案与解析</text><text class="answer-text">{{ exercise.answer }}</text><StudyText :text="exercise.analysis" /></view>
               <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :class="{ selected: reviewRound?.answers[exercise.id]?.rating === rating.value }" :disabled="Boolean(selectedHistory)" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ reviewRound?.answers[exercise.id]?.rating === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
