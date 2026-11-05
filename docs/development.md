@@ -21,6 +21,16 @@ pnpm dev:miniapp
 
 文件变化未触发编译时可使用 `CHOKIDAR_USEPOLLING=true pnpm dev:miniapp`。切换开关后重启编译器，等待 `Build complete` 再在微信工具编译。
 
+### 当前服务端开发的联调方式
+
+在微信开发者工具打开已编译小程序，连接 `http://localhost:4000` 的 Next.js API。开发者工具中启用本地“不校验合法域名、TLS 及 HTTPS 证书”，即可联调本地 HTTP；这不要求先部署、真机扫码或上传体验版。
+
+- 关闭 `VITE_UI_MOCK` 才会请求真实业务接口；开发身份 `VITE_DEV_LOGIN` + `LUMA_DEV_FAKE_LOGIN` 可继续使用，得到可校验的应用登录态和本人数据库记录。
+- 首个联调任务可使用服务端模型 mock 验证数据归属；接 GPT 时关闭 `LUMA_MOCK_AGENT` 并在服务端配置凭据。不把 UI mock、服务端模型 mock 和开发身份开关混为一项。
+- 图片输入先通过模拟器文件选择器使用本机样例，上传到正式存储链路并交真实 GPT 读取；不要求先做手机相机操作。
+- 每段完成后在工具 Network/Console 检查业务请求、状态及恢复，服务端查运行/任务日志，数据库核对对象与轮次；这一套就是当前前后端联调。
+- 真实微信换码、手机键盘/手势和体验版另在 B07 验证；需要时可以提前单测，不构成开发前置条件。
+
 ## 2 工具与导入
 
 - Codex/VS Code：编辑 uni-app、Next.js 和共享契约。
