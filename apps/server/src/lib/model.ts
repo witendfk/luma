@@ -1,11 +1,13 @@
 import { createOpenAI } from '@ai-sdk/openai';
-import { ErrorCode } from '@luma/shared';
+import { ErrorCode, teachingReplyText, type TeachingReply } from '@luma/shared';
 import { generateText, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from 'ai';
 import { env, hasModelCredentials } from './env';
 import { accountJobModel, type JobModelTrace } from './model-accounting';
 import { ApiError } from './errors';
 import { partialRespondText } from '../agent/respond-stream';
 import { respondSchema, turnPlanSchema } from '../agent/tools';
+import { estimateTokens } from './token-budget';
+import { ZodError } from 'zod';
 
 /**
  * 统一模型调用层（设计文档 §4.10 / §4.14）。
@@ -18,6 +20,7 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  cachedInputTokens?: number;
 }
 
 export interface ToolCall {
@@ -30,7 +33,7 @@ export type RespondDisposition = 'wait_user' | 'finish';
 
 export type AgentStep =
   | { kind: 'plan'; plan: import('zod').infer<typeof turnPlanSchema>; calls: ToolCall[]; usage?: TokenUsage }
-  | { kind: 'respond'; disposition: RespondDisposition; text: string; refs: unknown[]; usage?: TokenUsage }
+  | { kind: 'respond'; disposition: RespondDisposition; text: string; content?: TeachingReply; clarification?: import('../agent/readback').Clarification; refs: unknown[]; teaching?: import('zod').infer<typeof import('../agent/teaching-state').TeachingUpdate>; usage?: TokenUsage }
   | { kind: 'tool_calls'; calls: ToolCall[]; usage?: TokenUsage }
   | { kind: 'issue'; code: string; retryable: boolean; message: string; usage?: TokenUsage };
 
@@ -45,6 +48,7 @@ export interface NextStepOptions {
   mock?: AgentStep;
   /** 用途标记，进入调用记录 */
   purpose: string;
+  cacheKey?: string;
   onText?: (delta: string) => Promise<void>;
   onReset?: () => Promise<void>;
 }
@@ -89,7 +93,7 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
     onError: () => { /* Upstream errors may contain headers; only sanitized issues leave this adapter. */ },
     abortSignal: opts.abortSignal,
     maxOutputTokens: opts.model ? 4096 : env().MODEL_OUTPUT_TOKENS,
-    providerOptions: { openai: { parallelToolCalls: false, strictJsonSchema: false, store: false } },
+    providerOptions: { openai: { parallelToolCalls: false, strictJsonSchema: false, store: false, ...(opts.cacheKey ? { promptCacheKey: opts.cacheKey } : {}) } },
   });
 
   try {
@@ -129,7 +133,7 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
   let usage: TokenUsage | undefined;
   try {
     const u = await result.usage;
-    if (u) usage = { inputTokens: u.inputTokens, outputTokens: u.outputTokens, totalTokens: u.totalTokens };
+    if (u) usage = modelUsage(u);
   } catch {
     usage = undefined; // 流中途失败用量未知，保留 unknown（§4.14）
   }
@@ -158,12 +162,13 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
   }
   if (respondCalls.length === 1) {
     const parsed = respondSchema.safeParse(respondCalls[0]!.input);
-    if (!parsed.success || !parsed.data.text.trim()) {
+    if (!parsed.success) {
       return issue('PROTOCOL_RESPOND', 'respond 参数不完整或正文为空', usage);
     }
     const input = parsed.data;
-    if (streamed && input.text !== streamed) await reset();
-    return { kind: 'respond', disposition: input.disposition, text: input.text, refs: Array.isArray(input.refs) ? input.refs : [], usage };
+    const text = teachingReplyText(input.content);
+    if (streamed && text !== streamed) await reset();
+    return { kind: 'respond', disposition: input.disposition, text, content: input.content, clarification: input.clarification, refs: Array.isArray(input.refs) ? input.refs : [], teaching: input.teaching, usage };
   }
 
   const planning = calls.filter((c) => c.toolName === 'planTurn');
@@ -176,7 +181,7 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
 }
 
 /** 任务内部一次性生成（讲义正文/复核/出题，§8.4）：与主 Agent 循环分开计数的模型请求 */
-export async function generateJson<T>(opts: {
+interface JsonOptions<T> {
   system: string;
   prompt: string;
   purpose: string;
@@ -184,24 +189,68 @@ export async function generateJson<T>(opts: {
   abortSignal?: AbortSignal;
   trace?: JobModelTrace;
   images?: Uint8Array[];
-}): Promise<T> {
+  formatCorrections?: 0 | 1;
+}
+
+class ModelOutputError extends ApiError {
+  constructor(readonly issues: string[]) {
+    super(ErrorCode.MODEL_UNAVAILABLE, '模型输出结构校验失败，可重试', 502, true);
+  }
+}
+
+/** One bounded format correction, separately accounted. Network/auth failures are never retried here. */
+export async function generateJson<T>(opts: JsonOptions<T>): Promise<T> {
+  try { return await generateJsonAttempt(opts); }
+  catch (error) {
+    if (!(error instanceof ModelOutputError) || !opts.formatCorrections) throw error;
+    return generateJsonAttempt({ ...opts, purpose: `${opts.purpose}_format_correction`,
+      prompt: opts.prompt + `\n上次输出结构不合法：${JSON.stringify(error.issues)}。请严格按要求的 JSON 字段与类型重新输出，不要增加其他结构。` });
+  }
+}
+
+async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
   const started = Date.now(); let usage: TokenUsage | undefined, error: string | undefined;
-  if (Buffer.byteLength(opts.system + opts.prompt, 'utf8') + 512 > env().CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
+  if (estimateTokens(opts.system + opts.prompt) + 512 + (opts.images?.length ?? 0) * 4096 > env().LONG_TASK_CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
   if (opts.trace) await accountJobModel(opts.trace, opts.purpose);
   try {
     const result = await generateText({ model: getModel(), system: opts.system,
       ...(opts.images?.length ? { messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: opts.prompt }, ...opts.images.map((image) => ({ type: 'image' as const, image }))] }] } : { prompt: opts.prompt }), maxRetries: 0,
       providerOptions: { openai: { store: false } }, maxOutputTokens: env().MODEL_OUTPUT_TOKENS,
       abortSignal: AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(env().JOB_TOTAL_MS), AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
-    usage = result.usage;
+    usage = modelUsage(result.usage);
     try { return opts.parse(result.text); }
-    catch { error = 'MODEL_OUTPUT'; throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型输出解析失败，可重试', 502, true); }
+    catch (parseError) {
+      const issues = parseError instanceof ZodError ? parseError.issues.slice(0, 8).map((issue) => `${issue.path.join('.')}:${issue.code}`)
+        : [parseError instanceof SyntaxError ? 'invalid_json' : 'invalid_material_structure'];
+      error = `MODEL_OUTPUT:${issues.join(',')}`;
+      throw new ModelOutputError(issues);
+    }
   } catch (err) {
     error ??= 'MODEL_UNAVAILABLE';
     if (err instanceof ApiError) throw err;
     throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型调用失败，请检查网络或服务端模型配置后重试', 502, true);
   } finally {
     if (opts.trace) await accountJobModel(opts.trace, opts.purpose, { durationMs: Date.now() - started, usage, error });
+  }
+}
+
+export function modelUsage(raw: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cachedInputTokens?: number }): TokenUsage {
+  return { inputTokens: raw.inputTokens, outputTokens: raw.outputTokens, totalTokens: raw.totalTokens,
+    ...(raw.cachedInputTokens === undefined ? {} : { cachedInputTokens: raw.cachedInputTokens }) };
+}
+
+/** Compression is a visible, accounted model request, not an invisible SDK retry. */
+export async function summarizeContext(opts: { system: string; prompt: string; maxOutputTokens: number; abortSignal: AbortSignal; cacheKey: string }) {
+  if (estimateTokens(opts.system + opts.prompt) + opts.maxOutputTokens + 512 > env().CONTEXT_INPUT_TOKENS) {
+    throw new ApiError(ErrorCode.INVALID_FORMAT, '摘要请求超过上下文窗口，旧消息未被删除', 400);
+  }
+  try {
+    const result = await generateText({ model: getModel(), system: opts.system, prompt: opts.prompt,
+      maxRetries: 0, maxOutputTokens: opts.maxOutputTokens, abortSignal: opts.abortSignal,
+      providerOptions: { openai: { store: false, promptCacheKey: opts.cacheKey } } });
+    return { raw: result.text, usage: modelUsage(result.usage) };
+  } catch {
+    throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '长对话摘要生成失败，原对话已保留，可重试', 502, true);
   }
 }
 

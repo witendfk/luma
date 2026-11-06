@@ -18,10 +18,10 @@ export interface RunCounters {
   /** 协议校正次数 */
   corrections: number;
   unknownUsageCalls: number;
-  background?: { requests: number; input: number; output: number; unknown: number };
-  calls: Array<{ purpose: string; model: string; attempt: number; durationMs: number; inputTokens: number | null; outputTokens: number | null; error?: string }>;
+  background?: { requests: number; input: number; output: number; unknown: number; cachedInput?: number };
+  calls: Array<{ purpose: string; model: string; attempt: number; durationMs: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens?: number | null; error?: string }>;
 
-  tokens: { input: number; output: number };
+  tokens: { input: number; output: number; cachedInput?: number };
   /** 无进展检测：相同工具+相同参数的失败连续出现即停止 */
   lastFailureKey: string | null;
   sameFailureCount: number;
@@ -58,10 +58,12 @@ export function recordModelRequest(counters: RunCounters, purpose: string): void
   counters.modelRequests[purpose] = (counters.modelRequests[purpose] ?? 0) + 1;
 }
 
-export function recordUsage(counters: RunCounters, usage?: { inputTokens?: number; outputTokens?: number }): void {
+export function recordUsage(counters: RunCounters, usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }): void {
   if (usage?.inputTokens === undefined || usage?.outputTokens === undefined) counters.unknownUsageCalls += 1;
   counters.tokens.input += usage?.inputTokens ?? 0;
   counters.tokens.output += usage?.outputTokens ?? 0;
+  // Cached input is a subset of input, never subtracted from window or safety budgets.
+  counters.tokens.cachedInput = (counters.tokens.cachedInput ?? 0) + (usage?.cachedInputTokens ?? 0);
 }
 
 export function spendDecision(counters: RunCounters): boolean {

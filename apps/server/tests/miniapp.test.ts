@@ -2,6 +2,52 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { miniappSandbox, storageMock } from './helpers/miniapp';
 
+test('启动清除旧预览记录和缓存，保留真实身份、输入与阅读位置', () => {
+  const storage = storageMock();
+  for (const key of ['luma_ui_preview:workspace:v1', 'luma_ui_preview:token', 'luma_ui_draft:home', 'luma_draft:study-preview:v1:s']) storage.setStorageSync(key, 'old');
+  storage.setStorageSync('luma_token', 'real-account');
+  storage.setStorageSync('luma_draft:home', '自己的问题');
+  storage.setStorageSync('luma_draft:reader:real:3', 's2');
+  const sandbox = miniappSandbox({}, { uni: storage });
+  const clean = sandbox.load('@/utils/legacy-preview').clearLegacyPreviewStorage;
+  clean(); clean();
+  assert.deepEqual([...storage.values.keys()].sort(), ['luma_draft:home', 'luma_draft:reader:real:3', 'luma_token']);
+  assert.equal(storage.getStorageSync('luma_token'), 'real-account');
+  storage.setStorageSync('luma_token', 'luma-ui-preview-only'); clean();
+  assert.equal(storage.getStorageSync('luma_token'), undefined);
+  const retired = sandbox.load('@/mocks/workspace');
+  assert.equal(retired.previewRecords().length, 0);
+  assert.equal(storage.getStorageSync('luma_ui_preview:workspace:v1'), undefined);
+});
+
+test('请求层即便收到旧mock配置也只使用真实传输，不返回示例结果', async () => {
+  const storage = storageMock();
+  let requests = 0;
+  const sandbox = miniappSandbox({ '@/config': { UI_MOCK: true, API_BASE: 'http://test.invalid' } }, { uni: {
+    ...storage, request(options: any) { requests++; options.success({ statusCode: 200, data: { ok: true, data: { items: [] } } }); },
+  } });
+  const transport = sandbox.load('@/utils/request');
+  assert.deepEqual(JSON.parse(JSON.stringify(await transport.request({ method: 'GET', path: '/api/conversations' }))), { items: [] });
+  assert.equal(requests, 1);
+  storage.setStorageSync('luma_token', 'luma-ui-preview-only');
+  await assert.rejects(transport.request({ method: 'GET', path: '/api/conversations' }), /重新登录/);
+  assert.equal(requests, 1);
+});
+
+test('后台重试成功后刷新消息和材料，清除旧失败提示', async () => {
+  const sandbox = miniappSandbox({ '@/api/conversations': {
+    getConversation: async () => ({ conversation: { id: 'c', title: '原题', activeSubjectId: 's' }, subjects: [], artifacts: [{ id: 'v3' }], latestRun: { id: 'retry', status: 'completed' } }),
+    listMessages: async () => ({ items: [{ id: 'answer', role: 'assistant', content: { blocks: [{ type: 'text', text: '概念一节已更新' }] } }] }),
+  } }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.error = '超过上下文预算'; chat.retryRunId = 'failed';
+  await chat.refresh();
+  assert.equal(chat.error, ''); assert.equal(chat.retryRunId, null);
+  assert.equal(chat.messages[0].text, '概念一节已更新'); assert.equal(chat.artifacts[0].id, 'v3');
+  chat.$dispose();
+});
+
 test('切题先保存草稿；保存失败保留原题，生成中不切换', async () => {
   let focuses = 0;
   const sandbox = miniappSandbox({ '@/api/conversations': {
@@ -339,4 +385,14 @@ test('重试不重复添加学生消息；新运行分块不拼进已停止的�
   options.onEvent({ type: 'text.reset', runId: 'new' });
   assert.equal(chat.messages.length, 2); assert.equal(chat.messages[1].text, '停在这里');
   chat.$dispose();
+});
+
+test('流式及排版故障的显示占位不泄漏完整或半截公式源码', () => {
+  const { pendingContentNodes } = miniappSandbox().load('@/utils/study-content');
+  for (const text of ['因此，**$f(x)$ 的最小值为 $3$**。', '公式 $\\frac{1}{', '先观察\\(x^2', '$$x^2+3']) {
+    const nodes = JSON.stringify(pendingContentNodes(text));
+    assert.doesNotMatch(nodes, /\$|frac|\\\\\(/);
+    assert.match(nodes, /公式排版中/);
+  }
+  assert.match(JSON.stringify(pendingContentNodes('先想 $x$', true)), /公式暂未排版/);
 });

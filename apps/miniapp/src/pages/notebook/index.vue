@@ -23,7 +23,7 @@ function clear(): void { notebook.keyword = ''; notebook.status = 'all'; }
     </view>
     <scroll-view class="records-scroll" scroll-y enhanced :bounces="false" :show-scrollbar="false">
       <view class="records">
-        <view v-if="!UI_MOCK" class="empty"><LumaIcon name="bookmark" :size="28" /><text>学习记录交互已准备好</text><text class="empty-note">当前先在前端预览模式定稿，正式数据稍后接入。</text></view>
+        <view v-if="!UI_MOCK" class="empty"><LumaIcon name="bookmark" :size="28" /><text>学习记录页面正在接入</text><text class="empty-note">已保存的真实记录会保留在服务端，页面接通后即可查看。</text></view>
         <view v-else-if="!notebook.collected.length" class="empty"><LumaIcon name="bookmark" :size="28" /><text>把值得回看的内容留在这里</text><text class="empty-note">在学习对话中点「保存错题」或「保存记录」，<br />就能回来继续阅读和练习。</text><button class="quiet empty-action" @tap="goHome">去学习对话</button></view>
         <view v-else-if="!notebook.visible.length" class="empty"><text>暂时没有匹配的记录</text><text class="empty-note">试试其他关键词，或切换查看视角。</text><button class="quiet empty-action" @tap="clear">清除搜索与复习筛选</button></view>
         <template v-else><button v-for="item in notebook.visible" :key="item.id" class="quiet record" @tap="open(item.id)"><view class="record-meta"><text>{{ item.type === 'knowledge' ? '知识点记录' : '错题记录' }}</text><text :class="{ reviewed: item.reviewStatus === 'reviewed' }">{{ item.reviewStatus === 'reviewed' ? '已复习' : '待复习' }}</text></view><text class="record-title">{{ item.title }}</text><text class="record-stem">{{ item.text }}</text><view class="record-bottom"><text>{{ item.tags.join(' · ') }}</text><view class="materials"><LumaIcon v-if="item.lesson" name="book" :size="14" /><LumaIcon v-if="item.practice" name="practice" :size="14" /></view></view></button></template>

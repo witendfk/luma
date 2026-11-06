@@ -5,6 +5,10 @@ import { spendToolExecution, type RunCounters } from './limits';
 import type { TurnPolicy } from './policy';
 import { findToolDefinition } from './tools';
 import { taskFrameFrom, type PendingBatch } from './types';
+import { textOf } from './blocks';
+import { LessonSource } from '../jobs/lesson-revision';
+import { evidencePack } from './teaching-memory';
+import { readHistory, type MessageReadOptions } from './history-reader';
 
 /**
  * 工具执行器（设计文档 §4.12 / §6.1）。
@@ -179,16 +183,21 @@ async function markExecution(
   });
 }
 
-interface ReadContextInput {
+interface ReadContextInput extends Partial<MessageReadOptions> {
   ref: 'subject' | 'artifacts' | 'attempt' | 'messages';
   attemptId?: string;
   sectionId?: string;
+  artifactId?: string;
+  beforeMessageId?: string;
+  messageIds?: string[];
+  limit?: number;
 }
 
-export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'userId' | 'conversationId' | 'policy'>, input: ReadContextInput): Promise<unknown> {
+export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'userId' | 'conversationId' | 'policy'> & { runId?: string }, input: ReadContextInput): Promise<unknown> {
+  if (!await db.conversation.findFirst({ where: { id: ctx.conversationId, userId: ctx.userId }, select: { id: true } })) return { ok: false, code: 'NOT_FOUND', message: '学习会话不存在' };
   if (input.ref === 'subject') {
     const subject = await db.subjectRevision.findFirst({
-      where: { conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
+      where: { id: ctx.policy.subjectRevisionId ?? '', conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
       orderBy: { version: 'desc' },
     });
     return {
@@ -206,21 +215,26 @@ export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'user
     };
   }
   if (input.ref === 'artifacts') {
-    const artifactId = ctx.policy.focus.artifactId;
+    const artifactId = input.artifactId ?? ctx.policy.focus.artifactId;
     if (artifactId || input.sectionId) {
       if (!artifactId) return { ok: false, code: 'INVALID_INPUT', message: '读取段落需提供当前材料' };
       const artifact = await db.artifact.findFirst({
         where: { id: artifactId, conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '', type: 'lesson', publishStatus: 'published' },
       });
       if (!artifact) return { ok: false, code: 'NOT_FOUND', message: '当前会话中没有该讲义' };
-      const lesson = (artifact.content as { lesson?: { title: string; sections: Array<{ id: string }> } }).lesson;
-      if (ctx.policy.focus.sectionId && input.sectionId && input.sectionId !== ctx.policy.focus.sectionId) return { ok: false, code: 'INVALID_INPUT', message: '只能读取本轮指定段落' };
-      const sectionId = ctx.policy.focus.sectionId ?? input.sectionId;
+      const lesson = (artifact.content as { lesson?: { title: string; sections: Array<{ id: string }>; diagrams?: Array<{ sectionId: string; content: unknown }> } }).lesson;
+      if (artifactId === ctx.policy.focus.artifactId && ctx.policy.focus.sectionId && input.sectionId && input.sectionId !== ctx.policy.focus.sectionId) return { ok: false, code: 'INVALID_INPUT', message: '只能读取本轮指定段落' };
+      const sectionId = input.sectionId ?? (artifactId === ctx.policy.focus.artifactId ? ctx.policy.focus.sectionId : undefined);
       const sections = sectionId ? lesson?.sections.filter((section) => section.id === sectionId) : lesson?.sections;
-      return { ok: true, artifactId, lesson: { title: lesson?.title, sections } };
+      if (sectionId && !sections?.length) return { ok: false, code: 'NOT_FOUND', message: '讲义段落不存在' };
+      // A hint-only turn must not regain a previous solution-bearing lesson through historical reads.
+      const sourceJob = artifact.jobId ? await db.generationJob.findUnique({ where: { id: artifact.jobId } }) : null;
+      if ((sourceJob?.payload as { answerPermission?: boolean } | null)?.answerPermission && !ctx.policy.allowSolution) return { ok: false, code: 'FORBIDDEN', message: '该讲义包含完整解析，本轮尚未授权' };
+      return { ok: true, artifactId, version: artifact.version, lesson: { title: lesson?.title, sections,
+        diagrams: lesson?.diagrams?.filter((d) => !sectionId || d.sectionId === sectionId) ?? [] } };
     }
     const artifacts = await db.artifact.findMany({
-      where: { conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '' },
+      where: { conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '', publishStatus: 'published' },
       orderBy: { updatedAt: 'desc' },
       take: 10,
       select: { id: true, type: true, version: true, publishStatus: true, subjectRevisionId: true },
@@ -259,15 +273,7 @@ export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'user
       },
     };
   }
-  const messages = await db.message.findMany({
-    where: { conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
-    orderBy: { id: 'desc' },
-    take: 10,
-  });
-  return {
-    ok: true,
-    messages: messages.reverse().map((m) => ({ role: m.role, at: m.createdAt, text: (m.content as { blocks?: Array<{ type: string; text?: string }> }).blocks?.map((b) => b.text ?? '').join('') ?? '' })),
-  };
+  return readHistory(ctx, input);
 }
 
 /** createLesson/createPractice：原子创建任务与输入快照，返回 deferred（§6.1） */
@@ -289,6 +295,7 @@ async function createMaterialJob(
   const goalType = toolName === 'createLesson' ? 'lesson' : 'practice';
   const run = await db.agentRun.findUniqueOrThrow({ where: { id: ctx.runId } });
   const frame = taskFrameFrom(run.taskFrame);
+  if (frame.conditionCorrection || frame.readback?.status === 'pending') return { kind: 'error', code: 'EVIDENCE_REQUIRED', message: '先回读历史依据或澄清/确认更正条件，再生成材料', retryable: false };
   const goal = frame.goals.find((g) => g.type === goalType);
   if (!goal) return { kind: 'error', code: 'NOT_REQUESTED', message: '学生本轮未请求这种材料，不得擅自扩充目标', retryable: false };
   if (goal.completedArtifactId) return { kind: 'result', value: { ok: true, artifactId: goal.completedArtifactId, type: toolName === 'createLesson' ? 'lesson' : 'exercise_set', status: 'published' } };
@@ -300,6 +307,18 @@ async function createMaterialJob(
 
   const subject = await db.subjectRevision.findUnique({ where: { id: ctx.policy.subjectRevisionId } });
   const type = toolName === 'createLesson' ? 'lesson' : 'exercise_set';
+  let sourceLesson: LessonSource | undefined;
+  if (toolName === 'createLesson' && (ctx.policy.focus.sectionId || input.sectionRef)) {
+    const sectionId = ctx.policy.focus.sectionId ?? String(input.sectionRef);
+    if (input.sectionRef && input.sectionRef !== sectionId) return { kind: 'error', code: 'INVALID_INPUT', retryable: false, message: '修订段落与学生选择不一致' };
+    const artifact = await db.artifact.findFirst({ where: { id: ctx.policy.focus.artifactId ?? '', conversationId: ctx.conversationId,
+      subjectRevisionId: subject!.id, type: 'lesson', publishStatus: 'published' } });
+    if (!artifact || (ctx.policy.focus.artifactVersion && ctx.policy.focus.artifactVersion !== artifact.version)) return { kind: 'error', code: 'INVALID_INPUT', retryable: false, message: '请从有效讲义选择要修改的段落' };
+    const sourceJob = artifact.jobId ? await db.generationJob.findUnique({ where: { id: artifact.jobId } }) : null;
+    if ((sourceJob?.payload as { answerPermission?: boolean } | null)?.answerPermission && !ctx.policy.allowSolution) return { kind: 'error', code: 'FORBIDDEN', retryable: false, message: '本轮未授权重讲完整解析' };
+    sourceLesson = LessonSource.parse({ artifactId: artifact.id, artifactVersion: artifact.version, sectionId, lesson: (artifact.content as { lesson?: unknown }).lesson });
+    if (!sourceLesson.lesson.sections.some((s) => s.id === sectionId)) return { kind: 'error', code: 'INVALID_INPUT', retryable: false, message: '原段落不存在' };
+  }
   const payload = {
     type,
     subjectRevisionId: subject!.id,
@@ -307,7 +326,10 @@ async function createMaterialJob(
     tags: subject!.tags,
     // 任务参数创建时固定（§6.1），worker 不从可变状态重建
     ...(toolName === 'createLesson' ? { target: String(input.target ?? '') , sectionRef: input.sectionRef } : { count: input.count ?? 2, difficulty: input.difficulty }),
-    answerPermission: false,
+    answerPermission: ctx.policy.allowSolution,
+    teachingMode: ctx.policy.teachingMode ?? 'question',
+    evidence: await evidencePack(ctx),
+    ...(sourceLesson ? { sourceLesson } : {}),
   };
 
   const job = await withActiveRun(ctx.runId, ctx.leaseOwner, (tx) => tx.generationJob.create({

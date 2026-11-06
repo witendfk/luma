@@ -1,63 +1,55 @@
-# Luma 文档索引
+# Luma Documentation
 
-本目录是项目文档唯一正文来源，随 `feature` 分支版本管理。文件及目录名使用英文，正文使用中文。整理日期：2026-11-05。
+更新日期：2026-11-06。产品和技术文档以本目录为准；英文文件名、中文正文。运行时提示词与Skill属于代码资源，上游资料属于参考，不与现行规格混用。
 
-## 文档职责
+## Start here
 
-| 文档 | 回答的问题 | 应写内容 | 不应写内容 |
-| --- | --- | --- | --- |
-| [spec/PRD.md](spec/PRD.md) | 产品做什么、为谁做 | 目标、业务流程、FR、P0/P1、业务约束和非功能需求 | 代码方案、排期、测试结果 |
-| [spec/acceptance.md](spec/acceptance.md) | 怎样算做完 | AC、业务场景、验收层级和通过标准 | 当轮通过/失败记录 |
-| [design/interaction.md](design/interaction.md) | 学生怎样使用 | 页面、布局、操作、反馈、跳转及返回恢复 | 接口细节、施工日志 |
-| [design/architecture.md](design/architecture.md) | 系统怎样分工 | 组件职责、业务状态、内容呈现与跨模块规则 | 逐任务状态、测试流水 |
-| [design/agent.md](design/agent.md) | Agent 内部怎样运行 | 执行循环、工具、提示词、上下文、记忆、预算及恢复 | 需求替代品、完成率 |
-| [design/backend-review.md](design/backend-review.md) | 当前服务接入方案哪里有差距 | 一次评审的代码证据、技术判断和整改关联 | 实施进度或新的产品范围 |
-| [design/agent-capability-review.md](design/agent-capability-review.md) | 课程能力如何对应当前 Agent、哪些缺口值得补 | 代码依据、通用学习边界、竞赛版取舍及补齐建议 | 课程全文、实施流水或已完成声明 |
-| [design/project-review.md](design/project-review.md) | 方案是否明确、当前先做什么 | 跨文档与实现评审、阻塞点、下一批实施边界 | 重复需求全文或冒充交付验收 |
-| [design/data-api.md](design/data-api.md) | 数据如何关联、前后端如何通信 | 实体、约束、API/事件、鉴权及契约差异 | 页面截图说明和开发日志 |
-| [design/decisions.md](design/decisions.md) | 为什么选这套技术 | 选型、原因、取舍和引入边界 | 复制 Agent 伪代码、任务清单 |
-| [delivery/plan.md](delivery/plan.md) | 下一步谁做什么、先后如何 | 任务、依赖、产出、完成条件及职责分工 | 已完成流水和功能定义 |
-| [delivery/progress.md](delivery/progress.md) | 现在做到哪里 | 当前模块状态、基线、差距及下一步 | 需求全文、架构方案 |
-| [delivery/verification.md](delivery/verification.md) | 实际验证过什么 | 环境、版本、操作、结果、限制和证据 | 新增需求、猜测完成状态 |
-| [delivery/release.md](delivery/release.md) | 怎样扫码独立使用 | 部署、平台配置、体验版上传和交付检查 | 当前开发进度 |
-| [development.md](development.md) | 本地怎样运行和排错 | 依赖、命令、开关、导入及故障排查 | 产品设计、历史验收结论 |
+- **继续任务**：[当前进度](delivery/progress.md) → [执行顺序与任务](delivery/plan.md) → 只读相关设计和验证证据。
+- **了解产品**：[PRD](spec/PRD.md) → [验收标准](spec/acceptance.md) → [交互](design/interaction.md)。
+- **启动排错**：[development](development.md)。不需要每次重读整个docs或历史评审。
 
-## 阅读顺序
+## Spec
 
-了解产品：PRD → 验收规格 → 交互设计。开发实现：系统设计 → Agent/数据接口设计 → 技术决策 → 实施计划。继续工作前：进度 → 验证记录 → 当前任务；本地启动查开发手册。
-
-## 维护规则
-
-1. 业务行为变化先改 PRD；验收标准变化改 acceptance，再更新相关设计。状态变化不改写需求。
-2. 页面流程只在 interaction 维护；跨组件设计放 architecture；Agent 内部规则放 agent；协议与迁移放 data-api。
-3. 开发前在 plan 定义任务，完成后在 progress 更新当前状态，在 verification 留环境与证据。三者互链，不重复全文。
-4. 设计是目标约束，代码/共享 schema 是当前实现。两者有差距时明确记录并列任务，不把骨架说成已验收，也不让旧接口反向删减已确认需求。
-5. 当前用户确认优先于旧文件。发现冲突先核对确认记录；不能凭“某份文件更新更晚”自动扩大范围。
-6. 只维护一份现行正文，不并存“最终版/最新版/修订版”。过时描述合并删除，历史从 Git 追溯。
-7. `apps/server/src/agent/prompts/*.md` 是运行时提示词，属于代码资源，不纳入产品文档重命名或内容清理。
-
-## 旧文档迁移
-
-| 原位置 | 当前位置 |
+| 文档 | 唯一职责 |
 | --- | --- |
-| `需求分析.md` | `spec/PRD.md`、`spec/acceptance.md` |
-| `技术选型.md` | `design/decisions.md` |
-| `设计文档.md` | `design/architecture.md`、`interaction.md`、`agent.md`、`data-api.md`；计划与交付内容移至 `delivery/` |
-| `实施进度.md` | `delivery/progress.md`；任务拆至 `plan.md`，证据拆至 `verification.md` |
-| `本地联调.md` | `development.md` |
-| `产品原型/移动端-交互说明.md` | 外层 `产品原型/README.md`，仅保留原型使用说明 |
+| [PRD](spec/PRD.md) | 用户、业务目标、功能范围和业务约束；不写实施进度 |
+| [acceptance](spec/acceptance.md) | 稳定AC和通过条件；不记录某轮检查结果 |
 
-部分旧代码注释仍使用原“设计文档 §n”编号，其定位映射如下；文档整理不修改运行代码或提示词。
+## Design
 
-| 原章节 | 当前设计位置 |
+| 文档 | 唯一职责 |
 | --- | --- |
-| §1 | architecture §1 |
-| §2 | interaction |
-| §3 | architecture §2 |
-| §4～§8 | agent §1～§5（子编号保持对应，如原 §4.12 对应 §1.12） |
-| §9～§11 | data-api §1～§3 |
-| §12 | delivery/plan |
-| §13 | spec/acceptance |
-| §14 | delivery/release |
+| [interaction](design/interaction.md) | 页面呈现、操作、跳转、返回与体验边界 |
+| [architecture](design/architecture.md) | 系统分工、状态边界和跨模块关系 |
+| [agent](design/agent.md) | 执行循环、工具权限、上下文、预算和恢复 |
+| [tutoring](design/tutoring.md) | 教学策略、节点推进、验证证据与Sigma取舍 |
+| [data-api](design/data-api.md) | 实体/版本/来源、API与事件契约、兼容和目标契约 |
+| [decisions](design/decisions.md) | 技术选择及原因；不再维护一套任务或能力状态 |
 
-[工程入口](../README.md) · [原型说明](../../产品原型/README.md)
+## Delivery
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| [plan](delivery/plan.md) | 任务定义、依赖、顺序、完成条件；不写完成流水 |
+| [progress](delivery/progress.md) | 当前状态快照、已接入/已验证/待完成及阻塞；更新原条目 |
+| [verification](delivery/verification.md) | 验证时点、环境、操作、结果、证据和限制；历史不冒充当前 |
+| [release](delivery/release.md) | 交付阶段部署、微信配置、成员和体验版操作 |
+| [development](development.md) | 本地配置、命令与排错；不维护功能完成清单 |
+
+## Resources and history
+
+- [产品Agent Skill](../apps/server/src/agent/skills/luma-tutor/SKILL.md)及`prompts/*.md`：服务端运行资源。实际加载由代码完成，不因MD存在就等于已接入。
+- [Sigma原文快照](../references/sigma/UPSTREAM.md)：固定版本的上游参考，离线可读，不能覆盖Luma策略或项目约定。
+- [历史评审](archive/reviews.md)：合并原backend-review、project-review、agent-capability-review；只追溯当时发现，当前缺口和顺序不从这里读取。
+- [原型说明](../../产品原型/README.md)：HTML仅为视觉/交互参考，不证明小程序或接口已完成。
+
+## Maintenance
+
+1. **任务推进当轮同步文档**：progress更新原状态；顺序/依赖变化改plan；做过验证改verification，无验证明确说明。用户未提醒也要执行。
+2. 只有业务、交互、机制或协议真的变化时才改对应spec/design；实现进度不复制到每份文档。
+3. 设计表达目标约束，代码和schema表达实现；已接入、定向检查通过、真实行为通过、业务验收通过不能互相替代。
+4. 同一事实只在所属文档维护，其他地方引用。旧状态从现行正文移除，必要证据留verification，阶段评审进入archive，不再新增“最终版/最新补充版”。
+5. 历史测试数属于当时工作区；当前代码变化后不能自动继承“全部通过”。不使用旧评审、旧mock或未实现目标契约作为完成依据。
+6. [AGENTS.md](../AGENTS.md)约束后续执行；用户最新明确要求优先。确认后才commit、push；文档整理不触发模型调用、生产构建或部署。
+
+早期中文文档已拆入当前目录。旧代码注释“设计文档§4～§8”对应agent§1～§5，“§9～§11”对应data-api§1～§3；只在维护相关代码时更新，不另建重复映射文档。

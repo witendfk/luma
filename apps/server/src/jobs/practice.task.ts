@@ -5,7 +5,7 @@ import { env, hasModelCredentials } from '../lib/env';
 import { ApiError, notImplemented } from '../lib/errors';
 import { parseReview } from './review';
 import { extractJson, generateJson } from '../lib/model';
-import { loadPrompt } from '../agent/prompts';
+import { loadPrompt, loadTeachingTaskPrompt } from '../agent/prompts';
 import { JobLeaseLostError, publishArtifact, touchJob, type JobLease } from './shared';
 
 /**
@@ -44,6 +44,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
     tags?: string[];
     count?: number;
     difficulty?: string;
+    evidence?: unknown;
   };
 
   try {
@@ -69,9 +70,10 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
-        system: await loadPrompt('practice'),
+        system: await loadTeachingTaskPrompt('practice'),
         prompt: [
           `学习对象：\n${payload.subjectText ?? ''}`,
+          `教学依据（版本固定的数据；错误尝试不当成结论）：${JSON.stringify(payload.evidence ?? null)}`,
           `知识点标签：${(payload.tags ?? []).join('、') || '无'}`,
           `生成 ${payload.count ?? 2} 道题${payload.difficulty ? `，难度侧重 ${payload.difficulty}` : ''}。`,
           '输出 JSON：{"exercises":[{"order","stem","topic","difficulty","purpose","answer","analysis"}]}；公式一律 LaTeX；严格在已确认范围内出题。',
@@ -90,6 +92,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         prompt: [
           '独立复核以下题组：每题条件完整可解，题干、参考答案与解析一致，不超出学生已确认范围。',
           `学习对象：\n${payload.subjectText ?? ''}`,
+          `教学依据：${JSON.stringify(payload.evidence ?? null)}`,
           `题组：${JSON.stringify(practice)}`,
           '输出 {"pass": boolean, "issues": string[]}。',
         ].join('\n'),

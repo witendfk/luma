@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onLaunch } from '@dcloudio/uni-app';
 import { useAuthStore } from '@/stores/auth';
+import { clearLegacyPreviewStorage } from '@/utils/legacy-preview';
 
 onLaunch(() => {
+  clearLegacyPreviewStorage();
   // 启动时静默恢复登录态；登录态过期由请求层统一抛错后引导重新登录（FR-01）
   useAuthStore()
     .refreshMe()

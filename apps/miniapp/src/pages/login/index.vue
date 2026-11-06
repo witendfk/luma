@@ -4,10 +4,9 @@ import LumaIcon from '@/components/LumaIcon.vue';
 import { onShow } from '@dcloudio/uni-app';
 import { useAuthStore } from '@/stores/auth';
 import { getToken } from '@/utils/token';
-import { UI_MOCK } from '@/config';
 
 const auth = useAuthStore();
-const devLogin = UI_MOCK || (import.meta.env.DEV && import.meta.env.VITE_DEV_LOGIN === 'true');
+const devLogin = import.meta.env.DEV && import.meta.env.VITE_DEV_LOGIN === 'true';
 const status = ref('');
 const loading = ref(false);
 const consent = ref(false);
@@ -23,7 +22,7 @@ function policy(kind: 'privacy' | 'terms'): void {
 function help(): void {
   uni.showModal({
     title: '登录帮助',
-    content: UI_MOCK ? '当前是离线前端预览，使用独立示例身份。操作只保存在本机，不连接服务端，也不影响正式学习记录。' : devLogin
+    content: devLogin
       ? '当前使用本地测试身份，学习记录保存在本地服务端。正式体验版将使用你的微信身份。'
       : '请确认微信网络正常后重试。重新登录同一账号后，可恢复已同步的学习记录。',
     showCancel: false,
@@ -108,7 +107,7 @@ function onLogin(): void {
         <text class="policy-link" @tap="policy('privacy')">隐私政策</text>
       </view>
       <view v-if="status" class="login-status">{{ status }}</view>
-      <view v-if="devLogin" class="dev-note">{{ UI_MOCK ? '前端预览 · 无需网络 · 使用独立示例身份' : '开发联调 · 使用本地测试身份' }}</view>
+      <view v-if="devLogin" class="dev-note">开发联调 · 使用本地测试身份</view>
     </view>
     <view class="login-footer">
       <text>Luma · 学习从好奇开始</text>

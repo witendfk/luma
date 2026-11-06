@@ -18,7 +18,10 @@
     "test:runtime": "tsx scripts/runtime-check.ts",
     "test:migration": "tsx scripts/migration-check.ts",
     "test:subjects": "tsx scripts/subjects-check.ts",
-    "seed:demo": "tsx scripts/seed-demo.ts"
+    "test:reading": "tsx scripts/reading-check.ts",
+    "test:reading:live": "tsx scripts/reading-live-check.ts",
+    "test:context": "tsx scripts/context-check.ts",
+    "test:memory": "tsx scripts/memory-check.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",
@@ -26,6 +29,7 @@
     "@next/env": "15.5.28",
     "@prisma/client": "^6.16.0",
     "ai": "^5.0.0",
+    "js-tiktoken": "^1.0.21",
     "katex": "^0.16.21",
     "mathjax-full": "3.2.2",
     "next": "^15.0.0",

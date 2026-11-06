@@ -56,3 +56,31 @@ test('非法公式不注入 HTML', async () => {
   assert.equal(blocks[0]?.kind, 'formula');
   assert.doesNotMatch(JSON.stringify(blocks), /<script>/);
 });
+
+test('加粗结论内的行内公式继续解析，不泄漏截图中的美元定界符', async () => {
+  const blocks = await renderContent('因此，**$f(x)$ 的最小值为 $3$，在 $x=2$ 时取得。**');
+  const nodes = blocks[0]!.nodes!;
+  const strong = nodes[0]!.children!.find((n) => n.name === 'strong')!;
+  assert.equal(strong.children!.filter((n) => n.name === 'img').length, 3);
+  assert.doesNotMatch(JSON.stringify(nodes), /\$|\*\*/);
+});
+
+test('结构化正文、步骤标题和公式按顺序排版，禁止原样输出工具JSON', async () => {
+  const { TeachingReply, teachingReplyText } = await import('@luma/shared');
+  const reply = TeachingReply.parse([{ type: 'heading', text: '配方' }, { type: 'paragraph', text: '先凑完全平方。' }, { type: 'formula', text: 'f(x)=(x-2)^2+3' }]);
+  const blocks = await renderContent('不应显示的旧投影', reply);
+  assert.equal(blocks.at(-1)!.kind, 'formula');
+  assert.match(JSON.stringify(blocks), /配方/);
+  assert.doesNotMatch(JSON.stringify(blocks), /不应显示|\$\$/);
+  assert.match(teachingReplyText(reply), /\$\$f\(x\)/);
+  assert.throws(() => TeachingReply.parse([{ type: 'html', text: '<script>' }]));
+  assert.throws(() => TeachingReply.parse([{ type: 'formula', text: '$x$' }]));
+  assert.throws(() => TeachingReply.parse([{ type: 'paragraph', text: { formula: 'x' } }]));
+});
+
+test('公式排版失败给明确状态，不把LaTeX源码冒充可读公式', async () => {
+  const blocks = await renderContent('仍保留说明。\n\n$$\\badcommand{x}$$');
+  assert.equal(blocks.at(-1)!.failed, true);
+  assert.match(JSON.stringify(blocks), /公式暂时无法排版/);
+  assert.doesNotMatch(JSON.stringify(blocks), /badcommand/);
+});

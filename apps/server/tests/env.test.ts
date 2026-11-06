@@ -13,6 +13,9 @@ test('示例中的空可选配置可用于启动，非法非空 URL 仍被拒绝
   const parsed = parseEnv({ DATABASE_URL: database, OPENAI_BASE_URL: '', COS_BUCKET: '  ' });
   assert.equal(parsed.OPENAI_BASE_URL, undefined);
   assert.equal(parsed.COS_BUCKET, undefined);
+  assert.equal(parsed.CONTEXT_INPUT_TOKENS, 300000);
+  assert.equal(parsed.LONG_TASK_CONTEXT_INPUT_TOKENS, 1000000);
+  assert.equal(parsed.MAX_RUN_TOKENS, 1000000);
   assert.throws(() => parseEnv({ DATABASE_URL: database, OPENAI_BASE_URL: 'not a url' }), /OPENAI_BASE_URL/);
 });
 
@@ -21,6 +24,13 @@ test('生产和测试环境拒绝假登录，开发环境仍可显式启用', ()
     assert.throws(() => parseEnv({ DATABASE_URL: database, NODE_ENV, LUMA_DEV_FAKE_LOGIN: 'true' }), /LUMA_DEV_FAKE_LOGIN/);
   }
   assert.equal(parseEnv({ DATABASE_URL: database, NODE_ENV: 'development', LUMA_DEV_FAKE_LOGIN: '1' }).LUMA_DEV_FAKE_LOGIN, true);
+});
+
+test('开发与生产服务拒绝模型mock，只有隔离测试进程可启用', () => {
+  for (const NODE_ENV of ['development', 'production']) {
+    assert.throws(() => parseEnv({ DATABASE_URL: database, NODE_ENV, LUMA_MOCK_AGENT: 'true' }), /LUMA_MOCK_AGENT/);
+  }
+  assert.equal(parseEnv({ DATABASE_URL: database, NODE_ENV: 'test', LUMA_MOCK_AGENT: 'true' }).LUMA_MOCK_AGENT, true);
 });
 
 test('独立 worker 使用 Next.js 环境文件优先级，不依赖当前目录', () => {

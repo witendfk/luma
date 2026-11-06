@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { loadWorkerEnv } from '../src/worker/load-env';
+loadWorkerEnv();
 import { miniappSandbox, storageMock } from '../tests/helpers/miniapp';
 
 // 使用实际小程序 API、Pinia store 与 SSE 解码器连接本地服务；模拟的仅为 wx/uni 网络宿主。
@@ -128,4 +130,10 @@ async function main() {
   console.log('PASS 退出清空账号数据');
   console.log('本地前后端逻辑层联通通过；模型模式以服务端运行记录为准，微信渲染与真机另行验收。');
 }
-main().catch((err) => { console.error(err); process.exitCode = 1; }).finally(() => { chat.$dispose(); auth.$dispose(); });
+main().catch((err) => { console.error(err); process.exitCode = 1; }).finally(async () => {
+  chat.reset(); chat.$dispose(); auth.$dispose();
+  if (['localhost', '127.0.0.1', '[::1]'].includes(new URL(base).hostname)) {
+    const { db } = await import('../src/lib/db');
+    try { await db.user.deleteMany({ where: { openid: identity } }); } finally { await db.$disconnect(); }
+  }
+});

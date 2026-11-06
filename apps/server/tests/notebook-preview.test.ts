@@ -26,7 +26,7 @@ test('mock 收藏幂等、归档与移除独立，重新收藏保留笔记及复
   notebook.$dispose();
 });
 
-test('搜索及三种视角筛选，笔记跨启动恢复；退出清理当前内存与隔离草稿', () => {
+test('测试沙箱搜索及筛选、笔记恢复；退出清理内存与应用草稿', () => {
   const first = fixture();
   first.notebook.keyword = '配方法'; assert.equal(first.notebook.visible.length, 1);
   first.notebook.keyword = ''; first.notebook.view = 'practice'; assert.equal(first.notebook.visible.length, 1);
@@ -39,13 +39,13 @@ test('搜索及三种视角筛选，笔记跨启动恢复；退出清理当前�
   first.tokens.clearToken();
   assert.equal(first.notebook.records.length, 0);
   assert.equal(first.storage.values.has('luma_ui_draft:note:x'), false);
-  assert.equal(first.storage.values.get('luma_draft:real-account'), '正式草稿');
+  assert.equal(first.storage.values.get('luma_draft:real-account'), undefined);
   first.notebook.$dispose(); second.notebook.$dispose();
 });
 
-test('UI mock 不发网络请求，未知操作不回退；保存失败不报成功', async () => {
+test('测试沙箱替身不发网络、未知操作不回退；保存失败不报成功', async () => {
   const f = fixture();
-  const request = f.sandbox.load('@/utils/request').request;
+  const request = f.workspace.mockRequest;
   const list = await request({ method: 'GET', path: '/api/conversations?archived=0' });
   assert.equal(list.items.length, 2);
   await assert.rejects(request({ method: 'GET', path: '/unknown' }), /未调用真实服务/);

@@ -1,6 +1,9 @@
 import type { ArtifactType, Prisma } from '@prisma/client';
 import { db } from '../lib/db';
 import { env } from '../lib/env';
+import { LessonSource } from './lesson-revision';
+import { isDeepStrictEqual } from 'node:util';
+import { Lesson } from '@luma/shared';
 
 export interface JobLease {
   jobId: string;
@@ -77,6 +80,13 @@ export async function publishArtifact(
       return null;
     }
     if (job.type !== type) throw new Error('任务与成果类型不一致');
+    const payload = job.payload as { sourceLesson?: unknown; answerPermission?: boolean } | null;
+    if (payload?.sourceLesson) {
+      const source = LessonSource.parse(payload.sourceLesson);
+      const original = await tx.artifact.findFirst({ where: { id: source.artifactId, conversationId: job.conversationId,
+        subjectRevisionId: job.subjectRevisionId, version: source.artifactVersion, publishStatus: 'published' } });
+      if (!original || !isDeepStrictEqual(Lesson.parse((original.content as { lesson?: unknown }).lesson), source.lesson)) throw new Error('原讲义快照不匹配');
+    }
 
     const last = await tx.artifact.findFirst({
       where: { subjectRevisionId: job.subjectRevisionId, type },
@@ -100,6 +110,7 @@ export async function publishArtifact(
       data: { status: 'succeeded', resultArtifactId: artifact.id, step: null, leasedUntil: null, leasedBy: null },
     });
     if (completed.count !== 1) throw new JobLeaseLostError();
+    // Published materials remain in Artifact; their headings must not evict student difficulties.
     return artifact.id;
   });
 }

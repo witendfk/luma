@@ -4,30 +4,21 @@
 
 前置：Node.js ≥ 18.20、pnpm ≥ 9、微信开发者工具；本地集成另需 Docker/Colima 运行 PostgreSQL。
 
-## 1 两种调试模式
+## 1 当前调试方式
 
-| 模式 | 配置 | 启动范围 | 用途 |
-| --- | --- | --- | --- |
-| UI mock | 小程序开发环境 `VITE_UI_MOCK=true` | 仅小程序编译 | 页面/交互及本机恢复，不调用真实接口 |
-| 本地集成 | `VITE_UI_MOCK=false`，开发身份和模型 mock 按需打开 | API + 数据库 + worker + 小程序 | 页面到正式服务逻辑、数据库及任务验证 |
+小程序始终连接真实业务 API，教学内容由服务端配置的 GPT 生成。已停用交互验收预览模式，环境变量不能重新启用示例工作区，也不会在网络或模型失败时回退到示例回答。
 
-UI mock 配置在 `apps/miniapp/.env.local`，生产构建不启用。UI mock 中未覆盖操作不回退真实网络；不将演示数据写入正式学习记录。
+自动化测试可在独立沙箱或 `NODE_ENV=test` 进程使用模型替身；开发和生产服务禁止启用 `LUMA_MOCK_AGENT`。开发身份只解决本地登录，不模拟教学内容。
 
-只看前端时：
-
-```bash
-pnpm dev:miniapp
-```
-
-文件变化未触发编译时可使用 `CHOKIDAR_USEPOLLING=true pnpm dev:miniapp`。切换开关后重启编译器，等待 `Build complete` 再在微信工具编译。
+小程序编译使用 `pnpm dev:miniapp`；文件变化未触发编译时可使用 `CHOKIDAR_USEPOLLING=true pnpm dev:miniapp`。看到 `Build complete` 后再在微信工具编译。
 
 ### 当前服务端开发的联调方式
 
 在微信开发者工具打开已编译小程序，连接 `http://localhost:4000` 的 Next.js API。开发者工具中启用本地“不校验合法域名、TLS 及 HTTPS 证书”，即可联调本地 HTTP；这不要求先部署、真机扫码或上传体验版。
 
-- 关闭 `VITE_UI_MOCK` 才会请求真实业务接口；开发身份 `VITE_DEV_LOGIN` + `LUMA_DEV_FAKE_LOGIN` 可继续使用，得到可校验的应用登录态和本人数据库记录。
-- 首个联调任务可使用服务端模型 mock 验证数据归属；接 GPT 时关闭 `LUMA_MOCK_AGENT` 并在服务端配置凭据。不把 UI mock、服务端模型 mock 和开发身份开关混为一项。
-- 图片输入先通过模拟器文件选择器使用本机样例，上传到正式存储链路并交真实 GPT 读取；不要求先做手机相机操作。
+- 业务请求始终走真实接口；开发身份 `VITE_DEV_LOGIN` + `LUMA_DEV_FAKE_LOGIN` 可继续使用，得到可校验的应用登录态和本人数据库记录。
+- API 与 worker 使用真实 GPT 凭据，`LUMA_MOCK_AGENT=false`；测试替身只用于隔离的自动化测试，不作为页面联调模式。
+- 上传视觉接通后可先用模拟器文件选择器验证；具体可用能力查progress，未接通时不得返回预设识别结果。
 - 每段完成后在工具 Network/Console 检查业务请求、状态及恢复，服务端查运行/任务日志，数据库核对对象与轮次；这一套就是当前前后端联调。
 - 真实微信换码、手机键盘/手势和体验版另在 B07 验证；需要时可以提前单测，不构成开发前置条件。
 
@@ -44,7 +35,7 @@ pnpm dev:miniapp
 /Users/acrdia/Desktop/work_space/学习助手agent分析/luma/apps/miniapp/dist/dev/mp-weixin
 ```
 
-ARM64 微信开发者工具已安装，项目已导入。已注册个人小程序，真实 AppID 已同步到 `apps/miniapp/src/manifest.json` 的 `mp-weixin.appid` 与 `apps/miniapp/project.config.json`，当前不再是游客模式。真实微信登录仍需配置服务端 AppID/AppSecret，并关闭两端开发身份开关；AppID 已配置不代表真实换码已通过。
+AppID需在`apps/miniapp/src/manifest.json`的`mp-weixin.appid`与`apps/miniapp/project.config.json`保持一致。真实微信登录另需服务端AppID/AppSecret，并关闭两端开发身份开关；填写AppID不代表真实换码通过。
 
 开发者工具「详情 → 本地设置」中勾选「不校验合法域名、web-view（业务域名）、TLS 版本以及 HTTPS 证书」。这只用于本地调试；体验版需 HTTPS 和合法域名。
 
@@ -60,11 +51,11 @@ pnpm db:up
 pnpm --filter @luma/server exec prisma migrate deploy
 ```
 
-`apps/server/.env` 保留数据库地址等配置，密钥仅放服务端。需要模型 mock 的本地集成时，在未跟踪的 `apps/server/.env.local` 配置：
+`apps/server/.env` 保留数据库地址等配置，密钥仅放服务端。本地真实 GPT 联调在未跟踪的 `apps/server/.env.local` 配置：
 
 ```dotenv
 LUMA_DEV_FAKE_LOGIN=true
-LUMA_MOCK_AGENT=true
+LUMA_MOCK_AGENT=false
 ```
 
 小程序 `apps/miniapp/.env.local` 配置：
@@ -92,14 +83,16 @@ pnpm --filter @luma/server worker:dev
 
 ```bash
 # 终端 3：小程序开发编译，保持运行以增量更新
-VITE_UI_MOCK=false CHOKIDAR_USEPOLLING=true pnpm dev:miniapp
+CHOKIDAR_USEPOLLING=true pnpm dev:miniapp
 ```
 
 浏览器访问 `http://localhost:4000/api/health`，应返回 `ok: true` 和 `db: up`。在开发者工具点击编译；改动源码后由 uni-app 重新生成小程序文件。
 
-上面的终端 3 命令显式使用正式接口，优先于 `.env.local` 中的 UI mock 设置。若编译器未响应源码变更，重启该命令，看到 `Build complete` 后再编译小程序。API 与非 watch worker 的代码变更也要确认已加载；worker 可使用上面的 watch 命令。
+小程序没有预览模式切换开关。若编译器未响应源码变更，重启该命令，看到 `Build complete` 后再编译小程序。API 与非 watch worker 的代码变更也要确认已加载；worker 可使用上面的 watch 命令。
 
-需要双题点击样例时，API 开启开发身份后运行 `pnpm seed:demo`。它在 `dev:local-student` 账号下新增标题为「B01 联调 · 两道题独立学习」的记录，每次执行都会新建；不会启动时自动插入，也不代表图片识别。
+旧演示种子脚本已移除。启动时自动清除旧预览缓存及假凭据，保留真实登录、问题草稿和阅读位置；不自动插入示例记录。
+
+本机旧数据清理脚本为 `apps/server/scripts/cleanup-demo.ts`，仅处理已核实的精确旧会话名单与 `dev:smoke` 测试账号，不按标题猜测真实数据。从 `apps/server` 执行 `node --import tsx scripts/cleanup-demo.ts` 只查看范围；带 `--apply` 才会先保存忽略目录内的关联快照再清理，可重复执行。
 
 ## 5 自动检查
 
@@ -110,13 +103,16 @@ pnpm test:local   # 服务端、数据库、worker 已启动时，验证实际�
 pnpm test:runtime # 真库检查取消、超时、中断、段落读取、并发草稿、只读历史、材料重试
 pnpm test:migration # 独立 schema 验证实际旧数据迁移，不重置本地数据库
 pnpm test:subjects  # 真库检查逐题版本/进度/来源、权限、收藏及导航恢复
+pnpm test:memory    # 真库隔离：记忆生命周期、原文回读、权限与材料快照
+pnpm test:reading   # 真库+模型mock：局部修订、记忆回读及20轮连续教学
+pnpm test:context   # 独立测试账号：80%阈值摘要、跨轮复用、精确回读及版本隔离
 ```
 
-集成脚本用于当前模拟模型环境；`test:local` 创建带 `dev:smoke-` 前缀的独立测试账号和学习记录，便于检查；`test:runtime`、`test:subjects` 仅清理自己创建的唯一测试账号，`test:migration` 清理自己的隔离 schema。它们不替代微信工具中的点击、公式显示和真机检查。
+使用模型替身的真库脚本在独立测试进程运行，不改变开发 API/worker 的真实模型配置。`test:local` 连接当前真实服务，创建带 `dev:smoke-` 前缀的独立账号并在结束时清理；其他真库测试仅清理自己创建的账号，`test:migration` 清理自己的隔离 schema。它们不替代微信工具中的点击、公式显示和真机检查。
 
 ## 6 真实依赖调试
 
-真实模型联调时替换模型依赖：服务端设置 `OPENAI_API_KEY`、所选 `LUMA_MODEL_ID` 和必要的 `OPENAI_BASE_URL`，关闭 `LUMA_MOCK_AGENT`，重启 API 与 worker。先验证一题三轮引导和工具调用，再测材料生成；不把模拟通过记作真实模型通过。工具协议参考 [OpenAI 官方文档](https://developers.openai.com/api/docs/guides/function-calling)。
+真实模型联调配置：服务端设置 `OPENAI_API_KEY`、所选 `LUMA_MODEL_ID` 和必要的 `OPENAI_BASE_URL`，关闭 `LUMA_MOCK_AGENT`，重启 API 与 worker。先验证一题三轮引导和工具调用，再测材料生成；不把模拟通过记作真实模型通过。工具协议参考 [OpenAI 官方文档](https://developers.openai.com/api/docs/guides/function-calling)。
 
 手机里的 `localhost` 指手机本身，不能访问电脑。真机与电脑在同一网络时，将 `VITE_API_BASE` 换为电脑局域网地址，例如开发服务启动时打印的 Network 地址，重新编译；实际设备不允许 HTTP 或需要远程访问时，使用 HTTPS 测试域名及小程序后台合法域名配置。最终体验版必须验证电脑关闭后，线上 API、数据库与 worker 仍能正常工作。
 
@@ -133,4 +129,26 @@ pnpm test:subjects  # 真库检查逐题版本/进度/来源、权限、收藏�
 
 启动 API、worker 和正式 API 模式的小程序后，在微信工具中打开会话，点击生成图文讲解；完成后进入阅读页。公式通过 `/api/content/render` 排版，段落追问携带讲义和章节引用。
 
-独立图片模型仅为后续学生主动生成总结卡预留，当前不属于讲义调用链；本轮不要求补充其配置。密钥仅放服务端忽略的 `.env.local`，不提交 Git。
+独立图片模型用于学生主动生成总结卡，不属于讲义调用链；仅调试正文和教学图示时不需要该配置。密钥仅放服务端忽略的 `.env.local`，不提交 Git。
+
+上下文预算：普通请求 `CONTEXT_INPUT_TOKENS=300000`，长材料 `LONG_TASK_CONTEXT_INPUT_TOKENS=1000000`；`MAX_RUN_TOKENS=1000000` 单独限制一次运行的累计用量。配置不代表网关容量已实测。输入按GPT编码估算；普通窗口内另预留输出，`CONTEXT_COMPACT_RATIO=0.8`触发滚动摘要，`CONTEXT_SUMMARY_TOKENS=4096`限制摘要大小；不再固定只取12条或直接丢弃旧历史。更改环境变量后重启 API 和 worker。
+
+真实局部修订检查会使用已配置 GPT 并写入指定开发会话，按需手动运行 `pnpm --filter @luma/server test:reading:live <conversationId>`；`--verify-latest` 只核验最新局部修订任务，不额外调用模型。
+
+`pnpm --filter @luma/server test:context --live` 使用已配置GPT在独立测试账号验证真实摘要和续接；脚本用18k测试窗口触发80%阈值，不修改环境文件或已有学习记录，结束仅清理自己的测试账号。普通 `test:context` 为真库+模型mock，不冒充真实摘要质量。
+
+调用记录可查 `context_summary` 用途和 `cachedInputTokens`；该数是输入token子集，不减掉窗口用量。公式/图形缓存仅进程内，重启冷启动，不缓存任意教学回复或学生资料。
+
+教学记忆真实GPT抽验从 `apps/server` 执行 `node --import tsx scripts/memory-live-check.ts`：创建独立账号，故意让摘要漏掉讲法与方法，核验记忆提取、search→read及后续教学，产生真实模型用量。结束自动清理自己的数据，脱敏报告保存在忽略目录 `.luma/checks/`；不向用户学习列表种入示例。
+
+## 8 本地教学 Skill
+
+`apps/server/src/agent/skills/luma-tutor/SKILL.md`是项目运行资源；`loadTutoringPolicy`读取“教学边界”起的正文，主对话通过`assembleSystem`、后台通过`loadTeachingTaskPrompt`将实际内容发给GPT。参考原文`references/sigma/`不自动加载，学生端不访问GitHub或临时目录。
+
+修改Skill后开启下一轮请求会重新读取内容；修改TypeScript加载代码时确认API/worker已热更新，非watch进程需重启。运行方式仍使用本文已有pnpm脚本、以apps/server为服务工作目录；资源读取失败应报错，不能静默当作已有教学策略。定向请求装配检查：
+
+```bash
+pnpm --filter @luma/server exec node --import tsx --test tests/tutoring.test.ts
+```
+
+该检查使用SDK模型替身捕获实际输入，不调用真实GPT，不证明教学效果；真实行为验收归T01/T04。当前开发不需要为此做生产构建或部署。

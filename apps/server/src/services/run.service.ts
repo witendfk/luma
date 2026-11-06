@@ -1,3 +1,4 @@
+import { initialReadback } from '../agent/readback';
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { TurnRequest } from '@luma/shared';
@@ -69,17 +70,10 @@ export const runService = {
       }
       if (subject) await validateFocus(tx, userId, conversationId, subject.id, input);
       else if (input.artifactId || input.attemptId || input.exerciseId || input.sectionId) throw invalidFormat('请先提供学习内容');
-      const recent = await tx.message.findMany({
-        where: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, status: 'complete',
-          ...(source?.userMessageId ? { id: { not: source.userMessageId } } : {}) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 24,
-      });
-      const focus = { artifactId: input.artifactId, sectionId: input.sectionId, attemptId: input.attemptId, exerciseId: input.exerciseId };
-      const history = recent.reverse().filter((m) => {
-        const old = (m.content as { focus?: TaskFrame['focus'] }).focus ?? {};
-        const sameFocus = (['artifactId', 'sectionId', 'attemptId', 'exerciseId'] as const)
-          .every((key) => (old[key] ?? null) === (focus[key] ?? null));
-        return sameFocus && (!source || m.createdAt <= source.userMessage!.createdAt);
-      }).slice(-12).map((m) => ({ role: m.role, content: textOf(m.content) })).filter((m) => m.content);
+      const focus = { artifactId: input.artifactId, artifactVersion: input.artifactVersion, sectionId: input.sectionId, attemptId: input.attemptId, exerciseId: input.exerciseId };
+      // The driver loads raw history and its rolling checkpoint outside this short write transaction.
+      // Never silently drop the oldest messages before they can be summarized.
+      const history: import('../lib/model').ModelMessage[] = [];
       await tx.agentRun.updateMany({ where: { conversationId, status: { in: ['running', 'waiting_job'] } },
         data: { status: 'cancelled', error: { code: 'REPLACED', message: '新的输入停止了旧运行自动续接', retryable: false }, finishedAt: new Date() } });
 
@@ -107,6 +101,7 @@ export const runService = {
         goals.push({ type: 'practice', count: 2 });
       }
       const taskFrame: TaskFrame = source ? { ...taskFrameFrom(source.taskFrame), goals: taskFrameFrom(source.taskFrame).goals.map(({ failure, startedJobId, ...goal }) => goal), historyCount: history.length } : {
+        readback: input.artifactId || input.attemptId ? undefined : initialReadback(input.text ?? '', userMessage.id),
         planned: Boolean(input.action) || !subject?.confirmedAt,
         solutionRequested: input.action === 'show_solution',
         historyCount: history.length,
@@ -114,6 +109,7 @@ export const runService = {
         action: input.action,
         focus: {
           artifactId: input.artifactId,
+          artifactVersion: input.artifactVersion,
           sectionId: input.sectionId,
           attemptId: input.attemptId,
           exerciseId: input.exerciseId,

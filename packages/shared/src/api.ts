@@ -21,6 +21,7 @@ export const TurnRequest = z.object({
   expectedRevision: z.number().int().positive().optional(),
   /** 携题追问的上下文引用 */
   artifactId: z.string().optional(),
+  artifactVersion: z.number().int().positive().optional(),
   sectionId: z.string().optional(),
   attemptId: z.string().optional(),
   exerciseId: z.string().optional(),

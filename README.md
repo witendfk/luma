@@ -13,9 +13,11 @@ packages/shared/     前后端共享 Zod schema、API 与事件契约
 docs/spec/           产品需求与验收标准
 docs/design/         交互、系统、Agent、数据接口及技术决策
 docs/delivery/       任务、进度、验证与体验版交付
+docs/archive/        阶段评审历史，不作为当前指令
+references/sigma/    上游Skill离线参考，不参与运行时加载
 ```
 
-开发和推送使用 `feature` 分支，按任务点提交。当前前端 mock 交互已验收，真实教学与体验版业务交付待完成；详情统一维护在进度和验证记录中。
+开发和推送使用 `feature` 分支，按任务点提交。当前完成状态统一维护在进度和验证记录，不在本文件重复。
 
 ## 快速启动
 
@@ -26,4 +28,4 @@ pnpm install
 pnpm dev:miniapp
 ```
 
-微信开发者工具导入 `apps/miniapp/dist/dev/mp-weixin`。UI mock、本地 API/数据库/worker 启动、环境开关及故障排查见[本地开发手册](docs/development.md)。真实密钥不提交仓库。
+微信开发者工具导入 `apps/miniapp/dist/dev/mp-weixin`。本地 API/数据库/worker 启动、开发身份及故障排查见[本地开发手册](docs/development.md)。真实密钥不提交仓库。

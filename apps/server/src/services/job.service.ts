@@ -8,6 +8,7 @@ import type { Diagram, JobStatus, JobView } from '@luma/shared';
 import { db } from '../lib/db';
 import { invalidFormat, notFound, conversationBusy, revisionConflict } from '../lib/errors';
 import { presentDiagram } from '../lib/teaching-graphic';
+import { taskFrameFrom } from '../agent/types';
 
 /**
  * 生成任务状态（FR-11 / 设计文档 §8.3）。
@@ -64,6 +65,8 @@ export const jobService = {
       if (active && active.id !== job.runId) throw conversationBusy();
       if (active) await tx.agentRun.update({ where: { id: active.id }, data: { status: 'cancelled', finishedAt: new Date() } });
       const original = job.runId ? await tx.agentRun.findUnique({ where: { id: job.runId } }) : null;
+      if (!original) throw invalidFormat('原任务缺少运行记录，请重新生成');
+      const originalFrame = taskFrameFrom(original.taskFrame);
       const callId = `retry_${randomUUID()}`;
       const toolName = job.type === 'lesson' ? 'createLesson' : 'createPractice';
       const payload = (job.payload ?? {}) as Record<string, unknown>;
@@ -75,7 +78,9 @@ export const jobService = {
         retryOfRunId: job.runId, userMessageId: original?.userMessageId,
         deadlineAt: new Date(Date.now() + env().TURN_TOTAL_MS), counters: initialCounters() as unknown as Prisma.InputJsonValue,
         protocol: [userTextMessage('重试刚才失败的材料任务'), assistantToolCallsMessage([call])] as unknown as Prisma.InputJsonValue,
-        taskFrame: { kind: 'material', focus: {}, goals: [{ type: job.type === 'lesson' ? 'lesson' : 'practice' }] },
+        taskFrame: { ...originalFrame, kind: 'material', planned: true, historyCount: 0,
+          goals: [{ type: job.type === 'lesson' ? 'lesson' : 'practice',
+            ...(job.type === 'lesson' ? { target: String(payload.target ?? '生成讲义') } : { count: Number(payload.count ?? 2) }) }] } as unknown as Prisma.InputJsonValue,
       } });
       const retry = await tx.generationJob.create({ data: {
         type: job.type, conversationId: job.conversationId, subjectId: job.subjectId, subjectRevisionId: job.subjectRevisionId,

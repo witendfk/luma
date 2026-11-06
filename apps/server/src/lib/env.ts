@@ -39,11 +39,14 @@ const envSchema = z.object({
   COS_REGION: optionalText,
 
   // ---- Agent 运行保护上限（设计文档 §4.7：分项计数，可配置；正式默认值待实测调整）----
-  CONTEXT_INPUT_TOKENS: z.coerce.number().int().min(2000).default(12000),
+  CONTEXT_INPUT_TOKENS: z.coerce.number().int().min(2000).default(300000),
+  LONG_TASK_CONTEXT_INPUT_TOKENS: z.coerce.number().int().min(2000).default(1000000),
+  CONTEXT_COMPACT_RATIO: z.coerce.number().min(0.5).max(0.9).default(0.8),
+  CONTEXT_SUMMARY_TOKENS: z.coerce.number().int().min(256).max(12000).default(4096),
   MODEL_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MODEL_REQUEST_MS: z.coerce.number().int().positive().default(90000),
   MAX_MODEL_REQUESTS: z.coerce.number().int().positive().default(24),
-  MAX_RUN_TOKENS: z.coerce.number().int().positive().default(100000),
+  MAX_RUN_TOKENS: z.coerce.number().int().positive().default(1000000),
   MAX_DECISIONS: z.coerce.number().int().positive().default(12),
   MAX_TOOL_ROUNDS: z.coerce.number().int().positive().default(6),
   MAX_TOOL_EXECUTIONS: z.coerce.number().int().positive().default(10),
@@ -58,6 +61,9 @@ const envSchema = z.object({
   JOB_LEASE_MS: z.coerce.number().int().positive().default(900_000),
   LUMA_MOCK_AGENT: flag,
 }).superRefine((value, ctx) => {
+  if (value.LUMA_MOCK_AGENT && value.NODE_ENV !== 'test') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['LUMA_MOCK_AGENT'], message: '模型替身只允许在自动化测试进程使用' });
+  }
   if (value.LUMA_DEV_FAKE_LOGIN && value.NODE_ENV !== 'development') {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

@@ -106,7 +106,7 @@ function send(): void {
   focused.value = false;
   sentDraft = text;
   if (attachments.value.length) {
-    if (!UI_MOCK) { navigating.value = false; uni.showToast({ title: '图片学习暂在前端预览模式开放', icon: 'none' }); return; }
+    if (!UI_MOCK) { navigating.value = false; uni.showToast({ title: '图片识别尚未接通，请先输入题目或知识点', icon: 'none' }); return; }
     try {
       const id = sentUploadId ?? createAttachmentPreview(attachments.value, text, scenario.value);
       sentUploadId = id;

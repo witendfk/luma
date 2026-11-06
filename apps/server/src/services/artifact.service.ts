@@ -32,6 +32,8 @@ export const artifactService = {
         version: artifact.version,
         publishStatus: artifact.publishStatus,
         subjectRevisionId: artifact.subjectRevisionId,
+        conversationId: artifact.conversationId,
+        subjectVersion: artifact.subjectRevision.version,
         subjectId: artifact.subjectRevision.subjectId,
         subject: {
           text: (artifact.subjectRevision.content as { text?: string }).text ?? '',

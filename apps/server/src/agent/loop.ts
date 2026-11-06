@@ -24,10 +24,15 @@ import {
 } from './limits';
 import { mockClarify, mockGuide, mockSolution } from './mock';
 import { buildPolicy } from './policy';
+import { saveTeachingUpdate } from './teaching-state';
+import { applyTeachingMemory, TeachingMemoryCapacityError } from './teaching-memory';
+import { observeReadback, validateReadback } from './readback';
 import { assistantToolCallsMessage, correctionMessage, toolResultsMessage } from './protocol';
 import { executeBatch } from './tool-executor';
 import { nativeToolSet } from './tools';
 import { taskFrameFrom, type PendingBatch, type TaskFrame } from './types';
+import { prefixCacheKey, prepareContextMemory } from './context-memory';
+import { CompactionError } from './compaction';
 
 /**
  * 驱动器（设计文档 §4.12）：唯一的循环所有者。
@@ -165,6 +170,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
         // 全部结果就绪：按 toolCallId 补回结果，才允许下一次决策（§4.13）
         protocol.push(toolResultsMessage(outcome.results));
+        observeReadback(taskFrame, outcome.results);
         mergeGoalCompletions(taskFrame, outcome.results);
         for (const r of outcome.results) {
           const value = r.value as { ok?: boolean; code?: string };
@@ -210,22 +216,29 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       }
       const planning = !taskFrame.planned;
       const tools = nativeToolSet(planning);
+      const facts = await learningData(policy, conversation.userId, run.conversationId, taskFrame);
       const system = await assembleSystem(policy, taskFrame);
-      const context = budgetContext({ system, facts: await learningData(policy, conversation.userId, run.conversationId, taskFrame), protocol, historyCount: taskFrame.historyCount ?? 0, tools });
+      const current = protocol.slice(taskFrame.historyCount ?? 0);
+      const memory = await prepareContextMemory({ runId, owner, userId: conversation.userId, conversationId: run.conversationId,
+        userMessageId: run.userMessageId, policy, system, facts, current, tools, counters, signal: controller.signal });
+      protocol.splice(0, protocol.length, ...memory.history, ...current);
+      taskFrame.historyCount = memory.history.length;
+      const context = budgetContext({ system, facts, protocol, historyCount: taskFrame.historyCount, tools });
       if (!modelBudgetAvailable(counters)) {
         await failRun(runId, 'LIMIT', '本轮模型请求或累计用量已达保护上限', false, emit, owner); return;
       }
       recordModelRequest(counters, 'agent');
       // Reserve before network calls; a process failure cannot erase an attempted request.
       await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: {
-        counters: asJson(counters), policySnapshot: asJson({ ...policy, estimatedInputTokens: context.estimatedInputTokens, omittedHistory: context.omittedHistory }),
+        counters: asJson(counters), protocol: asJson(protocol), taskFrame: asJson(taskFrame),
+        policySnapshot: asJson({ ...policy, estimatedInputTokens: context.estimatedInputTokens, compressedMessages: memory.compressedMessages, summaryVersion: memory.summaryVersion }),
       } }));
       const started = Date.now();
       const subjectText = await loadSubjectText(policy.subjectRevisionId);
       const step = await nextAgentStep({
-        purpose: 'agent', system, messages: context.messages, tools,
+        purpose: 'agent', system, messages: context.messages, tools, cacheKey: prefixCacheKey(conversation.userId, run.conversationId),
         abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]),
-        mock: planning ? { kind: 'plan', plan: { goals: [], solutionRequested: false }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { goals: [], solutionRequested: false } }] } : mockStep(policy, taskFrame, subjectText),
+        mock: planning ? { kind: 'plan', plan: { goals: [], solutionRequested: false, memories: [] }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { goals: [], solutionRequested: false, memories: [] } }] } : mockStep(policy, taskFrame, subjectText),
         onText: async (delta) => {
           controller.signal.throwIfAborted(); partialText += delta;
           if (emit) {
@@ -239,6 +252,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       counters.calls.push({ purpose: 'agent', model: env().LUMA_MOCK_AGENT ? 'mock' : env().LUMA_MODEL_ID,
         attempt: counters.modelRequests.agent!, durationMs: Date.now() - started,
         inputTokens: step.usage?.inputTokens ?? null, outputTokens: step.usage?.outputTokens ?? null,
+        cachedInputTokens: step.usage?.cachedInputTokens ?? null,
         ...(step.kind === 'issue' ? { error: step.code } : {}) });
       await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: { counters: asJson(counters) } }));
       controller.signal.throwIfAborted();
@@ -246,12 +260,20 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       if (step.kind === 'plan') {
         if (!planning) { await failRun(runId, 'PROTOCOL', '本轮目标已记录，不能重复规划', false, emit, owner); return; }
         const goals = policy.subjectConfirmed ? [...new Map(step.plan.goals.map((goal) => [goal.type, goal])).values()] : [];
-        taskFrame.planned = true; taskFrame.goals = goals;
-        taskFrame.solutionRequested = policy.subjectConfirmed && step.plan.solutionRequested;
+        taskFrame.conditionCorrection ||= step.plan.conditionCorrection;
+        taskFrame.memoryCandidates = step.plan.memories;
+        taskFrame.planned = true; taskFrame.goals = taskFrame.conditionCorrection ? [] : goals;
+        taskFrame.solutionRequested = !taskFrame.conditionCorrection && policy.subjectConfirmed && step.plan.solutionRequested;
         taskFrame.kind = goals.length ? 'material' : taskFrame.solutionRequested ? 'solution' : 'chat';
         protocol.push(assistantToolCallsMessage(step.calls), toolResultsMessage([{ toolCallId: step.calls[0]!.toolCallId, toolName: 'planTurn',
-          value: { ok: true, goals, solutionRequested: taskFrame.solutionRequested } }]));
+          value: { ok: true, goals: taskFrame.goals, solutionRequested: taskFrame.solutionRequested } }]));
         await withActiveRun(runId, owner, async (tx) => {
+          if (run.subjectRevisionId && run.userMessageId && taskFrame.memoryCandidates?.length) {
+            taskFrame.memoryWrite = await applyTeachingMemory(tx, {
+              revisionId: run.subjectRevisionId, userMessageId: run.userMessageId, messageId: run.userMessageId, policy,
+              operations: taskFrame.memoryCandidates.map((m) => ({ ...m, action: 'add' as const, source: 'student' as const })),
+            });
+          }
           await tx.toolExecution.create({ data: { runId, decisionId: `${runId}:d${counters.decisions}`, toolCallId: step.calls[0]!.toolCallId,
             tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
           await tx.agentRun.update({ where: { id: runId }, data: { taskFrame: asJson(taskFrame), protocol: asJson(protocol) } });
@@ -261,7 +283,8 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       if (planning) { await resetPartial(); await failRun(runId, 'PROTOCOL', '目标决策未完成，请重试', true, emit, owner); return; }
 
       if (step.kind === 'respond') {
-        const validation = await validateRespond(step.disposition, taskFrame);
+        const requiresEvidence = taskFrame.conditionCorrection || taskFrame.readback?.status === 'pending';
+        const validation = validateReadback(taskFrame, step) ?? (requiresEvidence ? { ok: true as const } : await validateRespond(step.disposition, taskFrame));
         if (!validation.ok) {
           // finish 条件不满足：协议校正，有限次（§4.11）
           await resetPartial();
@@ -278,7 +301,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
           return;
         }
 
-        // 学生可见正文来自 respond.text（§4.11）；结构化成果引用随消息保存
+        // 结构化正文校验后保存；text仅为历史上下文的兼容投影。
         const blocks: unknown[] = [{ type: 'text', text: step.text }];
         for (const goal of taskFrame.goals) {
           if (goal.completedArtifactId) {
@@ -294,16 +317,19 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
         const nextStatus = step.disposition === 'finish' ? 'completed' : 'waiting_user';
         await withActiveRun(runId, owner, async (tx) => {
-          const data = { content: { blocks, focus: taskFrame.focus ?? {} } as Prisma.InputJsonValue, status: 'complete' as const };
-          if (partialMessageId) await tx.message.update({ where: { id: partialMessageId }, data });
-          else await tx.message.create({ data: { conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
+          const data = { content: { blocks, ...(step.content ? { reply: step.content } : {}), focus: taskFrame.focus ?? {}, containsSolution: policy.allowSolution } as Prisma.InputJsonValue, status: 'complete' as const };
+          const savedMessage = partialMessageId ? await tx.message.update({ where: { id: partialMessageId }, data })
+          : await tx.message.create({ data: { conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
             runId, subjectRevisionId: run.subjectRevisionId, ...data } });
+          if (run.subjectRevisionId) taskFrame.memoryWrite = await saveTeachingUpdate(tx, { revisionId: run.subjectRevisionId, userMessageId: run.userMessageId,
+            messageId: savedMessage.id, policy, update: step.teaching,
+            candidates: taskFrame.memoryCandidates?.map((m) => ({ ...m, action: 'add' as const, source: 'student' as const })) });
           await updateStage(tx, run.conversationId, policy, taskFrame);
           await tx.agentRun.update({
             where: { id: runId },
             data: {
               status: nextStatus, finishedAt: new Date(), counters: asJson(counters),
-              usage: step.usage ? asJson(step.usage) : undefined, pendingBatch: Prisma.DbNull, waitingJobIds: []
+              usage: step.usage ? asJson(step.usage) : undefined, pendingBatch: Prisma.DbNull, waitingJobIds: [], taskFrame: asJson(taskFrame)
             },
           });
           await tx.conversation.update({ where: { id: run.conversationId }, data: { lastActiveAt: new Date() } });
@@ -370,7 +396,9 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       return;
     }
   } catch (err) {
-    if (err instanceof ContextBudgetError) {
+    if (err instanceof CompactionError) {
+      await failRun(runId, 'CONTEXT_COMPACTION', err.message, true, emit, owner);
+    } else if (err instanceof ContextBudgetError || err instanceof TeachingMemoryCapacityError) {
       await failRun(runId, 'CONTEXT_LIMIT', err.message, false, emit, owner);
     } else if (signal?.aborted) {
       const stopped = await db.agentRun.updateMany({
@@ -490,6 +518,7 @@ function mockStep(
   taskFrame: TaskFrame,
   subjectText: string,
 ): AgentStep {
+  if (taskFrame.readback?.status === 'pending') return { kind: 'tool_calls', calls: [{ toolCallId: `mock_${randomUUID()}`, toolName: 'readLearningContext', input: { ref: 'messages', limit: 5 } }] };
   const pendingGoal = taskFrame.goals.find((g) => !g.completedArtifactId && !g.failure);
   if (pendingGoal && policy.subjectConfirmed) {
     const call: ToolCall =

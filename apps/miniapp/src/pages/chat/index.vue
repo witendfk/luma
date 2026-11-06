@@ -25,7 +25,7 @@ import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
 const notebook = useNotebookPreviewStore();
-onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh(false).catch(() => { /* Keep current content; explicit reload remains available. */ }); });
+onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh().catch(() => { /* Keep current content; explicit reload remains available. */ }); });
 const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : (saved.value || store.subjects.some((row) => row.id === store.activeSubjectId && row.collected)));
 const previewStudy = ref(false);
 const previewMeta = ref<PreviewRecord | null>(null);
@@ -39,7 +39,8 @@ const topicNavigation = computed(() => previewMeta.value ?? (store.subjects.leng
 const unit = computed(() => (previewMeta.value?.intent ?? store.subject?.type) === 'knowledge' ? '部分' : '题');
 const nextTopic = computed(() => { const root = previewMeta.value; const index = root?.topics?.findIndex((topic) => topic.id === root.activeTopicId) ?? -1; return root?.topics?.[index + 1]; });
 const draft = ref('');
-const lessonFocus = ref<{ artifactId: string; sectionId: string; heading: string } | null>(null);
+const lessonFocus = ref<{ artifactId: string; artifactVersion: number; sectionId?: string; heading: string } | null>(null);
+let preparedAction: TurnRequest['action'], preparedQuestion = '';
 const busy = ref(false);
 const menuOpen = ref(false);
 const accountOpen = ref(false);
@@ -68,18 +69,18 @@ const lastReply = computed(() => [...store.messages].reverse().find((message) =>
 onHide(() => { if (!UI_MOCK) void store.saveDraft(draft.value).catch(() => { store.error = '草稿暂未保存，请重试'; }); pageActive = false; clearTimeout(recognitionTimer); });
 onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
-  if (import.meta.env.DEV && query?.preview === 'study') { previewStudy.value = true; return; }
   try {
     if (query?.id) {
       await openLearning(query.id, query.topic);
-      if (query.artifactId && query.sectionId) {
-        const material = await request<{ subjectId: string; subjectRevisionId: string; content: { lesson?: { sections: Array<{ id: string; heading: string }> } } }>({ method: 'GET', path: `/api/artifacts/${encodeURIComponent(query.artifactId)}` });
+      if (query.artifactId) {
+        const material = await request<{ version: number; subjectId: string; subjectRevisionId: string; content: { lesson?: { title: string; sections: Array<{ id: string; heading: string }> } } }>({ method: 'GET', path: `/api/artifacts/${encodeURIComponent(query.artifactId)}` });
         if (material.subjectId !== store.activeSubjectId) await store.switchSubject(material.subjectId, store.progress?.draft ?? '');
         const section = material.content.lesson?.sections.find((s) => s.id === query.sectionId);
-        if (!section || material.subjectRevisionId !== store.subject?.id) throw new Error('讲解对应的题目已经修改，请阅读新版讲解');
-        lessonFocus.value = { artifactId: query.artifactId, sectionId: section.id, heading: section.heading };
+        if ((query.sectionId && !section) || material.subjectRevisionId !== store.subject?.id || (query.artifactVersion && Number(query.artifactVersion) !== material.version)) throw new Error('讲解对应的题目已经修改，请阅读新版讲解');
+        lessonFocus.value = { artifactId: query.artifactId, artifactVersion: material.version, sectionId: section?.id, heading: section?.heading ?? material.content.lesson?.title ?? '当前讲解' };
       }
-      if (query.question) draft.value = query.question;
+      if (query.question) { try { draft.value = decodeURIComponent(query.question); } catch { draft.value = query.question; } }
+      if (query.action === 'generate_lesson' || query.action === 'generate_practice') { preparedAction = query.action; preparedQuestion = draft.value; }
     }
     else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
@@ -102,8 +103,8 @@ async function onSend(): Promise<void> {
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   rememberChat();
-  await store.send(text, undefined, 'question', undefined, undefined, lessonFocus.value ?? undefined);
-  if (!store.error) draft.value = '';
+  await store.send(text, text === preparedQuestion ? preparedAction : undefined, 'question', undefined, undefined, lessonFocus.value ?? undefined);
+  if (!store.error) { draft.value = ''; preparedAction = undefined; preparedQuestion = ''; }
 }
 async function onConfirm(): Promise<void> {
   if (busy.value) return;
@@ -118,11 +119,16 @@ async function onStop(): Promise<void> {
   catch (err) { store.error = err instanceof Error ? err.message : '停止失败'; }
 }
 function newChat(): void { menuOpen.value = false; uni.switchTab({ url: '/pages/home/index', success: () => uni.$emit('luma:new-chat') }); }
-function endFocus(): void { lessonFocus.value = null; }
+function endFocus(): void { lessonFocus.value = null; preparedAction = undefined; preparedQuestion = ''; }
 function returnToLesson(): void {
   if (!lessonFocus.value) return;
-  if (getCurrentPages().length > 1) uni.navigateBack();
-  else uni.redirectTo({ url: `/pages/reader/index?artifactId=${encodeURIComponent(lessonFocus.value.artifactId)}&conversationId=${encodeURIComponent(store.currentId ?? '')}` });
+  const target = lesson.value?.id ?? lessonFocus.value.artifactId;
+  const pages = getCurrentPages();
+  if (pages[pages.length - 2]?.route === 'pages/reader/index') {
+    if (target !== lessonFocus.value.artifactId) uni.$emit('luma:reader-revision', { conversationId: store.currentId,
+      fromArtifactId: lessonFocus.value.artifactId, artifactId: target, sectionId: lessonFocus.value.sectionId });
+    uni.navigateBack();
+  } else uni.redirectTo({ url: `/pages/reader/index?artifactId=${encodeURIComponent(target)}&sectionId=${encodeURIComponent(lessonFocus.value.sectionId ?? '')}&conversationId=${encodeURIComponent(store.currentId ?? '')}` });
 }
 function openConversation(id: string): void {
   menuOpen.value = false;
@@ -163,7 +169,7 @@ function action(text: string, kind: TurnRequest['action']): void {
 }
 function rememberChat(): void { if (UI_MOCK && store.currentId) { try { rememberPreviewLocation(activeTopic.value?.id ?? store.currentId, 'chat'); } catch { /* 不阻断学习。 */ } } }
 function upload(): void {
-  if (!UI_MOCK) { uni.showToast({ title: '过程照片可先在前端预览中体验', icon: 'none' }); return; }
+  if (!UI_MOCK) { uni.showToast({ title: '解题过程图片识别尚未接通，请先输入文字', icon: 'none' }); return; }
   if (!store.subject?.confirmedAt) { uni.showToast({ title: '请先核对当前题目', icon: 'none' }); return; }
   if (store.generating || switchingTopic.value) return;
   focused.value = false; processOpen.value = true;
@@ -282,7 +288,7 @@ function simulate(): void {
           <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
         </view>
         <view v-if="!store.messages.length && !store.subject && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
-        <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :incomplete="msg.incomplete" />
+        <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :reply="msg.reply" :incomplete="msg.incomplete" />
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
           <text class="subject-text" selectable>{{ store.subject.content.text }}</text>

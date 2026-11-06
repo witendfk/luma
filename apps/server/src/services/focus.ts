@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
-import { invalidFormat, notFound } from '../lib/errors';
+import { invalidFormat, notFound, revisionConflict } from '../lib/errors';
 
-export interface LearningFocus { artifactId?: string; sectionId?: string; attemptId?: string; exerciseId?: string }
+export interface LearningFocus { artifactId?: string; artifactVersion?: number; sectionId?: string; attemptId?: string; exerciseId?: string }
 
 /** IDs supplied by a client/model must belong to this exact object revision. */
 export async function validateFocus(tx: Prisma.TransactionClient, userId: string, conversationId: string, revisionId: string, focus: LearningFocus) {
@@ -9,6 +9,7 @@ export async function validateFocus(tx: Prisma.TransactionClient, userId: string
   if (!focus.artifactId) return;
   const artifact = await tx.artifact.findFirst({ where: { id: focus.artifactId, conversationId, subjectRevisionId: revisionId, publishStatus: 'published' } });
   if (!artifact) throw notFound('当前版本的学习材料');
+  if (focus.artifactVersion !== undefined && focus.artifactVersion !== artifact.version) throw revisionConflict('讲义版本不匹配，请重新打开讲义');
   if (focus.sectionId) {
     const lesson = (artifact.content as { lesson?: { sections?: Array<{ id: string }> } }).lesson;
     if (artifact.type !== 'lesson' || !lesson?.sections?.some((row) => row.id === focus.sectionId)) throw invalidFormat('讲义章节不存在');

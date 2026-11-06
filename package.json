@@ -20,7 +20,9 @@
     "test:runtime": "pnpm --filter @luma/server test:runtime",
     "test:migration": "pnpm --filter @luma/server test:migration",
     "test:subjects": "pnpm --filter @luma/server test:subjects",
-    "seed:demo": "pnpm --filter @luma/server seed:demo"
+    "test:reading": "pnpm --filter @luma/server test:reading",
+    "test:context": "pnpm --filter @luma/server test:context",
+    "test:memory": "pnpm --filter @luma/server test:memory"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

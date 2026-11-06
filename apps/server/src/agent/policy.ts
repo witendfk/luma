@@ -10,6 +10,7 @@ export interface TurnPolicy {
   stage: string;
   subjectRevisionId: string | null;
   subjectConfirmed: boolean;
+  teachingMode?: 'question' | 'concept' | 'correction';
   /** 本轮允许的业务工具白名单 */
   allowedTools: string[];
   /** 是否可向模型/工具加载参考答案（默认否；仅授权后针对当前对象） */
@@ -18,6 +19,7 @@ export interface TurnPolicy {
   allowSolution: boolean;
   focus: {
     artifactId?: string;
+    artifactVersion?: number;
     sectionId?: string;
     attemptId?: string;
     exerciseId?: string;
@@ -29,7 +31,7 @@ export async function buildPolicy(input: {
   subjectId: string;
   action?: ExplicitAction;
   solutionRequested?: boolean;
-  focus?: { artifactId?: string; sectionId?: string; attemptId?: string; exerciseId?: string };
+  focus?: { artifactId?: string; artifactVersion?: number; sectionId?: string; attemptId?: string; exerciseId?: string };
 }): Promise<TurnPolicy> {
   const [progress, subject] = await Promise.all([
     db.learningProgress.findUnique({ where: { subjectId: input.subjectId } }),
@@ -40,6 +42,7 @@ export async function buildPolicy(input: {
   ]);
   const confirmed = Boolean(subject?.confirmedAt);
   const stage = progress?.stage ?? 'clarifying';
+  const process = subject ? await db.processTranscript.findFirst({ where: { subjectRevisionId: subject.id, status: 'confirmed' }, select: { id: true } }) : null;
 
   // §4.6 场景表：未确认只开放识别与澄清；确认后开放全部业务工具
   const allowedTools = confirmed
@@ -51,6 +54,7 @@ export async function buildPolicy(input: {
     stage,
     subjectRevisionId: subject?.id ?? null,
     subjectConfirmed: confirmed,
+    teachingMode: input.focus?.attemptId ? 'question' : process ? 'correction' : subject?.type === 'knowledge' ? 'concept' : 'question',
     allowedTools,
     answerPermission: confirmed && (input.action === 'show_solution' || input.solutionRequested === true),
     allowSolution: confirmed && (input.action === 'show_solution' || input.solutionRequested === true),

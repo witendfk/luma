@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { loadWorkerEnv } from '../src/worker/load-env';
 
 loadWorkerEnv();
+Object.assign(process.env, { NODE_ENV: 'test' });
+process.env.LUMA_DEV_FAKE_LOGIN = 'false';
 process.env.LUMA_MOCK_AGENT = 'true';
 async function main() {
   const { db } = await import('../src/lib/db');

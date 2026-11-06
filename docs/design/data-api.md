@@ -1,12 +1,12 @@
 # Luma 数据与接口设计
 
-依据：[系统设计](architecture.md)、[交互设计](interaction.md)、[Agent 设计](agent.md)。整理日期：2026-11-05。
+依据：[系统设计](architecture.md)、[交互设计](interaction.md)、[Agent 设计](agent.md)。整理日期：2026-11-06。
 
 **职责：定义实体归属、版本与唯一性、API、事件及鉴权边界。** 路由表以既有接口为基线；明确标为目标补充的内容需后续实施，不能当成当前已提供的接口。当前源契约位于 `packages/shared`，数据模型位于 `apps/server/prisma/schema.prisma`。
 
 ## 1 数据结构
 
-B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/上传及页面能力见实施计划，不能仅凭路由存在判为完成。
+本节定义多对象结构。字段以Prisma/shared为实现依据；当前接入状态只看[进度](../delivery/progress.md)，路由或表存在不等于页面及真实依赖已可用。
 
 | 实体 | 关键字段及关系 |
 | --- | --- |
@@ -14,7 +14,9 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 | `AuthSession` | 用户、会话凭据摘要、过期时间、撤销时间 |
 | `Conversation` | 用户、标题、归档时间、最近学习时间、当前对象、逐项学习意愿 |
 | `LearningSubject` | 会话、稳定对象标识和排序；类型、内容及确认状态在对象版本中 |
-| `SubjectRevision` | 会话、对象标识、版本号、题目或知识点类型、内容、标签、小问、确认时间、原图引用 |
+| `SubjectRevision` | 会话、对象标识、版本号、题目或知识点类型、内容、标签、小问、确认时间、原图引用及只读兼容的旧教学进展JSON |
+| `TeachingMemory` | 对象版本、作用范围、来源证据、候选/有效/解决/替代/冲突状态与并发版本；见§5.3 |
+| `ContextSummary` | 对象版本、焦点/权限哈希、摘要版本、notes、覆盖末消息ID/时间、累计覆盖数 |
 | `ProcessTranscript` | 会话、作答图片、转写步骤、学生修正、逐步确认状态及来源版本 |
 | `Message` | 会话、对象标识、角色、结构化内容、来源版本、请求标识、完成状态、时间 |
 | `LearningProgress` | 会话、对象标识、教学阶段、并发版本、输入草稿、恢复目的地、当前来源版本、当前讲义及段落、练习轮次与追问题目 |
@@ -45,7 +47,7 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 | 实体 | 补充内容 |
 | --- | --- |
 | `AgentRun` | 会话与请求标识的唯一约束、输入摘要、截止时间、重试来源及用户消息引用；`TaskFrame`、等待任务与工具调用引用、恢复所需协议片段、执行领取/租约字段；权限及焦点快照、提示词版本；决策、工具往返、工具执行及各类模型请求分别计数，记录累计用量 |
-| `GenerationJob` | 固定输入 `payload`、任务调用计数与消耗、总截止时间、草稿检查点、重试来源；当前来源材料和权限快照仍不完整；目标要求见 §5，worker 不从可变的“当前页面”重建局部修订输入 |
+| `GenerationJob` | 固定输入 `payload`、任务调用计数与消耗、总截止时间、草稿检查点、重试来源；B04-R 已固定局部讲义来源和权限快照；约束见 §5，worker 不从可变的“当前页面”重建局部修订输入 |
 | `ToolExecution` | `decisionId`、原生 `toolCallId`、状态、幂等键及任务引用；支持批次待执行队列与每个调用唯一结果 |
 | `Message` | 保留当前结构化内容和完成状态；用户消息与助理消息分别关联运行，重试不重复创建用户消息 |
 
@@ -65,7 +67,7 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 | `GET /conversations/:id` | 当前题目、进度和材料概览 |
 | `GET /conversations/:id/messages` | 分页读取消息 |
 | `POST /conversations/:id/turns` | 消息或学习操作，返回流式事件 |
-| `POST /conversations/:id/subjects` | 创建独立对象；旧 action=update/confirm 暂保留给 UI mock 适配 |
+| `POST /conversations/:id/subjects` | 创建独立对象；旧 action=update/confirm 仅为历史契约兼容 |
 | `PUT /conversations/:id/focus` | 切换 subjectId，可保存 learnAll；只恢复不生成 |
 | `POST /conversations/:id/subjects/:subjectId/revisions` | expectedRevision 校验后新增对象版本 |
 | `POST /conversations/:id/subjects/:subjectId/confirm` | 确认指定版本；重复确认幂等 |
@@ -95,6 +97,12 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 
 错误返回 `code`、用户可读的 `message`、`retryable` 和请求引用。重点区分未登录、无权限、版本已更新、会话忙碌、格式错误、超限、模型不可用及生成中断。
 
+### 2.1 教学回复展示契约
+
+新模型 `respond` 返回 `content: [{type: "paragraph" | "heading" | "formula", text: string}]`，由共享 `TeachingReply` 校验。独立公式块使用不带定界符的LaTeX，正文可含行内公式；模型不能指定展示HTML。消息保存 `content.reply`，原 `blocks[type=text]` 为服务端生成的兼容文本投影，供上下文和检索使用，不要求迁移历史消息。
+
+`POST /content/render` 接收 `{text, content?}`；有合法content时优先按块渲染，返回 `{blocks, failed}` 受控节点/公式图片。旧消息继续解析Markdown，包括加粗内嵌公式。流式未闭合公式不显示源码；排版失败显示明确占位并可单独重试排版，不重发教学请求。
+
 ## 3 登录与数据边界
 
 小程序通过 uni.login 获取微信 code，提交服务端调用微信登录校验接口；服务端按本 AppID 下的 openid 关联用户，签发高随机度、带有效期且可撤销的应用会话凭据。数据库保存凭据摘要，客户端使用受控本地存储并在 HTTPS 请求头中携带凭据，不放入 URL；过期后重新进行微信登录。微信 AppSecret 和 session_key 不下发。前端仅展示应用获取的资料，不假定微信自动返回昵称头像。
@@ -109,7 +117,7 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 - 退出使登录态失效，清除页面内存与该账号本地草稿缓存；已同步服务端的数据保留。
 - 服务端存储只返回必要字段；运行日志记录引用、错误和消耗，避免复制原图、密钥和完整学生内容。
 
-## 4 B01 已实施约定与后续边界
+## 4 多对象兼容与迁移约束
 
 - 会话详情返回 `subjects[]`、当前 `subject`（版本）、`progress`、当前对象材料和 `activeRun`。`SubjectView.id` 是版本 ID，`subjectId` 是稳定对象 ID；禁止混用。
 - 消息按 `subjectId` 筛选，省略时取当前焦点；发送带 `subjectId` 与 `expectedRevision`。与当前焦点不符的迟到输入被拒绝。
@@ -118,33 +126,59 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 - `PracticeAttempt` 共享 DTO 使用 `exercises[].myAnswer`，无顶层 answers；历史接口已提供。开始/重做的 requestId 和 redoOfAttemptId 尚待 B05。
 - 取消收藏记录 `removedAt`，重新收藏复用原行。列表只展示未取消项，详情可读回保留的笔记。
 - 归档/恢复/重命名不更新学习时间；真实新消息在创建运行事务内取消归档，前端不预先发恢复请求。
-- 迁移 `20261105090000_learning_subjects` 为每个旧会话建立首对象，保留所有旧字段和既有材料/练习；隔离 schema 的旧结构+旧数据迁移验证已通过。本地开发库已应用，其他环境需执行 migrate deploy，不使用 reset。
-- UI mock 保留前端示例行为；正式小程序对话已接焦点与草稿接口。阅读/练习页面定位接线、首页精准续学、错题本完整正式数据接入依 B04～B06 实施；图片识别建多对象依 B03。
+- 迁移`20261105090000_learning_subjects`为每个旧会话建立首对象，保留旧字段和既有材料/练习；其他环境执行增量migrate deploy，不使用reset。执行证据只在verification维护。
+- 小程序正式路径只调用真实服务，不因接口未接入回退示例数据；各页面完成状态见progress。
 
-## 5 对象级教学上下文（目标契约，待实施）
+## 5 对象级教学上下文（B04-R）
 
 ### 5.1 数据与来源
 
-最小实现复用 PostgreSQL，在对象版本下增加一份受版本控制的 `TeachingState`，与页面恢复用的 `LearningProgress` 分开；不新增向量库或跨会话画像。以下为逻辑字段，不表示共享 schema 或数据库已实现。
+`SubjectRevision.teachingState`是只读兼容JSON，对应迁移`20261106090000_teaching_state`。旧结构为version/notes，notes包含difficulty、method、openQuestion、来源消息/材料/焦点及containsSolution；旧12条限制只用于解释历史数据，**不再作为新记忆的写入或保留策略**。旧JSON不再随回复更新，不按旧resolved字段清空。新记录统一走§5.3的TeachingMemory及`planTurn.memories`/`respond.teaching.operations`。
 
-| 字段 | 约束 |
-| --- | --- |
-| `subjectId / subjectRevisionId / version` | 稳定对象、内容版本及状态并发版本；来源修订后不直接继承旧事实 |
-| `mode` | question / concept / correction；程序根据对象、学生意图及已确认步骤决定可用教学方式 |
-| `difficulty / methods / openQuestions` | 当前卡点、已讲方法、未解决问题；条目限量、可更新或撤销，来源失效时不装配 |
-| `evidenceRefs` | 每条教学记录必须引用本人且属于该对象版本的 message、artifact+version+section 或已确认过程；标明 student_statement / observed_action / model_inference |
-| `understanding` | 学生明确表示理解的事件及其消息、对象版本、可选材料版本引用；仅表示自述，不代表掌握、不自动生图 |
-| `updatedAt` | 服务端更新时间；更新使用 expectedVersion，重复事件引用去重 |
+页面位置`LearningProgress`、语义记忆`TeachingMemory`和过程摘要`ContextSummary`各自负责不同数据，不能相互覆盖。
 
-学生自述与系统推测分开。优先从确定事件更新，例如明确卡点、讲义发布、确认理解及追问；需要语义提炼时复用本轮模型结构化结果并验证来源，不为每轮强制增加摘要调用。记忆只帮助教学，不能授予答案访问权限。首期按对象版本保留当前进展即可，不建设全历史自动压缩服务。
+滚动摘要独立存 `ContextSummary`：`subjectRevisionId + scopeKey` 唯一，scopeKey包含材料版本/段落、练习轮次/题目及本轮解析权限；body.notes 保存 kind/text/refs/可选quote。条件、计算和要求必须逐字引用，原消息ID必须属于输入或已有摘要。`throughMessageId / throughCreatedAt / coveredMessages` 固定已覆盖边界，`version` 用于并发保存；更新与取消共用会话锁及活动运行校验。只保留最新摘要检查点，不删除原文。迁移 `20261106110000_context_summary` 已应用本地库。
+
+新的运行不预先按token裁掉历史；驱动器按覆盖游标加载后续原文，必要时将旧摘要与新增旧轮次交GPT合并，保存成功再继续。失败保留原文与已提交检查点；摘要不通过校验不得推进覆盖游标。旧权限、其他焦点和旧题干版本的摘要均不装配。
+
+`teachingMode` 由 policy 按当前对象和确认过程产生，不存成学生长期属性。理解确认事件及其专用去重契约仍归 B04-S，尚未实现；不能以现有 notes 冒充已完成。状态内部更新使用会话锁/活动运行检查，不新增客户端任意写入接口。
 
 ### 5.2 按需读取与修订
 
-- `readLearningContext` 增加明确的材料引用和旧消息 cursor/有限条数读取；默认只读当前对象版本。读取旧版本必须显式指定，并标记历史，不能作为当前题干事实。现有消息分支须补版本、焦点及完成状态过滤。
+- `readLearningContext` 已支持当前对象版本内的材料引用和消息 cursor/有限条数或messageIds精确读取，过滤归属、版本、完成状态、焦点及解析权限；不支持直接回读旧题干版本。旧版本跨版本工具读取仍后置，不冒充当前事实。
 - 章节追问输入固定 `subjectId / subjectRevisionId / artifactId / artifactVersion / sectionId`；练习追问另带 attemptId/exerciseId。服务端验证归属和对应关系，再按权限投影。
 - 页面返回位置仍写 `LearningProgress`，与教学理解记录分别维护；结束追问清除本轮局部焦点，不删除教学记录。
 - 局部重讲任务固定上述来源及原材料快照、原段落、学生要求和创建时权限。worker 不重新读取当前焦点作为输入；发布前复验来源版本及权限。只有指定段落变更，其余段落沿用原内容和稳定标识；产生新材料版本，不覆盖旧成果。
-- 切题加载该对象自己的状态；题干修订使旧语义记录不参与当前装配，旧版本仍可历史回读。切换练习轮次不继承旧解析授权。完成/取消/修订的迟到更新按并发版本拒绝。
+- 切题加载该对象自己的状态；题干修订使旧语义记录不参与当前装配，旧数据仍保存在数据库，当前工具不跨题干版本回读。切换练习轮次不继承旧解析授权。完成/取消/修订的迟到更新按并发版本拒绝。
+
+### 5.3 教学记忆与回读契约
+
+§5.1旧JSON保留兼容历史，新依据从TeachingMemory读取。迁移`20261106160000_teaching_memory`保留旧JSON和消息，旧条目为candidate，不补造原话或核验结论；不提供客户端任意写记忆接口。下文标注AG02.3的覆盖清单和紧凑化是目标契约；已接入/待接入范围只在progress维护。
+
+| TeachingMemory字段 | 约束 |
+| --- | --- |
+| id / subjectRevisionId / scope | 对象版本内的稳定条目标识；scope区分对象通用、材料段落、练习轮次/题目；归属从会话关联验证，模型不可自选账号 |
+| kind / text | constraint、request、difficulty、method、attempt、open_question；字段是通用学习语义，不固定数学考点 |
+| sourceKind / evidence | student_statement、model_inference、reviewed_material或verified_tool；原消息/材料/执行结果ID、版本及必要逐字片段。来源存在不等于结论正确 |
+| status / supersedesId | candidate、active、resolved、superseded、conflicted；替代对象必须同作用范围且带更正来源；模糊冲突不自动覆盖 |
+| containsSolution / verificationRef | 带答案证据的记录须经过现有权限投影；验证类别由受控程序依据真实来源赋予，模型不得自报已核验 |
+| version / createdAt / updatedAt | 受保护事务并发更新；取消、过期运行及旧对象版本不得提交；历史不因上下文预算删除 |
+
+- respond的内部teaching更新扩展为带证据的add/resolve/supersede候选；范围、引用和状态转移由服务端验证。学生表达及模型推测分别保存，不用语义text去重替代稳定ID。题干更正仍通过SubjectRevision确认流程，不借记忆写接口更改已确认题目。
+- 现有12条notes迁移为有来源的候选或材料引用，不补造逐字原话，不标记已核验。迁移保留原JSON和消息，不reset数据库；讲义章节目录由Artifact提供，不再占学生卡点保留名额。
+- **待实施AG02.3**：摘要仍用ContextSummary检查点；增加关联覆盖清单（消息ID、处理类别、条目/来源引用），存储在DB，不把全量清单每轮注入模型。校验本次被覆盖学生消息均有处理、已有有效关键条目及未解决问题未被无理由丢弃、替代关系有效；不声称此检查证明语义完整。
+- readLearningContext扩展query检索模式，与现有messageIds精确读取/游标分页互斥。query限制长度，禁止任意正则/SQL；参数化查询先过滤当前账号、对象版本及可见焦点/答案，再作受控字面匹配。返回短命中片段、原消息ID、排序/分页引用；独立读取命中轮次及相邻上下文，每次有总token预算。
+- 明确历史指代/来源冲突在TaskFrame增加回读要求，保存触发消息、候选引用和pending/read/clarified状态；程序检查已读有效来源或已澄清，再允许相关目标完成。自由语义仍由GPT理解，字段不伪装成数学正确性证明。
+- **待实施AG02.3**：大只读工具结果沿用ToolExecution中的正式结果或有权限材料引用；发送给模型的紧凑版携带原toolCallId和可回读引用，不修改原执行记录或重复执行写工具。完整本轮协议仍可恢复。
+- 主Agent与后台统一使用版本化EvidencePack：对象/来源版本、目标、创建时权限、相关条目ID及版本、必要原文/材料快照。任务创建时固定并验证，重试沿用，不临时采集其他焦点的新状态；按任务只投影需要的字段。
+
+具体读模式：query/messageIds/aroundMessageId互斥，query可配beforeMessageId分页；offset仅用于单条messageIds续读。每次原文正文预算6000 tokens，返回truncated/nextRead/pendingMessageIds；搜索最多扫描1000条已授权消息、返回最多10条短索引并给nextCursor。NFKC及数学符号规范化后作字面匹配，不支持任意SQL/正则。SQL先过滤账号/对象版本/焦点（含材料版本）/解析权限。
+
+状态变更需targetId/expectedVersion/kind/scope及当前学生原话匹配；错误尝试和模型推断为candidate，学生要求为active，条件更正为conflicted并回题干核对。superseded/resolved保留原记录、替代关系及解决证据。容量不足明确失败，不slice淘汰；相同来源和文本写入使用稳定ID去重。拒绝原因记入TaskFrame.memoryWrite.rejected。
+
+主Agent与材料使用同一EvidencePack装配函数，schemaVersion=1，含对象版本/焦点/解析权限及相关条目ID、版本、来源。planTurn.memories在已有规划调用内提取并在工具前保存，材料payload固定该快照；讲义及练习生成/复核都收到依据。Artifact承担材料目录，不将章节标题作为学生记忆。
+
+引用不符或能力未接入返回明确错误，不能默默退回旧12条截断或无证据摘要；实际检查见verification。
 
 ## 6 上传识别（目标契约，B03 开工约束）
 
@@ -159,3 +193,47 @@ B01 已实施以下多对象结构及增量迁移；尚未接入的真实模型/
 - 创建时固定已讲内容、选中材料和确认事件快照；去重键基于账号、对象版本及教学来源快照。重复点击返回同一任务/成果；主动重新生成与失败重试区分，保留旧成果。
 - 独立图像生成调用计入任务预算，复核后发布私有静态图片，保存正文总结、图片引用、来源及版本。任务状态/重试沿用 jobs 契约，读取沿用 artifacts 归属校验。
 - 确认理解本身不启动任务；生成失败不损坏讲义或对话，学生可跳过。缩略图、放大及从收藏详情回看复用现有容器，不另设后台菜单。
+
+
+## 8 伴学学习路线与验证目标契约（T02，目标契约）
+
+本节定义 FR-13 的最小数据边界，供后续 T02 实施评审。当前数据库尚未接入这些表；不得把现有 `TeachingMemory`、`TaskFrame` 或 `LearningProgress` 临时拼接后宣称已实现。所有记录都必须沿用会话、账号、`subjectRevisionId` 和活动运行的归属校验。
+
+### 8.1 学习路线
+
+`LearningRoute` 代表一个学习对象版本下围绕一个学生目标的短路线。`LearningRouteNode` 代表可观察的学习节点。路线只保存当前学习目标和推进证据，不保存长期人格画像、跨学科知识图谱或模型内部推理。
+
+| 实体/字段 | 约束 |
+| --- | --- |
+| `LearningRoute.id / accountId / conversationId / subjectRevisionId` | 稳定主键；会话、账号和题干版本必须一致，题干修订创建新路线或明确标记旧路线只读 |
+| `LearningRoute.goal` | 学生可理解的一句话目标；来源为学生请求或已确认范围，不由模型凭空扩展课程 |
+| `LearningRoute.status` | `active` / `paused` / `ended`；结束不表示所有节点通过 |
+| `LearningRoute.version / createdAt / updatedAt` | 条件更新与幂等；迟到任务不得覆盖新版本 |
+| `LearningRouteNode.id / routeId / position` | 同一路线内稳定顺序；依赖只用于推荐，不能作为权限绕过 |
+| `conceptRef / objective / prerequisites` | 可选通用概念引用、可观察目标和依赖；首期数学内容配置提供语义，不把年级写死在循环中 |
+| `status` | `pending` / `learning` / `checked` / `needs_review` / `skipped` |
+| `passCriteria` | 版本化的最小验证条件；不得只存一个模型生成的百分比 |
+| `evidenceSummary` | 关联验证记录、学生原话和帮助级别的摘要；原文及正式题组通过引用读取 |
+| `version / updatedAt` | 状态转移带期望版本；历史状态保留，不能无条件覆盖 |
+
+路线建议通常 3～5 个节点，但数量不是接口硬限制；简单目标可少于 3 个。学生跳过、暂停或调整目标时保存原因和来源，不删除旧路线证据。跨对象、旧题干版本和新练习不继承 `checked` 状态。
+
+### 8.2 教学验证
+
+`LearningCheck` 是对话内针对一个节点的短验证，不等同 FR-06～08 的正式练习、自评或考试成绩。它可引用一段变式题、一个关键判断或一个解释任务；通过条件和依据必须在创建时保存。
+
+| 字段 | 约束 |
+| --- | --- |
+| `id / nodeId / subjectRevisionId / conversationId` | 归属当前路线、对象版本和会话；不可跨题复用 |
+| `prompt / expectedEvidence` | 学生可读的验证任务与需要观察的证据；不把参考答案注入普通引导上下文 |
+| `attemptMessageId / answerSnapshot` | 学生原始回答或作答来源；保留提示、讲解、解析查看和照片引用 |
+| `evaluation` | `pass` / `needs_review` / `insufficient_evidence` / `uncertain`；由受控评价结果提出，程序校验完整性 |
+| `supportLevel` | `independent` / `hinted` / `explained` / `solution_seen` / `skipped` |
+| `criteriaVersion / evidenceRefs` | 通过条件版本、来源消息/材料/题目及必要原文引用；引用不等于数学证明 |
+| `createdAt` | 只追加；修正评价新增版本并关联旧记录，不删除原回答 |
+
+只有 `pass` 且满足当前版本 `passCriteria` 的验证，才可提出节点转为 `checked`；学生自述、助手讲解、一次自评或看过解析后的复述不能单独触发。`uncertain` 与 `insufficient_evidence` 不应伪装成失败分数；允许学生继续、重试或跳过。误解记录仍写入 `TeachingMemory`，通过关联 `evidenceRefs` 与节点，不另建一套无来源画像。
+
+### 8.3 事件与页面同步
+
+服务端发布 `route.updated`、`node.updated`、`check.recorded` 事件时只发送已校验的状态、版本和可读摘要；不把模型规划 JSON、内部评分理由或提示词发给小程序。SSE 中途可展示教学正文，节点更新等结构化事件须完整校验后发送。重复事件按 `routeId + version` 去重，页面重进以数据库版本为准。

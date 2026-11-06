@@ -1,9 +1,11 @@
 import sharp from 'sharp';
 import { TeachingGraphic, type Diagram } from '@luma/shared';
+import { ResultCache } from './result-cache';
 
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]!));
 const number = (n: number) => String(Math.round(n * 100) / 100);
-const cache = new Map<string, Buffer>();
+const cache = new ResultCache<Buffer>(32);
+export const graphicCacheStats = () => cache.stats();
 
 /** Model supplies mathematical data, never executable markup. Rendering only uses these bounded primitives. */
 export function graphicSvg(input: TeachingGraphic): string {
@@ -50,11 +52,9 @@ export function graphicSvg(input: TeachingGraphic): string {
 }
 
 export async function renderGraphic(graphic: TeachingGraphic): Promise<Buffer> {
-  const key = JSON.stringify(graphic);
-  const hit = cache.get(key); if (hit) return hit;
-  const png = await sharp(Buffer.from(graphicSvg(graphic)), { density: 144 }).png().toBuffer();
-  if (cache.size >= 32) cache.delete(cache.keys().next().value!);
-  cache.set(key, png); return png;
+  const parsed = TeachingGraphic.parse(graphic);
+  const key = 'graphic-v1:' + JSON.stringify(parsed);
+  return cache.get(key, () => sharp(Buffer.from(graphicSvg(parsed)), { density: 144 }).png().toBuffer());
 }
 export async function presentDiagram(diagram: Diagram): Promise<Diagram> {
   if (!diagram.graphic) return diagram;

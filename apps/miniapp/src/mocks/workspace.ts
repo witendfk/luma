@@ -3,6 +3,7 @@ import type { LocalAttachment } from '@/utils/attachments';
 import type { RequestOptions } from '@/utils/request';
 import type { TurnStreamOptions, TurnStreamHandle } from '@/utils/sse';
 import { getToken, sessionVersion } from '@/utils/token';
+import { UI_MOCK } from '@/config';
 
 export const MOCK_TOKEN = 'luma-ui-preview-only';
 const KEY = 'luma_ui_preview:workspace:v1';
@@ -24,6 +25,7 @@ const seed = (): PreviewRecord[] => [
 ];
 let rows: PreviewRecord[] | undefined;
 function data(): PreviewRecord[] {
+  if (!UI_MOCK) return [];
   if (!rows) {
     try { const saved = uni.getStorageSync(KEY); if (saved) rows = JSON.parse(String(saved)); } catch { /* 使用示例初值。 */ }
     if (!Array.isArray(rows) || !rows.every((r) => typeof r.id === 'string' && Array.isArray(r.messages))) rows = seed();
@@ -41,6 +43,7 @@ const subject = (r: PreviewRecord) => ({ id: `${r.id}-subject-v${r.version ?? 1}
 
 /** 开发预览的传输替身：不执行网络请求，未覆盖的请求明确报错，不回退真实接口。 */
 export async function mockRequest<T>(opts: RequestOptions): Promise<T> {
+  if (!UI_MOCK) throw new Error('交互验收示例已停用，请使用真实服务');
   if (opts.path !== '/api/auth/wechat/login' && getToken() !== MOCK_TOKEN) throw new Error('请先登录前端预览身份');
   const [path, query = ''] = opts.path.split('?');
   const params: Record<string, string> = {};

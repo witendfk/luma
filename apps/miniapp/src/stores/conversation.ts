@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { onScopeDispose, ref } from 'vue';
 import * as api from '@/api/conversations';
-import type { StreamEvent, TurnRequest, LearningSubjectView, ProgressView } from '@luma/shared';
+import type { StreamEvent, TurnRequest, LearningSubjectView, ProgressView, TeachingReply } from '@luma/shared';
 import { openTurnStream, type TurnStreamHandle } from '@/utils/sse';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
 import { useHistoryStore } from '@/stores/history';
@@ -10,7 +10,7 @@ export const useConversationStore = defineStore('conversation', () => {
   const currentId = ref<string | null>(null);
   const title = ref('');
   const archivedAt = ref<string | null>(null);
-  const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; runId?: string | null; incomplete?: boolean }>>([]);
+  const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; reply?: TeachingReply; runId?: string | null; incomplete?: boolean }>>([]);
   const subject = ref<api.SubjectView | null>(null);
   const subjects = ref<LearningSubjectView[]>([]);
   const activeSubjectId = ref<string | null>(null);
@@ -102,9 +102,11 @@ export const useConversationStore = defineStore('conversation', () => {
       const failed = ['failed', 'cancelled'].includes(detail.latestRun.status);
       retryRunId.value = failed ? detail.latestRun.id : null;
       if (failed) error.value = detail.latestRun.error?.message ?? (detail.latestRun.status === 'cancelled' ? '本次回复已停止' : '生成失败，请重试');
+      else error.value = '';
     }
     if (history && revision === messageVersion) messages.value = history.items.map((message) => ({
       id: message.id, runId: message.runId, role: message.role, incomplete: message.status === 'incomplete',
+      reply: (message.content as { reply?: TeachingReply }).reply,
       text: ((message.content as { blocks?: Array<{ type: string; text?: string }> }).blocks ?? [])
         .filter((block) => block.type === 'text').map((block) => block.text ?? '').join('\n'),
     }));
@@ -140,7 +142,7 @@ export const useConversationStore = defineStore('conversation', () => {
     }, 1500);
   }
 
-  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'sectionId'>): Promise<void> {
+  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId'>): Promise<void> {
     if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;

@@ -9,12 +9,13 @@ export function aggregateJobUsage(rows: Array<{ counters: unknown }>) {
     const c = countersFrom(row.counters);
     sum.requests += Object.values(c.modelRequests).reduce((n, count) => n + count, 0);
     sum.input += c.tokens.input; sum.output += c.tokens.output; sum.unknown += c.unknownUsageCalls;
+    sum.cachedInput += c.tokens.cachedInput ?? 0;
     return sum;
-  }, { requests: 0, input: 0, output: 0, unknown: 0 });
+  }, { requests: 0, input: 0, output: 0, unknown: 0, cachedInput: 0 });
 }
 
 /** Reserve on the job, under the same conversation lock. Parent reads the aggregate; no competing JSON overwrites. */
-export async function accountJobModel(trace: JobModelTrace, purpose: string, result?: { durationMs: number; model?: string; usage?: { inputTokens?: number; outputTokens?: number }; error?: string }) {
+export async function accountJobModel(trace: JobModelTrace, purpose: string, result?: { durationMs: number; model?: string; usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }; error?: string }) {
   await db.$transaction(async (tx) => {
     const job = await tx.generationJob.findUniqueOrThrow({ where: { id: trace.jobId } });
     await tx.$queryRaw`SELECT id FROM "Conversation" WHERE id = ${job.conversationId} FOR UPDATE`;
@@ -32,7 +33,8 @@ export async function accountJobModel(trace: JobModelTrace, purpose: string, res
     } else {
       recordUsage(counters, result.usage);
       counters.calls.push({ purpose, model: result.model ?? env().LUMA_MODEL_ID, attempt: counters.modelRequests[purpose] ?? 1, durationMs: result.durationMs,
-        inputTokens: result.usage?.inputTokens ?? null, outputTokens: result.usage?.outputTokens ?? null, ...(result.error ? { error: result.error } : {}) });
+        inputTokens: result.usage?.inputTokens ?? null, outputTokens: result.usage?.outputTokens ?? null,
+        cachedInputTokens: result.usage?.cachedInputTokens ?? null, ...(result.error ? { error: result.error } : {}) });
     }
     await tx.generationJob.update({ where: { id: job.id }, data: { counters: counters as unknown as Prisma.InputJsonValue } });
   });

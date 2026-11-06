@@ -16,6 +16,11 @@ export interface TaskFrameGoal {
 }
 
 export interface TaskFrame {
+  memoryCandidates?: Array<{kind: 'request' | 'difficulty' | 'attempt' | 'open_question' | 'constraint'; text: string; quote: string}>;
+  conditionCorrection?: boolean;
+  readback?: { reason: 'history_reference'; status: 'pending' | 'read' | 'clarified'; triggerMessageId: string;
+    sourceMessageIds: string[]; candidateMessageIds: string[]; ranges: Record<string, number> };
+  memoryWrite?: { accepted: string[]; rejected: Array<{index: number; code: string}> };
   /** chat=自由输入；solution=主动查看解析；material=含材料生成目标 */
   kind: 'chat' | 'solution' | 'material';
   /** Explicit buttons are preplanned; free text uses one control decision in the same driver. */
@@ -25,6 +30,7 @@ export interface TaskFrame {
   action?: ExplicitAction;
   focus?: {
     artifactId?: string;
+    artifactVersion?: number;
     sectionId?: string;
     attemptId?: string;
     exerciseId?: string;
@@ -37,6 +43,10 @@ export function taskFrameFrom(json: unknown): TaskFrame {
   if (!json || typeof json !== 'object') return base;
   const src = json as Partial<TaskFrame>;
   return {
+    memoryWrite: src.memoryWrite,
+    conditionCorrection: src.conditionCorrection,
+    memoryCandidates: src.memoryCandidates,
+    readback: src.readback,
     kind: src.kind ?? 'chat',
     planned: src.planned ?? true,
     historyCount: src.historyCount ?? 0,

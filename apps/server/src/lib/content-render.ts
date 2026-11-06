@@ -5,17 +5,18 @@ import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
 import sharp from 'sharp';
-import type { ContentBlock, RichNode } from '@luma/shared';
+import { teachingReplyText, type TeachingReply, type ContentBlock, type RichNode } from '@luma/shared';
+import { ResultCache } from './result-cache';
 
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 // No network, HTML, link or user macro packages. MathJax typesets formulas; it does not create teaching figures.
-const document = mathjax.document('', { InputJax: new TeX({ packages: AllPackages.filter((p) => !['html', 'autoload', 'require', 'newcommand', 'configmacros'].includes(p)), maxBuffer: 2000 }), OutputJax: new SVG({ fontCache: 'none' }) });
-const cache = new Map<string, { src: string; width: number; height: number }>();
+const document = mathjax.document('', { InputJax: new TeX({ packages: AllPackages.filter((p) => !['html', 'autoload', 'require', 'newcommand', 'configmacros', 'noerrors', 'noundefined'].includes(p)), maxBuffer: 2000 }), OutputJax: new SVG({ fontCache: 'none' }) });
+const cache = new ResultCache<{ src: string; width: number; height: number }>(128);
+export const formulaCacheStats = () => cache.stats();
 export async function renderFormula(latex: string, display = false) {
   if (latex.length > 1500) throw new Error('公式过长');
-  const key = `${display}:${latex}`;
-  if (cache.has(key)) return cache.get(key)!;
+  return cache.get(`mathjax-v2:${display}:${latex}`, async () => {
   const root = document.convert(latex, { display, em: 16, ex: 8, containerWidth: 600 });
   if (adaptor.outerHTML(root).includes('data-mjx-error')) throw new Error('公式无法排版');
   const svg = adaptor.firstChild(root);
@@ -28,8 +29,8 @@ export async function renderFormula(latex: string, display = false) {
   source = source.replace(/width="[^"]+"/, `width="${width * 2}"`).replace(/height="[^"]+"/, `height="${height * 2}"`).replace(/currentColor/g, '#354a37');
   const png = await sharp(Buffer.from(source)).png().toBuffer();
   const result = { src: `data:image/png;base64,${png.toString('base64')}`, width, height };
-  if (cache.size >= 128) cache.delete(cache.keys().next().value!);
-  cache.set(key, result); return result;
+  return result;
+  });
 }
 
 async function inline(text: string): Promise<RichNode[]> {
@@ -38,13 +39,14 @@ async function inline(text: string): Promise<RichNode[]> {
     if ((part.startsWith('$') && part.endsWith('$')) || (part.startsWith('\\(') && part.endsWith('\\)'))) {
       const latex = part.startsWith('$') ? part.slice(1, -1) : part.slice(2, -2);
       try { const img = await renderFormula(latex); return { name: 'img', attrs: { src: img.src, style: `width:${img.width}px;height:${img.height}px;vertical-align:middle;`, alt: latex } }; }
-      catch { return { type: 'text', text: latex }; }
+      catch { return { type: 'text', text: '〔公式暂时无法排版，请重试〕' }; }
     }
-    if (part.startsWith('**') && part.endsWith('**')) return { name: 'strong', attrs: { style: 'font-weight:600;color:#40543e;' }, children: [{ type: 'text', text: part.slice(2, -2) }] };
-    return { type: 'text', text: part };
+    if (part.startsWith('**') && part.endsWith('**')) return { name: 'strong', attrs: { style: 'font-weight:600;color:#40543e;' }, children: await inline(part.slice(2, -2)) };
+    return { type: 'text', text: part.replace(/\$[^$\n]*(?=\n|$)/g, '〔公式格式不完整〕').replace(/\*\*/g, '') };
   }));
 }
-export async function renderContent(text: string): Promise<ContentBlock[]> {
+export async function renderContent(text: string, reply?: TeachingReply): Promise<ContentBlock[]> {
+  if (reply) text = teachingReplyText(reply);
   const parts = text.split(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])/g).filter(Boolean);
   const blocks: ContentBlock[] = [];
   for (const part of parts) {
@@ -52,14 +54,15 @@ export async function renderContent(text: string): Promise<ContentBlock[]> {
       const latex = part.slice(2, -2);
       const fallback = latex.replace(/<[^>]*>/g, '');
       try { blocks.push({ kind: 'formula', ...await renderFormula(latex, true), fallback }); }
-      catch { blocks.push({ kind: 'text', nodes: [{ type: 'text', text: fallback }] }); }
+      catch { blocks.push({ kind: 'text', failed: true, nodes: [{ type: 'text', text: '公式暂时无法排版，请重试。' }] }); }
     } else {
       const nodes: RichNode[] = [];
       for (const paragraph of part.split(/\n\s*\n/).filter(Boolean)) {
         const heading = /^#{1,4}\s+/.test(paragraph);
         nodes.push({ name: 'p', attrs: { style: `margin:0 0 12px;white-space:pre-wrap;word-break:break-word;${heading ? 'font-weight:600;' : ''}` }, children: await inline(paragraph.replace(/^#{1,4}\s+/gm, '').replace(/^[-*] /gm, '• ')) });
       }
-      blocks.push({ kind: 'text', nodes });
+      const failed = (items: RichNode[]): boolean => items.some((n) => n.text === '〔公式暂时无法排版，请重试〕' || n.text?.includes('〔公式格式不完整〕') || (n.children && failed(n.children)));
+      blocks.push({ kind: 'text', nodes, ...(failed(nodes) ? { failed: true } : {}) });
     }
   }
   return blocks;

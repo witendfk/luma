@@ -173,6 +173,10 @@ model SubjectRevision {
   /// 学生对照原图确认的时间；确认前不按未核实条件生成解答（FR-03）
   confirmedAt            DateTime?
   originAttachmentId     String?
+  /// 带来源的对象版本教学进展；与页面定位分离，不继承到新题干版本。
+  teachingState          Json?
+  contextSummaries       ContextSummary[]
+  teachingMemories       TeachingMemory[]
   createdAt              DateTime    @default(now())
 
   conversation     Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -185,6 +189,22 @@ model SubjectRevision {
   progress         LearningProgress[]
 
   @@unique([subjectId, version])
+}
+
+/// Bounded rolling memory. Original Message rows remain the source of truth.
+model ContextSummary {
+  id                   String @id @default(cuid())
+  subjectRevisionId    String
+  scopeKey             String
+  version              Int @default(1)
+  body                 Json
+  throughMessageId     String
+  throughCreatedAt     DateTime
+  coveredMessages      Int
+  updatedAt            DateTime @updatedAt
+  subjectRevision      SubjectRevision @relation(fields: [subjectRevisionId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectRevisionId, scopeKey])
 }
 
 /// 解题过程转写：逐步确认后才作纠错依据（FR-04 / 设计文档 §3.1）
@@ -484,4 +504,26 @@ model GenerationJob {
   run             AgentRun?        @relation(fields: [runId], references: [id])
 
   @@index([status, createdAt])
+}
+
+
+/// Object-scoped teaching evidence. Lifecycle history is retained, never a student profile.
+model TeachingMemory {
+  id                String @id @default(cuid())
+  subjectRevisionId String
+  scope             Json
+  scopeKey          String
+  kind              String
+  text              String
+  sourceKind        String
+  evidence          Json
+  status            String @default("candidate")
+  supersedesId      String?
+  containsSolution  Boolean @default(false)
+  verificationRef   String?
+  version           Int @default(1)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  subjectRevision   SubjectRevision @relation(fields: [subjectRevisionId], references: [id], onDelete: Cascade)
+  @@index([subjectRevisionId, status, scopeKey])
 }
