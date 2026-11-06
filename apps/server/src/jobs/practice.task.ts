@@ -49,7 +49,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
   try {
     await touchJob(lease, '生成题目');
     let practice: PracticeStructure;
-    if (!hasModelCredentials()) {
+    if (env().LUMA_MOCK_AGENT || !hasModelCredentials()) {
       if (!env().LUMA_MOCK_AGENT) {
         throw notImplemented('题组生成（未配置模型且未开启联调模式）');
       }
@@ -66,6 +66,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
       };
     } else {
       practice = await generateJson<PracticeStructure>({
+        trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
         system: await loadPrompt('practice'),
@@ -80,8 +81,9 @@ export async function practiceTask(lease: JobLease): Promise<void> {
     }
 
     await touchJob(lease, '复算复核');
-    if (hasModelCredentials()) {
+    if (!env().LUMA_MOCK_AGENT && hasModelCredentials()) {
       const review = await generateJson<{ pass: boolean }>({
+        trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice_review',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
         system: await loadPrompt('review'),

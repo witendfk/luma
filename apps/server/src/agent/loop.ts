@@ -1,14 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { activeControllers, RunStoppedError, withActiveRun } from './run-guard';
 import type { StreamEvent } from '@luma/shared';
+import { aggregateJobUsage } from '../lib/model-accounting';
 import { db } from '../lib/db';
-import { env, hasModelCredentials } from '../lib/env';
+import { env } from '../lib/env';
 import type { EventEmitter } from '../lib/sse';
 import { nextAgentStep, type AgentStep, type ModelMessage, type ToolCall } from '../lib/model';
-import { assembleSystem } from './context';
+import { assembleSystem, learningData, budgetContext, ContextBudgetError } from './context';
 import {
   clearFailure,
+  recordFailure,
+  modelBudgetAvailable,
   correctionAllowed,
   countersFrom,
   initialCounters,
@@ -22,7 +25,6 @@ import {
 import { mockClarify, mockGuide, mockSolution } from './mock';
 import { buildPolicy } from './policy';
 import { assistantToolCallsMessage, correctionMessage, toolResultsMessage } from './protocol';
-import { PROMPT_VERSION } from './prompts';
 import { executeBatch } from './tool-executor';
 import { nativeToolSet } from './tools';
 import { taskFrameFrom, type PendingBatch, type TaskFrame } from './types';
@@ -74,6 +76,26 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       controller.abort(err);
     } finally { checking = false; }
   }, Math.min(1000, Math.max(20, Math.floor(env().RUN_LEASE_MS / 3))));
+  let partialText = '';
+  let partialMessageId: string | undefined;
+  let savedAt = 0, savedLength = 0;
+  async function savePartial(text: string) {
+    await withActiveRun(runId, owner, async (tx) => {
+      if (partialMessageId) await tx.message.update({ where: { id: partialMessageId }, data: { content: { blocks: [{ type: 'text', text }] } } });
+      else {
+        const run = await tx.agentRun.findUniqueOrThrow({ where: { id: runId } });
+        const row = await tx.message.create({ data: { conversationId: run.conversationId, subjectId: run.subjectId,
+          subjectRevisionId: run.subjectRevisionId, runId, role: 'assistant', status: 'incomplete', content: { blocks: [{ type: 'text', text }] } } });
+        partialMessageId = row.id;
+      }
+    });
+    savedAt = Date.now(); savedLength = text.length;
+  }
+  async function resetPartial() {
+    if (partialMessageId) await withActiveRun(runId, owner, (tx) => tx.message.deleteMany({ where: { id: partialMessageId, status: 'incomplete' } }));
+    if (partialText) emit?.({ type: 'text.reset', runId });
+    partialText = ''; partialMessageId = undefined; savedLength = 0;
+  }
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const initial = await db.agentRun.findUnique({ where: { id: runId } });
@@ -94,6 +116,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       });
 
       const counters = countersFrom(run.counters);
+      counters.background = aggregateJobUsage(await db.generationJob.findMany({ where: { runId }, select: { counters: true } }));
       const protocol = ((run.protocol ?? []) as ModelMessage[]).slice();
       const taskFrame = taskFrameFrom(run.taskFrame);
       const conversation = await db.conversation.findUnique({
@@ -108,6 +131,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         conversationId: run.conversationId,
         subjectId: run.subjectId,
         action: taskFrame.action,
+        solutionRequested: taskFrame.solutionRequested,
         focus: taskFrame.focus,
       });
 
@@ -142,7 +166,17 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         // 全部结果就绪：按 toolCallId 补回结果，才允许下一次决策（§4.13）
         protocol.push(toolResultsMessage(outcome.results));
         mergeGoalCompletions(taskFrame, outcome.results);
-        clearFailure(counters);
+        for (const r of outcome.results) {
+          const value = r.value as { ok?: boolean; code?: string };
+          if (value?.ok === false) {
+            const input = batch.items.find((item) => item.toolCallId === r.toolCallId)?.input;
+            const key = createHash('sha256').update(JSON.stringify([r.toolName, input, value.code])).digest('hex');
+            if (recordFailure(counters, key)) {
+              await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: { counters: asJson(counters) } }));
+              await failRun(runId, 'NO_PROGRESS', '相同工具连续失败，已停止自动尝试，请调整输入后重试', false, emit, owner); return;
+            }
+          } else clearFailure(counters);
+        }
         await withActiveRun(runId, owner, (tx) => tx.agentRun.update({
           where: { id: runId },
           data: {
@@ -174,23 +208,63 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         await failRun(runId, 'LIMIT', '本轮决策步数已达保护上限', false, emit, owner);
         return;
       }
+      const planning = !taskFrame.planned;
+      const tools = nativeToolSet(planning);
+      const system = await assembleSystem(policy, taskFrame);
+      const context = budgetContext({ system, facts: await learningData(policy, conversation.userId, run.conversationId, taskFrame), protocol, historyCount: taskFrame.historyCount ?? 0, tools });
+      if (!modelBudgetAvailable(counters)) {
+        await failRun(runId, 'LIMIT', '本轮模型请求或累计用量已达保护上限', false, emit, owner); return;
+      }
       recordModelRequest(counters, 'agent');
+      // Reserve before network calls; a process failure cannot erase an attempted request.
+      await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: {
+        counters: asJson(counters), policySnapshot: asJson({ ...policy, estimatedInputTokens: context.estimatedInputTokens, omittedHistory: context.omittedHistory }),
+      } }));
+      const started = Date.now();
       const subjectText = await loadSubjectText(policy.subjectRevisionId);
       const step = await nextAgentStep({
-        purpose: 'agent',
-        system: await assembleSystem(policy, taskFrame),
-        messages: protocol,
-        tools: nativeToolSet(),
-        abortSignal: controller.signal,
-        mock: mockStep(policy, taskFrame, subjectText),
+        purpose: 'agent', system, messages: context.messages, tools,
+        abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]),
+        mock: planning ? { kind: 'plan', plan: { goals: [], solutionRequested: false }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { goals: [], solutionRequested: false } }] } : mockStep(policy, taskFrame, subjectText),
+        onText: async (delta) => {
+          controller.signal.throwIfAborted(); partialText += delta;
+          if (emit) {
+            if (!partialMessageId || Date.now() - savedAt > 600 || partialText.length - savedLength > 300) await savePartial(partialText);
+            emit({ type: 'text.delta', runId, delta });
+          }
+        },
+        onReset: resetPartial,
       });
-      controller.signal.throwIfAborted();
       recordUsage(counters, step.usage);
+      counters.calls.push({ purpose: 'agent', model: env().LUMA_MOCK_AGENT ? 'mock' : env().LUMA_MODEL_ID,
+        attempt: counters.modelRequests.agent!, durationMs: Date.now() - started,
+        inputTokens: step.usage?.inputTokens ?? null, outputTokens: step.usage?.outputTokens ?? null,
+        ...(step.kind === 'issue' ? { error: step.code } : {}) });
+      await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: { counters: asJson(counters) } }));
+      controller.signal.throwIfAborted();
+
+      if (step.kind === 'plan') {
+        if (!planning) { await failRun(runId, 'PROTOCOL', '本轮目标已记录，不能重复规划', false, emit, owner); return; }
+        const goals = policy.subjectConfirmed ? [...new Map(step.plan.goals.map((goal) => [goal.type, goal])).values()] : [];
+        taskFrame.planned = true; taskFrame.goals = goals;
+        taskFrame.solutionRequested = policy.subjectConfirmed && step.plan.solutionRequested;
+        taskFrame.kind = goals.length ? 'material' : taskFrame.solutionRequested ? 'solution' : 'chat';
+        protocol.push(assistantToolCallsMessage(step.calls), toolResultsMessage([{ toolCallId: step.calls[0]!.toolCallId, toolName: 'planTurn',
+          value: { ok: true, goals, solutionRequested: taskFrame.solutionRequested } }]));
+        await withActiveRun(runId, owner, async (tx) => {
+          await tx.toolExecution.create({ data: { runId, decisionId: `${runId}:d${counters.decisions}`, toolCallId: step.calls[0]!.toolCallId,
+            tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
+          await tx.agentRun.update({ where: { id: runId }, data: { taskFrame: asJson(taskFrame), protocol: asJson(protocol) } });
+        });
+        continue;
+      }
+      if (planning) { await resetPartial(); await failRun(runId, 'PROTOCOL', '目标决策未完成，请重试', true, emit, owner); return; }
 
       if (step.kind === 'respond') {
         const validation = await validateRespond(step.disposition, taskFrame);
         if (!validation.ok) {
           // finish 条件不满足：协议校正，有限次（§4.11）
+          await resetPartial();
           if (correctionAllowed(counters)) {
             recordCorrection(counters);
             protocol.push(correctionMessage(validation.message));
@@ -220,13 +294,10 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
         const nextStatus = step.disposition === 'finish' ? 'completed' : 'waiting_user';
         await withActiveRun(runId, owner, async (tx) => {
-          await tx.message.create({
-            data: {
-              conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
-              content: { blocks } as Prisma.InputJsonValue, runId, status: 'complete',
-              subjectRevisionId: run.subjectRevisionId
-            },
-          });
+          const data = { content: { blocks, focus: taskFrame.focus ?? {} } as Prisma.InputJsonValue, status: 'complete' as const };
+          if (partialMessageId) await tx.message.update({ where: { id: partialMessageId }, data });
+          else await tx.message.create({ data: { conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
+            runId, subjectRevisionId: run.subjectRevisionId, ...data } });
           await updateStage(tx, run.conversationId, policy, taskFrame);
           await tx.agentRun.update({
             where: { id: runId },
@@ -237,8 +308,8 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
           });
           await tx.conversation.update({ where: { id: run.conversationId }, data: { lastActiveAt: new Date() } });
         });
-        // 首期按设计允许的降级路径：协议与终态校验通过后一次性发送正文，避免丢字或泄漏无效输出。
-        emit?.({ type: 'text.delta', runId, delta: step.text });
+        if (!partialText) emit?.({ type: 'text.delta', runId, delta: step.text });
+        partialText = ''; partialMessageId = undefined;
         if (nextStatus === 'completed') {
           emit?.({ type: 'run.completed', runId, stage: policy.stage });
         } else {
@@ -282,6 +353,9 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         continue;
       }
 
+      if (step.kind === 'issue' && !step.code.startsWith('PROTOCOL')) {
+        await failRun(runId, step.code, step.message, step.retryable, emit, owner); return;
+      }
       // issue：有限校正，不可恢复则失败终止（§4.12 handleModelIssue）
       if (correctionAllowed(counters)) {
         recordCorrection(counters);
@@ -296,7 +370,9 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       return;
     }
   } catch (err) {
-    if (signal?.aborted) {
+    if (err instanceof ContextBudgetError) {
+      await failRun(runId, 'CONTEXT_LIMIT', err.message, false, emit, owner);
+    } else if (signal?.aborted) {
       const stopped = await db.agentRun.updateMany({
         where: { id: runId, status: 'running', leaseBy: owner },
         data: { status: 'cancelled', finishedAt: new Date() },
@@ -310,6 +386,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         controller.signal.aborted ? '本轮运行已停止或超时，可重试' : '运行异常，可重试', true, emit, owner);
     }
   } finally {
+    if (partialMessageId && partialText) await db.message.updateMany({ where: { id: partialMessageId, status: 'incomplete' }, data: { content: { blocks: [{ type: 'text', text: partialText }] } } });
     clearInterval(heartbeat);
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onDisconnect);
@@ -351,7 +428,7 @@ async function validateRespond(
   disposition: 'wait_user' | 'finish',
   taskFrame: TaskFrame,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (disposition === 'wait_user') return { ok: true };
+  if (disposition === 'wait_user' && taskFrame.goals.some((g) => g.failure)) return { ok: true };
   const uncompleted = taskFrame.goals.filter((g) => !g.completedArtifactId);
   if (uncompleted.length > 0) {
     const name = (t: 'lesson' | 'practice') => (t === 'lesson' ? '图文讲义' : '同类题组');
@@ -362,12 +439,10 @@ async function validateRespond(
 
 function markGoalsStarted(
   taskFrame: TaskFrame,
-  jobs: Array<{ toolCallId: string; jobId: string }>,
+  jobs: Array<{ toolCallId: string; jobId: string; artifactType: string }>,
 ): void {
-  // 目标与批次内调用按发起顺序一一对应，仅作记录；完成与否以真实工具结果为准（§4.11）
-  const pending = taskFrame.goals.filter((g) => !g.completedArtifactId && !g.startedJobId);
-  for (const [idx, job] of jobs.entries()) {
-    const goal = pending[idx];
+  for (const job of jobs) {
+    const goal = taskFrame.goals.find((g) => g.type === (job.artifactType === 'lesson' ? 'lesson' : 'practice') && !g.completedArtifactId);
     if (goal) goal.startedJobId = job.jobId;
   }
 }
@@ -378,6 +453,10 @@ function mergeGoalCompletions(
 ): void {
   for (const r of results) {
     const v = r.value as { ok?: boolean; artifactId?: string; status?: string; type?: string } | undefined;
+    if (v?.ok === false) {
+      const type = r.toolName === 'createLesson' ? 'lesson' : r.toolName === 'createPractice' ? 'practice' : null;
+      for (const goal of taskFrame.goals) if (goal.type === type && !goal.completedArtifactId) goal.failure = true;
+    }
     if (!v?.ok || !v.artifactId) continue;
     // 工具结果用材料枚举（lesson/exercise_set），TaskFrame 目标用 lesson/practice —— 在此统一
     const goalType: 'lesson' | 'practice' = v.type === 'lesson' ? 'lesson' : 'practice';
@@ -411,7 +490,7 @@ function mockStep(
   taskFrame: TaskFrame,
   subjectText: string,
 ): AgentStep {
-  const pendingGoal = taskFrame.goals.find((g) => !g.completedArtifactId);
+  const pendingGoal = taskFrame.goals.find((g) => !g.completedArtifactId && !g.failure);
   if (pendingGoal && policy.subjectConfirmed) {
     const call: ToolCall =
       pendingGoal.type === 'lesson'
@@ -419,6 +498,7 @@ function mockStep(
         : { toolCallId: `mock_${randomUUID().slice(0, 8)}`, toolName: 'createPractice', input: { count: pendingGoal.count ?? 2 } };
     return { kind: 'tool_calls', calls: [call] };
   }
+  if (taskFrame.goals.some((g) => g.failure)) return { kind: 'respond', disposition: 'wait_user', text: '材料任务未完成，请调整输入后重试。', refs: [] };
   if (taskFrame.goals.length > 0 && policy.subjectConfirmed) {
     const parts = taskFrame.goals.map((g) =>
       g.type === 'lesson' ? '图文讲义已生成，可在成果里查看' : '同类题组已生成，可以开始作答',

@@ -10,7 +10,7 @@ export const useConversationStore = defineStore('conversation', () => {
   const currentId = ref<string | null>(null);
   const title = ref('');
   const archivedAt = ref<string | null>(null);
-  const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; incomplete?: boolean }>>([]);
+  const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; runId?: string | null; incomplete?: boolean }>>([]);
   const subject = ref<api.SubjectView | null>(null);
   const subjects = ref<LearningSubjectView[]>([]);
   const activeSubjectId = ref<string | null>(null);
@@ -18,12 +18,15 @@ export const useConversationStore = defineStore('conversation', () => {
   const learnAll = ref(false);
   const switchingSubject = ref(false);
   const artifacts = ref<api.ConversationDetail['artifacts']>([]);
+  const lessonJob = ref<api.ConversationDetail['lessonJob']>(null);
   const generating = ref(false);
   const editingSubject = ref(false);
   const confirmingSubject = ref(false);
   const stage = ref('clarifying');
   const waitingJob = ref(false);
   const error = ref('');
+  const retryRunId = ref<string | null>(null);
+  let lastTurn: TurnRequest | null = null;
   const currentRunId = ref<string | null>(null);
   let streamHandle: TurnStreamHandle | null = null;
   let openVersion = 0;
@@ -54,13 +57,14 @@ export const useConversationStore = defineStore('conversation', () => {
     subjectVersion += 1;
     stopStream();
     currentId.value = null;
-    currentRunId.value = null;
+    currentRunId.value = null; retryRunId.value = null; lastTurn = null;
     title.value = '';
     archivedAt.value = null;
     messages.value = [];
     subject.value = null;
     subjects.value = []; activeSubjectId.value = null; progress.value = null; learnAll.value = false; switchingSubject.value = false;
     artifacts.value = [];
+    lessonJob.value = null;
     editingSubject.value = false;
     confirmingSubject.value = false;
     stage.value = 'clarifying';
@@ -85,6 +89,7 @@ export const useConversationStore = defineStore('conversation', () => {
     activeSubjectId.value = detail.conversation.activeSubjectId ?? detail.subject?.subjectId ?? null;
     progress.value = detail.progress; learnAll.value = detail.conversation.learnAll ?? false;
     artifacts.value = detail.artifacts;
+    lessonJob.value = detail.lessonJob ?? null;
     stage.value = detail.progress?.stage ?? 'clarifying';
     if (detail.activeRun && !generating.value) {
       waitingJob.value = true;
@@ -92,8 +97,14 @@ export const useConversationStore = defineStore('conversation', () => {
       clearTimeout(polling);
       pollRun(detail.activeRun.id, version, session);
     }
+    if (!detail.activeRun && !generating.value && detail.latestRun) {
+      waitingJob.value = false; currentRunId.value = null;
+      const failed = ['failed', 'cancelled'].includes(detail.latestRun.status);
+      retryRunId.value = failed ? detail.latestRun.id : null;
+      if (failed) error.value = detail.latestRun.error?.message ?? (detail.latestRun.status === 'cancelled' ? '本次回复已停止' : '生成失败，请重试');
+    }
     if (history && revision === messageVersion) messages.value = history.items.map((message) => ({
-      id: message.id, role: message.role, incomplete: message.status === 'incomplete',
+      id: message.id, runId: message.runId, role: message.role, incomplete: message.status === 'incomplete',
       text: ((message.content as { blocks?: Array<{ type: string; text?: string }> }).blocks ?? [])
         .filter((block) => block.type === 'text').map((block) => block.text ?? '').join('\n'),
     }));
@@ -105,7 +116,7 @@ export const useConversationStore = defineStore('conversation', () => {
     await refresh();
   }
 
-  function appendLocalMessage(msg: { role: 'user' | 'assistant'; text: string }): void {
+  function appendLocalMessage(msg: { role: 'user' | 'assistant'; text: string; runId?: string }): void {
     messages.value.push({ id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, ...msg });
   }
 
@@ -129,8 +140,8 @@ export const useConversationStore = defineStore('conversation', () => {
     }, 1500);
   }
 
-  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent): Promise<void> {
-    if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action)) return;
+  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'sectionId'>): Promise<void> {
+    if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;
     generating.value = true;
@@ -148,18 +159,22 @@ export const useConversationStore = defineStore('conversation', () => {
 
       clearTimeout(polling);
       waitingJob.value = false;
-      appendLocalMessage({ role: 'user', text });
+      if (!retryInput) appendLocalMessage({ role: 'user', text });
       const handleEvent = (event: StreamEvent) => {
         if (version !== openVersion || session !== sessionVersion()) return;
         if (event.type === 'run.started') currentRunId.value = event.runId;
+        if (event.type === 'text.reset') {
+          const last = messages.value[messages.value.length - 1];
+          if (last?.role === 'assistant' && last.runId === event.runId && last.incomplete) messages.value.pop();
+        }
         if (event.type === 'text.delta') {
           const last = messages.value[messages.value.length - 1];
-          if (last?.role === 'assistant' && last.incomplete) last.text += event.delta;
-          else { appendLocalMessage({ role: 'assistant', text: event.delta }); messages.value[messages.value.length - 1]!.incomplete = true; }
+          if (last?.role === 'assistant' && last.runId === event.runId && last.incomplete) last.text += event.delta;
+          else { appendLocalMessage({ role: 'assistant', text: event.delta, runId: event.runId }); messages.value[messages.value.length - 1]!.incomplete = true; }
         }
         if (event.type === 'run.completed' || event.type === 'run.waiting') {
           const last = messages.value[messages.value.length - 1];
-          if (last?.role === 'assistant') last.incomplete = false;
+          if (last?.role === 'assistant' && last.runId === event.runId) last.incomplete = false;
           generating.value = false;
           waitingJob.value = event.type === 'run.waiting' && event.waiting === 'job';
           if (waitingJob.value) pollRun(event.runId, version, session);
@@ -167,13 +182,15 @@ export const useConversationStore = defineStore('conversation', () => {
         }
         if (event.type === 'run.failed' || event.type === 'run.cancelled') {
           generating.value = false;
-          currentRunId.value = null;
+          retryRunId.value = event.runId; currentRunId.value = null;
           if (event.type === 'run.failed') error.value = event.error.message;
         }
       };
+      lastTurn = { requestId: `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text, action,
+        subjectId: activeSubjectId.value ?? undefined, expectedRevision: subject.value?.version, ...focus, ...retryInput };
       setStream(openTurnStream({
         conversationId: currentId.value!,
-        body: { requestId: `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text, action, subjectId: activeSubjectId.value ?? undefined, expectedRevision: subject.value?.version },
+        body: lastTurn,
         onEvent: handleEvent,
         onDone: () => {
           if (version !== openVersion || session !== sessionVersion()) return;
@@ -263,11 +280,17 @@ export const useConversationStore = defineStore('conversation', () => {
       subject.value = detail.subject; subjects.value = detail.subjects;
       activeSubjectId.value = detail.conversation.activeSubjectId ?? null; progress.value = detail.progress;
       learnAll.value = detail.conversation.learnAll ?? false; stage.value = detail.progress?.stage ?? 'clarifying';
-      artifacts.value = detail.artifacts; messages.value = []; error.value = ''; currentRunId.value = null;
+      artifacts.value = detail.artifacts; messages.value = []; error.value = ''; currentRunId.value = null; retryRunId.value = null; lastTurn = null;
       await refresh();
     } finally {
       if (session === sessionVersion() && currentId.value === id && openVersion === version) switchingSubject.value = false;
     }
+  }
+
+  async function retry(): Promise<void> {
+    if (generating.value || waitingJob.value || !currentId.value) return;
+    if (retryRunId.value) await send('', undefined, 'question', undefined, { retryOfRunId: retryRunId.value });
+    else if (lastTurn) await send(lastTurn.text ?? '', lastTurn.action, 'question', undefined, lastTurn);
   }
 
   async function stop(): Promise<void> {
@@ -279,6 +302,6 @@ export const useConversationStore = defineStore('conversation', () => {
     await refresh();
   }
 
-  return { subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+  return { retry, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
     reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });

@@ -4,9 +4,10 @@ import { env } from '../lib/env';
 import { initialCounters } from '../agent/limits';
 import { assistantToolCallsMessage, userTextMessage } from '../agent/protocol';
 import { PROMPT_VERSION } from '../agent/prompts';
-import type { JobStatus, JobView } from '@luma/shared';
+import type { Diagram, JobStatus, JobView } from '@luma/shared';
 import { db } from '../lib/db';
 import { invalidFormat, notFound, conversationBusy, revisionConflict } from '../lib/errors';
+import { presentDiagram } from '../lib/teaching-graphic';
 
 /**
  * 生成任务状态（FR-11 / 设计文档 §8.3）。
@@ -20,12 +21,21 @@ export const jobService = {
     if (!job) throw notFound('任务');
 
     const error = job.error as { code?: string; message?: string; retryable?: boolean } | null;
+    const checkpoint = job.draftCheckpoint as { lesson?: { title?: string; sections?: Array<{ id: string; heading: string; body: string; diagram?: Diagram }>; diagrams?: Array<{ sectionId: string; content: Diagram }> } } | null;
+    const draft = job.type === 'lesson' && checkpoint?.lesson?.title && checkpoint.lesson.sections?.length
+      ? { title: checkpoint.lesson.title, sections: checkpoint.lesson.sections.map(({ id, heading, body, diagram }) => ({ id, heading, body,
+          ...(diagram ? { diagram } : { diagram: checkpoint.lesson!.diagrams?.find((item) => item.sectionId === id)?.content }),
+        })) } : undefined;
+    if (draft) await Promise.all(draft.sections.map(async (section) => {
+      if (section.diagram) section.diagram = await presentDiagram(section.diagram);
+    }));
     return {
       id: job.id,
       type: job.type,
       status: job.status as JobStatus,
       step: job.step,
       artifactId: job.resultArtifactId,
+      draft,
       error: error
         ? {
             code: error.code ?? 'INTERNAL',

@@ -40,7 +40,7 @@ const pinia = sandbox.require('pinia');
 pinia.setActivePinia(pinia.createPinia());
 const auth = sandbox.load('@/stores/auth').useAuthStore();
 const chat = sandbox.load('@/stores/conversation').useConversationStore();
-async function until(check: () => boolean, label: string, timeout = 30_000) {
+async function until(check: () => boolean, label: string, timeout = 90_000) {
   const deadline = Date.now() + timeout;
   while (!check()) {
     if (chat.error) throw new Error(`${label}: ${chat.error}`);
@@ -126,6 +126,6 @@ async function main() {
   assert.equal(chat.currentId, null);
   assert.equal(chat.messages.length, 0);
   console.log('PASS 退出清空账号数据');
-  console.log('本地前后端逻辑层联通通过；GPT 为模拟模型，微信渲染与真机另行验收。');
+  console.log('本地前后端逻辑层联通通过；模型模式以服务端运行记录为准，微信渲染与真机另行验收。');
 }
 main().catch((err) => { console.error(err); process.exitCode = 1; }).finally(() => { chat.$dispose(); auth.$dispose(); });

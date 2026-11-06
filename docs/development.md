@@ -126,3 +126,11 @@ pnpm test:subjects  # 真库检查逐题版本/进度/来源、权限、收藏�
 - `localhost:4000 … ERR_CONNECTION_REFUSED`：检查 `pnpm dev:server` 是否仍运行。健康接口 `db: down` 时，若使用 Colima，先 `colima start`，再 `pnpm db:up`；保留原数据库卷。
 - 页面可显示但生成一直等待：检查现有 `worker:dev` 进程。重启电脑或开发工具不会自动恢复 API、数据库和 worker。
 - `report-online.sh.wxgateway.com/SdkReport … ERR_TIMED_OUT` 属于微信工具上报请求；与业务 `/api` 请求分开排查，不能仅根据红字数量判断业务失败。
+
+## 真实图文联调
+
+教学正文与结构化步骤图解由 `LUMA_MODEL_ID` 指定的同一 GPT 生成，通过 schema 和内容复核后发布。该链路不调用独立图像模型，也不依赖 COS。生成任务可查看草稿与复核状态，失败可显式重试。
+
+启动 API、worker 和正式 API 模式的小程序后，在微信工具中打开会话，点击生成图文讲解；完成后进入阅读页。公式通过 `/api/content/render` 排版，段落追问携带讲义和章节引用。
+
+独立图片模型仅为后续学生主动生成总结卡预留，当前不属于讲义调用链；本轮不要求补充其配置。密钥仅放服务端忽略的 `.env.local`，不提交 Git。

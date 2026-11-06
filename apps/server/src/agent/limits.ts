@@ -17,6 +17,10 @@ export interface RunCounters {
   modelRequests: Record<string, number>;
   /** 协议校正次数 */
   corrections: number;
+  unknownUsageCalls: number;
+  background?: { requests: number; input: number; output: number; unknown: number };
+  calls: Array<{ purpose: string; model: string; attempt: number; durationMs: number; inputTokens: number | null; outputTokens: number | null; error?: string }>;
+
   tokens: { input: number; output: number };
   /** 无进展检测：相同工具+相同参数的失败连续出现即停止 */
   lastFailureKey: string | null;
@@ -30,6 +34,8 @@ export function initialCounters(): RunCounters {
     toolExecutions: 0,
     modelRequests: {},
     corrections: 0,
+    calls: [],
+    unknownUsageCalls: 0,
     tokens: { input: 0, output: 0 },
     lastFailureKey: null,
     sameFailureCount: 0,
@@ -53,6 +59,7 @@ export function recordModelRequest(counters: RunCounters, purpose: string): void
 }
 
 export function recordUsage(counters: RunCounters, usage?: { inputTokens?: number; outputTokens?: number }): void {
+  if (usage?.inputTokens === undefined || usage?.outputTokens === undefined) counters.unknownUsageCalls += 1;
   counters.tokens.input += usage?.inputTokens ?? 0;
   counters.tokens.output += usage?.outputTokens ?? 0;
 }
@@ -97,4 +104,9 @@ export function recordFailure(counters: RunCounters, failureKey: string): boolea
 export function clearFailure(counters: RunCounters): void {
   counters.lastFailureKey = null;
   counters.sameFailureCount = 0;
+}
+
+export function modelBudgetAvailable(counters: RunCounters): boolean {
+  return Object.values(counters.modelRequests).reduce((n, value) => n + value, 0) + (counters.background?.requests ?? 0) < env().MAX_MODEL_REQUESTS &&
+    counters.tokens.input + counters.tokens.output + (counters.background?.input ?? 0) + (counters.background?.output ?? 0) < env().MAX_RUN_TOKENS;
 }

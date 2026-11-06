@@ -12,11 +12,16 @@ export interface TaskFrameGoal {
   startedJobId?: string;
   /** 只能由真实工具结果证明完成（§4.11） */
   completedArtifactId?: string;
+  failure?: boolean;
 }
 
 export interface TaskFrame {
   /** chat=自由输入；solution=主动查看解析；material=含材料生成目标 */
   kind: 'chat' | 'solution' | 'material';
+  /** Explicit buttons are preplanned; free text uses one control decision in the same driver. */
+  planned?: boolean;
+  historyCount?: number;
+  solutionRequested?: boolean;
   action?: ExplicitAction;
   focus?: {
     artifactId?: string;
@@ -33,6 +38,9 @@ export function taskFrameFrom(json: unknown): TaskFrame {
   const src = json as Partial<TaskFrame>;
   return {
     kind: src.kind ?? 'chat',
+    planned: src.planned ?? true,
+    historyCount: src.historyCount ?? 0,
+    solutionRequested: src.solutionRequested ?? false,
     action: src.action,
     focus: src.focus,
     goals: Array.isArray(src.goals) ? src.goals : [],

@@ -8,6 +8,7 @@ import { queryString } from '@/utils/query';
 
 export interface MessageView {
   id: string;
+  runId?: string | null;
   role: 'user' | 'assistant';
   /** 结构化内容块（文本 / 核对卡 / 成果引用），渲染层逐步细化 */
   content: unknown;

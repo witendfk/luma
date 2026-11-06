@@ -4,7 +4,7 @@ import { env } from '../lib/env';
 import { spendToolExecution, type RunCounters } from './limits';
 import type { TurnPolicy } from './policy';
 import { findToolDefinition } from './tools';
-import type { PendingBatch } from './types';
+import { taskFrameFrom, type PendingBatch } from './types';
 
 /**
  * 工具执行器（设计文档 §4.12 / §6.1）。
@@ -87,7 +87,11 @@ async function executeOne(
     }
     if (row.status === 'deferred' && row.jobId) {
       const settled = await checkDeferredJob(row.jobId, toolName);
-      if (settled) return settled;
+      if (settled) {
+        if (settled.kind === 'result') await markExecution(ctx.runId, toolCallId, 'succeeded', undefined, settled.value);
+        else if (settled.kind === 'error') await markExecution(ctx.runId, toolCallId, 'failed', { code: settled.code, message: settled.message, retryable: settled.retryable });
+        return settled;
+      }
       return {
         kind: 'deferred',
         jobId: row.jobId,
@@ -128,10 +132,10 @@ async function executeOne(
         kind: 'error',
         code: 'NOT_AVAILABLE',
         retryable: false,
-        message: '图片上传链路尚未接入，无法读取图片；请请学生用文字描述题目',
+        message: '图片上传链路尚未接入，无法读取图片；请学生用文字描述题目',
       };
     } else if (toolName === 'createLesson' || toolName === 'createPractice') {
-      outcome = await createMaterialJob(ctx, row?.id, toolCallId, toolName, parsed.data as Record<string, unknown>);
+      outcome = await createMaterialJob(ctx, toolName, parsed.data as Record<string, unknown>);
     } else {
       outcome = { kind: 'error', code: 'UNKNOWN_TOOL', retryable: false, message: `工具未实现：${toolName}` };
     }
@@ -181,7 +185,7 @@ interface ReadContextInput {
   sectionId?: string;
 }
 
-async function readLearningContext(ctx: BatchExecutionContext, input: ReadContextInput): Promise<unknown> {
+export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'userId' | 'conversationId' | 'policy'>, input: ReadContextInput): Promise<unknown> {
   if (input.ref === 'subject') {
     const subject = await db.subjectRevision.findFirst({
       where: { conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
@@ -210,7 +214,8 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
       });
       if (!artifact) return { ok: false, code: 'NOT_FOUND', message: '当前会话中没有该讲义' };
       const lesson = (artifact.content as { lesson?: { title: string; sections: Array<{ id: string }> } }).lesson;
-      const sectionId = input.sectionId ?? ctx.policy.focus.sectionId;
+      if (ctx.policy.focus.sectionId && input.sectionId && input.sectionId !== ctx.policy.focus.sectionId) return { ok: false, code: 'INVALID_INPUT', message: '只能读取本轮指定段落' };
+      const sectionId = ctx.policy.focus.sectionId ?? input.sectionId;
       const sections = sectionId ? lesson?.sections.filter((section) => section.id === sectionId) : lesson?.sections;
       return { ok: true, artifactId, lesson: { title: lesson?.title, sections } };
     }
@@ -223,14 +228,19 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
     return { ok: true, artifacts };
   }
   if (input.ref === 'attempt') {
-    if (!input.attemptId) return { ok: false, code: 'INVALID_INPUT', message: '缺少 attemptId' };
+    if (!input.attemptId || input.attemptId !== ctx.policy.focus.attemptId) return { ok: false, code: 'INVALID_INPUT', message: '缺少 attemptId' };
     // 答案侧不加载（answerPermission 默认否，§4.6）：只给题干、进度与本人作答
     const attempt = await db.practiceAttempt.findFirst({
       where: { id: input.attemptId, userId: ctx.userId, artifact: { conversationId: ctx.conversationId, subjectRevisionId: ctx.policy.subjectRevisionId ?? '' } },
       include: { artifact: { include: { exercises: { orderBy: { order: 'asc' } } } }, answers: true },
     });
     if (!attempt) return { ok: false, code: 'NOT_FOUND', message: '练习轮次不存在' };
-    const ids = attempt.exerciseIds as string[];
+    const ids = (attempt.exerciseIds as string[]).filter((id) => id === ctx.policy.focus.exerciseId);
+    if (!ids.length) return { ok: false, code: 'INVALID_INPUT', message: '请明确要追问的当前练习题' };
+    if (ctx.policy.answerPermission) {
+      await db.practiceAnswer.upsert({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: ids[0]! } },
+        create: { attemptId: attempt.id, exerciseId: ids[0]!, solutionViewedAt: new Date() }, update: { solutionViewedAt: new Date() } });
+    }
     return {
       ok: true,
       attempt: {
@@ -238,8 +248,9 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
         stage: attempt.stage,
         exercises: attempt.artifact.exercises
           .filter((ex) => ids.includes(ex.id))
-          .map((ex) => ({ id: ex.id, order: ex.order, stem: ex.stem, topic: ex.topic, difficulty: ex.difficulty })),
-        answers: attempt.answers.map((a) => ({
+          .map((ex) => ({ id: ex.id, order: ex.order, stem: ex.stem, topic: ex.topic, difficulty: ex.difficulty,
+            ...(ctx.policy.answerPermission ? { answer: ex.answer, analysis: ex.analysis } : {}) })),
+        answers: attempt.answers.filter((a) => ids.includes(a.exerciseId)).map((a) => ({
           exerciseId: a.exerciseId,
           textDraft: a.textDraft,
           markedUnknown: a.markedUnknown,
@@ -262,8 +273,6 @@ async function readLearningContext(ctx: BatchExecutionContext, input: ReadContex
 /** createLesson/createPractice：原子创建任务与输入快照，返回 deferred（§6.1） */
 async function createMaterialJob(
   ctx: BatchExecutionContext,
-  executionId: string | undefined,
-  toolCallId: string,
   toolName: 'createLesson' | 'createPractice',
   input: Record<string, unknown>,
 ): Promise<ToolOutcome> {
@@ -277,7 +286,13 @@ async function createMaterialJob(
   }
 
   // 幂等：同一工具执行只产生一个任务；明确的重新生成走新执行记录，天然是新任务（§4.12）
-  const key = executionId ?? `run:${ctx.runId}:${toolCallId}`;
+  const goalType = toolName === 'createLesson' ? 'lesson' : 'practice';
+  const run = await db.agentRun.findUniqueOrThrow({ where: { id: ctx.runId } });
+  const frame = taskFrameFrom(run.taskFrame);
+  const goal = frame.goals.find((g) => g.type === goalType);
+  if (!goal) return { kind: 'error', code: 'NOT_REQUESTED', message: '学生本轮未请求这种材料，不得擅自扩充目标', retryable: false };
+  if (goal.completedArtifactId) return { kind: 'result', value: { ok: true, artifactId: goal.completedArtifactId, type: toolName === 'createLesson' ? 'lesson' : 'exercise_set', status: 'published' } };
+  const key = `run:${ctx.runId}:goal:${goalType}`;
   const existing = await db.generationJob.findUnique({ where: { idempotencyKey: key } });
   if (existing) {
     return { kind: 'deferred', jobId: existing.id, artifactId: existing.resultArtifactId, artifactType: toolName === 'createLesson' ? 'lesson' : 'exercise_set' };

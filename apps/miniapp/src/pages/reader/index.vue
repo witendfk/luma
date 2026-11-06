@@ -5,23 +5,28 @@ import { UI_MOCK } from '@/config';
 import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
+import TeachingDiagram from '@/components/TeachingDiagram.vue';
 import { previewExampleKey, rememberPreviewLocation } from '@/mocks/workspace';
-import { previewAttachment } from '@/utils/attachments';
 import { useStudyPreviewStore } from '@/stores/study-preview';
 import { request } from '@/utils/request';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
-interface Section { id: string; heading: string; body: string; figure?: string; caption?: string; formula?: string; note?: string }
+import { getJob, retryJob } from '@/api/jobs';
+import type { Diagram, JobView } from '@luma/shared';
+interface Section { id: string; heading: string; body: string; diagram?: Diagram; formula?: string; note?: string }
 interface Document { title: string; subject: string; intro: string; sections: Section[]; version: number }
 const study = useStudyPreviewStore();
 const preview = ref(false);
 const tab = ref<'lesson' | 'source'>('lesson');
 const loading = ref(true), error = ref(''), directoryOpen = ref(false);
 const document = ref<Document | null>(null);
+const job = ref<JobView | null>(null), retrying = ref(false);
+const draftOnly = computed(() => !!job.value && job.value.status !== 'succeeded');
 const scrollTarget = ref(''), activeSection = ref('');
 const pageHeight = uni.getSystemInfoSync().windowHeight;
 const instance = getCurrentInstance();
 const availablePreview = import.meta.env.DEV;
-let artifactId = '', conversationId = '', scope = 'preview-quadratic', alive = true, visible = true;
+let artifactId = '', jobId = '', conversationId = '', scope = 'preview-quadratic', alive = true, visible = true;
+let jobTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollTimer: ReturnType<typeof setTimeout> | undefined;
 const currentSection = computed(() => document.value?.sections.find((item) => item.id === activeSection.value));
 const localKey = () => `luma_draft:reader:${artifactId}:${document.value?.version ?? 1}`;
@@ -37,26 +42,68 @@ async function load(): Promise<void> {
     if (preview.value) {
       study.restore(scope, previewExampleKey(scope)); document.value = { ...study.example, version: 1 }; activeSection.value = study.sectionId;
     } else {
+      if (jobId && !artifactId) {
+        const state = await getJob(jobId);
+        if (!alive || session !== sessionVersion()) return;
+        job.value = state;
+        if (state.status === 'succeeded' && state.artifactId) artifactId = state.artifactId;
+        else {
+          if (state.draft) {
+            document.value = { ...state.draft, subject: '', intro: '', version: 1 };
+            if (!document.value.sections.some((s) => s.id === activeSection.value)) activeSection.value = document.value.sections[0]?.id ?? '';
+          }
+          scheduleJob(); return;
+        }
+      }
       if (!artifactId) throw new Error('还没有可阅读的讲解');
-      // 只复用已有只读接口，本轮不修改服务端或生成链路。
       const result = await request<{ type: string; publishStatus: string; version: number; subject: { text: string }; content: { lesson?: { title: string; sections: Section[] } } }>({ method: 'GET', path: `/api/artifacts/${encodeURIComponent(artifactId)}` });
       if (!alive || session !== sessionVersion()) return;
       if (result.type !== 'lesson' || result.publishStatus !== 'published' || !result.content?.lesson?.sections?.length) throw new Error('这份讲解还没有准备好');
       document.value = { title: result.content.lesson.title, subject: result.subject.text, intro: '', sections: result.content.lesson.sections, version: result.version };
       let saved: unknown; try { saved = uni.getStorageSync(localKey()); } catch { /* 使用第一节。 */ }
-      activeSection.value = document.value.sections.some((item) => item.id === saved) ? String(saved) : document.value.sections[0]!.id;
+      if (!document.value.sections.some((item) => item.id === activeSection.value)) activeSection.value = document.value.sections.some((item) => item.id === saved) ? String(saved) : document.value.sections[0]!.id;
     }
   } catch (err) { if (alive && session === sessionVersion()) error.value = err instanceof Error ? err.message : '讲解暂时未能加载'; }
   finally { if (alive && session === sessionVersion()) { loading.value = false; if (document.value && activeSection.value !== document.value.sections[0]?.id) void nextTick(() => jump(activeSection.value)); } }
 }
-onLoad((query) => { preview.value = availablePreview && query?.preview === '1'; scope = query?.scope ?? 'preview-quadratic'; artifactId = query?.artifactId ?? ''; conversationId = query?.conversationId ?? ''; void load(); });
+function scheduleJob(): void {
+  clearTimeout(jobTimer);
+  if (visible && alive && job.value && ['queued', 'running'].includes(job.value.status)) jobTimer = setTimeout(() => void loadJob(), 2000);
+}
+async function loadJob(): Promise<void> {
+  // Poll without replacing the scroll container or the reading position.
+  const session = sessionVersion();
+  try {
+    const state = await getJob(jobId);
+    if (!alive || !visible || session !== sessionVersion()) return;
+    job.value = state; error.value = '';
+    if (state.artifactId && state.status === 'succeeded') { artifactId = state.artifactId; await load(); return; }
+    if (state.draft) {
+      document.value = { ...state.draft, subject: '', intro: '', version: 1 };
+      if (!activeSection.value) activeSection.value = state.draft.sections[0]?.id ?? '';
+    }
+    scheduleJob();
+  } catch (err) { if (alive && session === sessionVersion()) error.value = err instanceof Error ? err.message : '任务状态暂时不可用'; }
+}
+async function retryLesson(): Promise<void> {
+  if (retrying.value || !job.value || job.value.status !== 'failed') return;
+  retrying.value = true; const session = sessionVersion();
+  try {
+    const state = await retryJob(jobId);
+    if (!alive || session !== sessionVersion()) return;
+    jobId = state.id; job.value = state; error.value = ''; scheduleJob();
+  } catch (err) { if (alive && session === sessionVersion()) error.value = err instanceof Error ? err.message : '重试未能开始'; }
+  finally { retrying.value = false; }
+}
+onLoad((query) => { preview.value = availablePreview && query?.preview === '1'; scope = query?.scope ?? 'preview-quadratic'; artifactId = query?.artifactId ?? ''; jobId = query?.jobId ?? ''; conversationId = query?.conversationId ?? ''; void load(); });
 onShow(() => {
   visible = true;
+  if (jobId && job.value && ['queued', 'running'].includes(job.value.status)) void loadJob();
   if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); if (document.value) { activeSection.value = study.sectionId; void nextTick(() => jump(activeSection.value)); } }
 });
-onHide(() => { visible = false; clearTimeout(scrollTimer); remember(); });
-onUnload(() => { alive = false; clearTimeout(scrollTimer); });
-onScopeDispose(onSessionCleared(() => { alive = false; document.value = null; error.value = '请重新登录后继续阅读'; loading.value = false; clearTimeout(scrollTimer); }));
+onHide(() => { visible = false; clearTimeout(scrollTimer); clearTimeout(jobTimer); remember(); });
+onUnload(() => { alive = false; clearTimeout(scrollTimer); clearTimeout(jobTimer); });
+onScopeDispose(onSessionCleared(() => { alive = false; document.value = null; job.value = null; error.value = '请重新登录后继续阅读'; loading.value = false; clearTimeout(scrollTimer); clearTimeout(jobTimer); }));
 function jump(id: string): void {
   if (!document.value?.sections.some((item) => item.id === id)) return;
   activeSection.value = id; directoryOpen.value = false; scrollTarget.value = '';
@@ -86,26 +133,32 @@ function back(): void {
   else uni.switchTab({ url: '/pages/home/index' });
 }
 function ask(section: Section, example: boolean): void {
-  if (!preview.value) { uni.showToast({ title: '段落追问可先在交互预览中体验', icon: 'none' }); return; }
+  if (!preview.value) {
+    if (!artifactId || draftOnly.value) return;
+    jump(section.id);
+    const question = example ? `关于「${section.heading}」，可以换个例子解释吗？` : `我没理解「${section.heading}」这一步，请再引导我一下。`;
+    uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(conversationId)}&artifactId=${encodeURIComponent(artifactId)}&sectionId=${encodeURIComponent(section.id)}&question=${encodeURIComponent(question)}` }); return;
+  }
   jump(section.id);
   study.ask({ kind: 'section', id: section.id, heading: section.heading, question: example ? `关于「${section.heading}」，可以换个例子解释吗？` : `我没理解「${section.heading}」这一步，请再引导我一下。` });
   uni.navigateTo({ url: '/pages/chat/index?preview=study' });
 }
 function practice(): void {
-  if (!preview.value) { uni.showToast({ title: '作答交互可先从首页预览入口体验', icon: 'none' }); return; }
+  if (!preview.value) { if (draftOnly.value) return; uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(conversationId)}&question=${encodeURIComponent('请根据这份讲解生成两道同知识点练习')}` }); return; }
   remember(); uni.navigateTo({ url: `/pages/practice/index?preview=1&scope=${encodeURIComponent(scope)}` });
 }
-function showImage(src: string): void { previewAttachment([{ id: src, path: src, name: '教学配图' }], 0); }
 function previewExample(): void { preview.value = true; artifactId = ''; void load(); }
 </script>
 
 <template>
   <view class="reader-page" :style="{ height: pageHeight + 'px' }">
     <view v-if="preview" class="preview-label">交互预览 · 示例讲解与回复 · 仅保存在本机</view>
-    <view class="reading-navigation"><view class="tabs"><button :class="{ active: tab === 'source' }" @tap="switchTab('source')">原题</button><button :class="{ active: tab === 'lesson' }" @tap="switchTab('lesson')">图文讲解</button><button @tap="practice">配套练习</button></view><button class="directory-button" :disabled="!document || tab !== 'lesson'" aria-label="阅读目录" @tap="directoryOpen = true"><LumaIcon name="menu" :size="18" /></button></view>
+    <view class="reading-navigation"><view class="tabs"><button :disabled="draftOnly" :class="{ active: tab === 'source' }" @tap="switchTab('source')">原题</button><button :class="{ active: tab === 'lesson' }" @tap="switchTab('lesson')">图文讲解</button><button :disabled="draftOnly" @tap="practice">配套练习</button></view><button class="directory-button" :disabled="!document || tab !== 'lesson'" aria-label="阅读目录" @tap="directoryOpen = true"><LumaIcon name="menu" :size="18" /></button></view>
+    <view v-if="draftOnly" class="generation-note"><text>{{ job?.status === 'failed' ? job.error?.message : ['cancelled', 'superseded'].includes(job?.status ?? '') ? '生成已结束，请返回对话重新整理' : job?.step || '正在整理讲解正文' }}</text><text v-if="document" class="generation-caption">正文草稿 · 尚未完成图文复核</text><button v-if="job?.status === 'failed'" :disabled="retrying" @tap="retryLesson">{{ retrying ? '正在重试…' : '重试生成' }}</button></view>
     <PreviewCollectionAction v-if="UI_MOCK && preview" />
     <view v-if="loading" class="state"><text class="state-symbol">✳</text><text>正在打开讲解…</text></view>
     <view v-else-if="error" class="state"><text class="state-symbol">✳</text><text class="state-title">{{ error }}</text><text class="state-note">你可以稍后重试，原来的对话会保留。</text><button @tap="load">重新加载</button><button v-if="availablePreview" class="quiet" @tap="previewExample">先体验阅读交互</button></view>
+    <view v-else-if="!document && job" class="state"><text class="state-symbol">✳</text><text>{{ ['queued', 'running'].includes(job.status) ? '正文准备好后，会出现在这里。' : '你可以返回对话，继续学习。' }}</text></view>
     <scroll-view v-else-if="document" class="reading-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="trackScroll">
       <view v-if="tab === 'source'" id="source-top" class="source-sheet"><text class="eyebrow">QUESTION</text><text class="source-title">回到题目本身</text><StudyText :text="document.subject" /><text class="source-note">考点由 Luma 分析，你只需要关注题目和自己的思路。</text><button class="text-link" @tap="switchTab('lesson')">继续阅读讲解 <LumaIcon name="arrow-diagonal" :size="13" /></button></view>
       <view v-else class="article">
@@ -113,15 +166,15 @@ function previewExample(): void { preview.value = true; artifactId = ''; void lo
         <view v-for="(section, index) in document.sections" :id="`section-${index}`" :key="section.id" class="lesson-section">
           <view class="section-heading"><text class="section-number">{{ String(index + 1).padStart(2, '0') }}</text><text>{{ section.heading }}</text></view>
           <StudyText :text="section.body" />
-          <view v-if="section.figure" class="figure" @tap="showImage(section.figure)"><image :src="section.figure" mode="widthFix" /><text class="figure-caption">{{ section.caption }}<text class="image-hint">轻触查看</text></text></view>
+          <TeachingDiagram v-if="section.diagram" :diagram="section.diagram" />
           <scroll-view v-if="section.formula" class="formula" scroll-x><text selectable>{{ section.formula }}</text></scroll-view>
           <view v-if="section.note" class="insight"><text>{{ section.note }}</text></view>
-          <view class="section-actions"><button @tap="ask(section, false)">这一步没懂</button><button @tap="ask(section, true)">换个例子</button></view>
+          <view v-if="!draftOnly" class="section-actions"><button @tap="ask(section, false)">这一步没懂</button><button @tap="ask(section, true)">换个例子</button></view>
         </view>
-        <button class="next-step" @tap="practice"><view><text class="next-caption">接下来，试着自己做</text><text class="next-title">配套练习<text class="next-meta">2 题 · 同一知识点</text></text></view><LumaIcon name="arrow-diagonal" :size="20" /></button>
+        <button v-if="!draftOnly" class="next-step" @tap="practice"><view><text class="next-caption">接下来，试着自己做</text><text class="next-title">配套练习<text class="next-meta">同一知识点</text></text></view><LumaIcon name="arrow-diagonal" :size="20" /></button>
       </view>
     </scroll-view>
-    <view v-if="document && tab === 'lesson'" class="reading-footer"><view><text class="footer-label">正在阅读</text><text class="footer-section">{{ currentSection?.heading }}</text></view><button @tap="currentSection && ask(currentSection, false)">问问这一步<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
+    <view v-if="document && tab === 'lesson'" class="reading-footer"><view><text class="footer-label">正在阅读{{ draftOnly ? '草稿' : '' }}</text><text class="footer-section">{{ currentSection?.heading }}</text></view><button v-if="!draftOnly" @tap="currentSection && ask(currentSection, false)">问问这一步<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
     <view v-if="directoryOpen" class="directory-layer"><view class="scrim" @tap="directoryOpen = false" /><view class="directory"><view class="directory-title"><text>阅读目录</text><button aria-label="关闭目录" @tap="directoryOpen = false"><LumaIcon name="close" :size="18" /></button></view><button v-for="(section, index) in document?.sections" :key="section.id" class="directory-item" :class="{ selected: section.id === activeSection }" @tap="jump(section.id)"><text class="section-number">{{ String(index + 1).padStart(2, '0') }}</text><text>{{ section.heading }}</text><text v-if="section.id === activeSection">·</text></button></view></view>
   </view>
 </template>
@@ -130,6 +183,10 @@ function previewExample(): void { preview.value = true; artifactId = ''; void lo
 .reader-page { display:flex; flex-direction:column; background:#f8f7f2; color:#40543e; overflow:hidden; }
 .reader-page button { margin:0; padding:0; border:0; background:transparent; line-height:1.6; font-weight:400; }
 .reader-page button::after { border:0; }
+.generation-note { padding:22rpx 36rpx; background:#f2f0e6; color:#847b62; font-size:23rpx; line-height:1.8; flex-shrink:0; }
+.generation-caption { display:block; font-size:20rpx; color:#a49b84; }
+.generation-note button { display:inline-block; color:#526d49; font-size:24rpx; padding:12rpx 0; }
+.tabs button[disabled] { opacity:.4; }
 .preview-label { padding:10rpx 28rpx; text-align:center; color:#9e8b70; background:#f4efe5; font-size:19rpx; flex-shrink:0; }
 .reading-navigation { display:flex; align-items:center; border-bottom:1rpx solid #e4e8dc; flex-shrink:0; padding:0 24rpx; }
 .tabs { display:flex; flex:1; justify-content:center; gap:48rpx; }
@@ -147,10 +204,6 @@ function previewExample(): void { preview.value = true; artifactId = ''; void lo
 .lesson-section { padding-top:44rpx; }
 .section-heading { display:flex; gap:20rpx; margin-bottom:22rpx; align-items:baseline; color:#445b3f; font-size:30rpx; line-height:1.7; }
 .section-number { color:#a38c6c; font-family:Georgia,serif; font-size:22rpx; flex-shrink:0; }
-.figure { margin:24rpx 0; }
-.figure image { width:100%; display:block; border-radius:20rpx; }
-.figure-caption { display:block; margin-top:14rpx; color:#94a086; font-size:20rpx; line-height:1.8; }
-.image-hint { margin-left:16rpx; color:#adb4a5; }
 .formula { width:100%; margin:24rpx 0; padding:26rpx 20rpx; box-sizing:border-box; background:#eff2e8; border-radius:14rpx; }
 .formula text { white-space:nowrap; font-family:Georgia,serif; color:#506a49; font-size:31rpx; }
 .insight { border-left:3rpx solid #a8b799; padding:12rpx 0 12rpx 24rpx; margin:24rpx 0; color:#66785b; font-size:27rpx; line-height:1.95; white-space:pre-wrap; }

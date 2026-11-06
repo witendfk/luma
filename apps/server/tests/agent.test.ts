@@ -77,3 +77,28 @@ test('截止时间信号会中断等待中的 SDK 模型流', async () => {
     assert.ok(Date.now() - started < 1000);
   } finally { clearTimeout(timeout); }
 });
+
+test('respond 正文按块解码，保留中文、转义与 emoji，不输出 JSON 或 refs', async () => {
+  const text = '先想一步📖\n令 \\alpha="x"，再看条件。';
+  const chunks: string[] = [];
+  const step = await nextAgentStep({ model: modelFor([{ toolName: 'respond', input: { disposition: 'wait_user', text, refs: ['hidden-ref'] } }], 1),
+    system: 'test', messages: [{ role: 'user', content: '题目' }], tools: nativeToolSet(), purpose: 'test', onText: async (delta) => { chunks.push(delta); } });
+  assert.equal(step.kind, 'respond'); assert.ok(chunks.length > 2);
+  assert.equal(chunks.join(''), text); assert.equal(chunks.join('').includes('hidden-ref'), false);
+});
+
+test('后续出现混用调用时撤回未完成正文，不作为完整回复', async () => {
+  let visible = '', resets = 0;
+  const step = await nextAgentStep({ model: modelFor([
+    { toolName: 'respond', input: { disposition: 'finish', text: '临时正文' } },
+    { toolName: 'createPractice', input: { count: 2 } },
+  ], 1), system: 'test', messages: [{ role: 'user', content: '出题' }], tools: nativeToolSet(), purpose: 'test',
+    onText: async (delta) => { visible += delta; }, onReset: async () => { visible = ''; resets++; } });
+  assert.equal(step.kind, 'issue'); assert.equal(visible, ''); assert.equal(resets, 1);
+});
+
+test('目标记录是单步控制调用，允许组合目标且不夹带教学', async () => {
+  const step = await nextAgentStep({ model: modelFor([{ toolName: 'planTurn', input: { goals: [{ type: 'lesson' }, { type: 'practice', count: 2 }], solutionRequested: false } }], 2),
+    system: 'test', messages: [{ role: 'user', content: '讲解后出两道题' }], tools: nativeToolSet(true), purpose: 'test' });
+  assert.equal(step.kind, 'plan'); if (step.kind === 'plan') assert.deepEqual(step.plan.goals.map((g) => g.type), ['lesson', 'practice']);
+});

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ArtifactType, JobStatus, PublishStatus } from './enums';
 import { ErrorCode } from './errors';
+import { Diagram } from './content';
 
 /**
  * 对话流式事件（设计文档 §10）。
@@ -20,6 +21,8 @@ export const TextDeltaEvent = z.object({
   /** 增量文本（Markdown + LaTeX 源文本） */
   delta: z.string(),
 });
+
+export const TextResetEvent = z.object({ type: z.literal('text.reset'), runId: RunId });
 
 export const ToolStartedEvent = z.object({
   type: z.literal('tool.started'),
@@ -98,6 +101,7 @@ export const RunCancelledEvent = z.object({
 export const StreamEvent = z.discriminatedUnion('type', [
   RunStartedEvent,
   TextDeltaEvent,
+  TextResetEvent,
   ToolStartedEvent,
   ToolFinishedEvent,
   ArtifactUpdatedEvent,
@@ -127,6 +131,8 @@ export const JobView = z.object({
   /** 当前步骤描述，如「生成正文」「生成配图」「复核」 */
   step: z.string().nullable(),
   artifactId: z.string().nullable(),
+  /** 未复核的正文可先阅读，图片仅发布后提供。 */
+  draft: z.object({ title: z.string(), sections: z.array(z.object({ id: z.string(), heading: z.string(), body: z.string(), diagram: Diagram.optional() })) }).optional(),
   error: z
     .object({
       code: z.string(),

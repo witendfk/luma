@@ -323,3 +323,20 @@ test('归档分页失败保留已有记录；恢复防重复并同步最近列�
   assert.equal(history.items.length, 0);
   archive.$dispose(); history.$dispose();
 });
+
+test('重试不重复添加学生消息；新运行分块不拼进已停止的旧回复，reset 只撤回本轮', async () => {
+  let options: any;
+  const sandbox = miniappSandbox({ '@/utils/sse': { openTurnStream: (opts: any) => { options = opts; return { abort() {} }; } } }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.retryRunId = 'old';
+  chat.messages = [{ id: 'u', role: 'user', text: '原始提问' }, { id: 'a', role: 'assistant', runId: 'old', text: '停在这里', incomplete: true }];
+  await chat.retry();
+  assert.equal(options.body.retryOfRunId, 'old'); assert.equal(chat.messages.length, 2);
+  options.onEvent({ type: 'run.started', runId: 'new' });
+  options.onEvent({ type: 'text.delta', runId: 'new', delta: '新的回复' });
+  assert.equal(chat.messages.length, 3); assert.equal(chat.messages[1].text, '停在这里');
+  options.onEvent({ type: 'text.reset', runId: 'new' });
+  assert.equal(chat.messages.length, 2); assert.equal(chat.messages[1].text, '停在这里');
+  chat.$dispose();
+});

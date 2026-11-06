@@ -39,7 +39,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'createLesson',
-    description: '基于已确认的学习对象版本创建图文讲义生成任务（正文→配图→复核），返回任务引用；后台执行',
+    description: '基于已确认的学习对象版本创建图文讲义生成任务（正文与结构化图解→复核），返回任务引用；后台执行',
     kind: 'job',
     inputSchema: z.object({
       target: z.string().min(1).describe('讲解目标与范围（如：讲清对称轴，含图解）'),
@@ -62,7 +62,8 @@ export function findToolDefinition(name: string): ToolDefinition | undefined {
 }
 
 /** 原生工具集：只传名称、说明与参数 schema，无 execute（§4.10） */
-export function nativeToolSet(): ToolSet {
+export function nativeToolSet(planning = false): ToolSet {
+  if (planning) return { planTurn: tool({ description: '记录学生最后一条输入明确请求的目标，不扩充。普通提示/讨论 goals=[]；明确要讲义/图文才选 lesson，明确要练习才选 practice；solutionRequested 仅在主动索要完整答案/解析时为 true。', inputSchema: turnPlanSchema }) };
   const set: ToolSet = {
     respond: tool({
       description: '向学生回复并结束本次执行：wait_user 等待学生，finish 表示本次目标已全部完成。不能与业务工具同时调用。',
@@ -80,4 +81,10 @@ export const respondSchema = z.object({
   disposition: z.enum(['wait_user', 'finish']),
   text: z.string().min(1),
   refs: z.array(z.unknown()).optional(),
+});
+
+/** Control metadata, not an extra business tool or a nested intent Agent. */
+export const turnPlanSchema = z.object({
+  goals: z.array(z.object({ type: z.enum(['lesson', 'practice']), target: z.string().max(500).optional(), count: z.number().int().min(2).max(3).optional(), difficulty: z.enum(['basic','variant','transfer']).optional() })).max(2),
+  solutionRequested: z.boolean(),
 });

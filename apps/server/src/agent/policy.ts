@@ -28,6 +28,7 @@ export async function buildPolicy(input: {
   conversationId: string;
   subjectId: string;
   action?: ExplicitAction;
+  solutionRequested?: boolean;
   focus?: { artifactId?: string; sectionId?: string; attemptId?: string; exerciseId?: string };
 }): Promise<TurnPolicy> {
   const [progress, subject] = await Promise.all([
@@ -51,8 +52,8 @@ export async function buildPolicy(input: {
     subjectRevisionId: subject?.id ?? null,
     subjectConfirmed: confirmed,
     allowedTools,
-    answerPermission: false,
-    allowSolution: input.action === 'show_solution' && confirmed,
+    answerPermission: confirmed && (input.action === 'show_solution' || input.solutionRequested === true),
+    allowSolution: confirmed && (input.action === 'show_solution' || input.solutionRequested === true),
     focus: input.focus ?? {},
   };
 }

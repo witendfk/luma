@@ -2,8 +2,10 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { ErrorCode } from '@luma/shared';
 import { generateText, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from 'ai';
 import { env, hasModelCredentials } from './env';
+import { accountJobModel, type JobModelTrace } from './model-accounting';
 import { ApiError } from './errors';
-import { respondSchema } from '../agent/tools';
+import { partialRespondText } from '../agent/respond-stream';
+import { respondSchema, turnPlanSchema } from '../agent/tools';
 
 /**
  * 统一模型调用层（设计文档 §4.10 / §4.14）。
@@ -27,6 +29,7 @@ export interface ToolCall {
 export type RespondDisposition = 'wait_user' | 'finish';
 
 export type AgentStep =
+  | { kind: 'plan'; plan: import('zod').infer<typeof turnPlanSchema>; calls: ToolCall[]; usage?: TokenUsage }
   | { kind: 'respond'; disposition: RespondDisposition; text: string; refs: unknown[]; usage?: TokenUsage }
   | { kind: 'tool_calls'; calls: ToolCall[]; usage?: TokenUsage }
   | { kind: 'issue'; code: string; retryable: boolean; message: string; usage?: TokenUsage };
@@ -42,6 +45,8 @@ export interface NextStepOptions {
   mock?: AgentStep;
   /** 用途标记，进入调用记录 */
   purpose: string;
+  onText?: (delta: string) => Promise<void>;
+  onReset?: () => Promise<void>;
 }
 
 export function getModel() {
@@ -58,14 +63,20 @@ export function getModel() {
 
 /** 一次模型步骤：单步协议适配（§4.10），归一化为 respond / tool_calls / issue */
 export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
-  if (!opts.model && !hasModelCredentials()) {
-    if (!env().LUMA_MOCK_AGENT) return { kind: 'issue', code: 'MODEL_NOT_CONFIGURED', retryable: false, message: '服务端尚未配置 GPT' };
+  if (!opts.model && env().LUMA_MOCK_AGENT) {
+
     // 联调脚本：由驱动器按运行状态给定的确定性步骤
     await new Promise((r) => setTimeout(r, 200));
     return opts.mock ?? { kind: 'issue', code: 'NO_MOCK', retryable: false, message: '未配置模型且无联调脚本' };
   }
 
-  let rawText = '';
+  if (!opts.model && !hasModelCredentials()) return { kind: 'issue', code: 'MODEL_NOT_CONFIGURED', retryable: false, message: '服务端尚未配置 GPT' };
+  let rawText = '', streamed = '', args = '', respondId: string | undefined;
+  let callsStarted = 0, disabled = false;
+  async function reset() { if (streamed) await opts.onReset?.(); streamed = ''; disabled = true; }
+  async function issue(code: string, message: string, usage?: TokenUsage): Promise<AgentStep> {
+    if (code.startsWith('PROTOCOL')) await reset(); return { kind: 'issue', code, message, usage, retryable: !['MODEL_NOT_CONFIGURED','MODEL_AUTH','MODEL_QUOTA'].includes(code) };
+  }
 
   const result = streamText({
     model: opts.model ?? getModel(),
@@ -75,30 +86,44 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
     toolChoice: 'required',
     stopWhen: stepCountIs(1),
     maxRetries: 0,
+    onError: () => { /* Upstream errors may contain headers; only sanitized issues leave this adapter. */ },
     abortSignal: opts.abortSignal,
-    maxOutputTokens: 4096,
+    maxOutputTokens: opts.model ? 4096 : env().MODEL_OUTPUT_TOKENS,
+    providerOptions: { openai: { parallelToolCalls: false, strictJsonSchema: false, store: false } },
   });
 
   try {
     for await (const part of result.fullStream) {
+      opts.abortSignal?.throwIfAborted();
       switch (part.type) {
+        case 'tool-input-start':
+          callsStarted++;
+          if (callsStarted > 1) await reset();
+          else if (part.toolName === 'respond') respondId = part.id;
+          break;
+        case 'tool-input-delta':
+          if (!disabled && part.id === respondId && opts.onText) {
+            args += part.delta;
+            const text = partialRespondText(args);
+            if (text !== null && text.startsWith(streamed) && text.length > streamed.length) {
+              await opts.onText(text.slice(streamed.length)); streamed = text;
+            }
+          }
+          break;
         case 'text-delta': {
           rawText += (part as { text?: string }).text ?? (part as { delta?: string }).delta ?? '';
           break;
         }
         case 'error':
-          return { kind: 'issue', code: ErrorCode.MODEL_UNAVAILABLE, retryable: true, message: '模型流中断，可重试' };
+          return issue(ErrorCode.MODEL_UNAVAILABLE, '模型流中断，可重试');
         default:
           break;
       }
     }
   } catch (err) {
-    return {
-      kind: 'issue',
-      code: ErrorCode.MODEL_UNAVAILABLE,
-      retryable: true,
-      message: `模型流中断：${err instanceof Error ? err.message : '未知错误'}`,
-    };
+    const status = (err as { statusCode?: number }).statusCode;
+    return issue(status === 401 || status === 403 ? 'MODEL_AUTH' : ErrorCode.MODEL_UNAVAILABLE,
+      status === 401 || status === 403 ? 'GPT 鉴权失败，请检查服务端配置' : '模型连接中断，请重试');
   }
 
   let usage: TokenUsage | undefined;
@@ -123,31 +148,30 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
 
   if (calls.length === 0) {
     // 普通无工具最终文本 = 协议不合约（§4.11）
-    return {
-      kind: 'issue',
-      code: 'PROTOCOL_NO_TOOL',
-      retryable: true,
-      message: rawText.trim()
-        ? '模型返回了普通文本；必须通过 respond 工具或业务工具结束本步'
-        : '模型未返回任何工具调用',
-      usage,
-    };
+    return issue('PROTOCOL_NO_TOOL', rawText.trim() ? '模型返回了普通文本；必须通过 respond 或业务工具结束本步' : '模型未返回任何工具调用', usage);
   }
 
   const respondCalls = calls.filter((c) => c.toolName === 'respond');
   if (respondCalls.length > 0 && calls.length > 1) {
     // respond 与业务工具混用：不执行终止，返回协议校正（§4.11）
-    return { kind: 'issue', code: 'PROTOCOL_MIXED', retryable: true, message: 'respond 不能与其他工具在同一步调用', usage };
+    return issue('PROTOCOL_MIXED', 'respond 不能与其他工具在同一步调用', usage);
   }
   if (respondCalls.length === 1) {
     const parsed = respondSchema.safeParse(respondCalls[0]!.input);
     if (!parsed.success || !parsed.data.text.trim()) {
-      return { kind: 'issue', code: 'PROTOCOL_RESPOND', retryable: true, message: 'respond 参数不完整或正文为空', usage };
+      return issue('PROTOCOL_RESPOND', 'respond 参数不完整或正文为空', usage);
     }
     const input = parsed.data;
+    if (streamed && input.text !== streamed) await reset();
     return { kind: 'respond', disposition: input.disposition, text: input.text, refs: Array.isArray(input.refs) ? input.refs : [], usage };
   }
 
+  const planning = calls.filter((c) => c.toolName === 'planTurn');
+  if (planning.length) {
+    const parsed = turnPlanSchema.safeParse(planning[0]!.input);
+    if (calls.length !== 1 || !parsed.success) return issue('PROTOCOL_PLAN', 'planTurn 必须独立调用并包含合法目标', usage);
+    return { kind: 'plan', plan: parsed.data, calls, usage };
+  }
   return { kind: 'tool_calls', calls, usage };
 }
 
@@ -158,23 +182,26 @@ export async function generateJson<T>(opts: {
   purpose: string;
   parse: (raw: string) => T;
   abortSignal?: AbortSignal;
+  trace?: JobModelTrace;
+  images?: Uint8Array[];
 }): Promise<T> {
-  let raw: string;
+  const started = Date.now(); let usage: TokenUsage | undefined, error: string | undefined;
+  if (Buffer.byteLength(opts.system + opts.prompt, 'utf8') + 512 > env().CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
+  if (opts.trace) await accountJobModel(opts.trace, opts.purpose);
   try {
-    const result = await generateText({ model: getModel(), system: opts.system, prompt: opts.prompt, maxRetries: 0, maxOutputTokens: 8192, abortSignal: opts.abortSignal ?? AbortSignal.timeout(env().JOB_TOTAL_MS) });
-    raw = result.text;
+    const result = await generateText({ model: getModel(), system: opts.system,
+      ...(opts.images?.length ? { messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: opts.prompt }, ...opts.images.map((image) => ({ type: 'image' as const, image }))] }] } : { prompt: opts.prompt }), maxRetries: 0,
+      providerOptions: { openai: { store: false } }, maxOutputTokens: env().MODEL_OUTPUT_TOKENS,
+      abortSignal: AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(env().JOB_TOTAL_MS), AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
+    usage = result.usage;
+    try { return opts.parse(result.text); }
+    catch { error = 'MODEL_OUTPUT'; throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型输出解析失败，可重试', 502, true); }
   } catch (err) {
-    throw new ApiError(
-      ErrorCode.MODEL_UNAVAILABLE,
-      `模型调用失败：${err instanceof Error ? err.message : '未知错误'}`,
-      502,
-      true,
-    );
-  }
-  try {
-    return opts.parse(raw);
-  } catch {
-    throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型输出解析失败，可重试', 502, true);
+    error ??= 'MODEL_UNAVAILABLE';
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型调用失败，请检查网络或服务端模型配置后重试', 502, true);
+  } finally {
+    if (opts.trace) await accountJobModel(opts.trace, opts.purpose, { durationMs: Date.now() - started, usage, error });
   }
 }
 

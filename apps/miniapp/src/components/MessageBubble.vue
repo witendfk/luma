@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StudyText from './StudyText.vue';
 defineProps<{ role: 'user' | 'assistant'; text: string; incomplete?: boolean }>();
 </script>
 <template>
@@ -6,7 +7,7 @@ defineProps<{ role: 'user' | 'assistant'; text: string; incomplete?: boolean }>(
     <view v-if="role === 'assistant'" class="agent-avatar">✳</view>
     <view class="bubble">
       <text v-if="role === 'assistant'" class="agent-name">Luma</text>
-      <text class="message-text" selectable>{{ text }}</text>
+      <StudyText v-if="role === 'assistant'" class="message-text" :text="text" :streaming="incomplete" /><text v-else class="message-text" selectable>{{ text }}</text>
       <text v-if="incomplete" class="incomplete">回复尚未完成</text>
     </view>
   </view>

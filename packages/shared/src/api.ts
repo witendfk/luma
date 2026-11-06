@@ -98,6 +98,8 @@ export interface ConversationDetail {
   progress: ProgressView | null;
   artifacts: Array<{ id: string; type: 'lesson' | 'exercise_set'; publishStatus: string; subjectId: string; subjectRevisionId: string }>;
   activeRun?: { id: string; status: string } | null;
+  latestRun?: { id: string; status: string; error: { code?: string; message?: string; retryable?: boolean } | null } | null;
+  lessonJob?: { id: string; status: string; step: string | null } | null;
 }
 export const SubjectContent = z.object({ text: z.string().trim().min(1).max(8000), intent: z.enum(['question', 'knowledge', 'practice']).optional() }).passthrough();
 export const CreateSubjectRequest = z.object({ type: z.enum(['question', 'knowledge']), content: SubjectContent });

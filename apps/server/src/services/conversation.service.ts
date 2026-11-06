@@ -127,8 +127,10 @@ export const conversationService = {
       const activeRun = await tx.agentRun.findFirst({
         where: { conversationId, status: { in: ['running', 'waiting_job'] } }, orderBy: { startedAt: 'desc' }, select: { id: true, status: true },
       });
+      const latestRun = active ? await tx.agentRun.findFirst({ where: { conversationId, subjectId: active.id, subjectRevisionId: active.revision?.id }, orderBy: { startedAt: 'desc' }, select: { id: true, status: true, error: true } }) : null;
+      const lessonJob = active?.revision ? await tx.generationJob.findFirst({ where: { conversationId, subjectRevisionId: active.revision.id, type: 'lesson' }, orderBy: { createdAt: 'desc' }, select: { id: true, status: true, step: true } }) : null;
       return { conversation, subjects, subject: active?.revision ?? null, progress: active?.progress ?? null,
-        artifacts: artifacts.map((row) => ({ ...row, subjectId: active!.id })), activeRun };
+        artifacts: artifacts.map((row) => ({ ...row, subjectId: active!.id })), activeRun, latestRun, lessonJob };
     }, { isolationLevel: 'RepeatableRead' });
   },
 

@@ -10,7 +10,7 @@ import { textOf } from '../agent/blocks';
 import { initialCounters } from '../agent/limits';
 import { userTextMessage } from '../agent/protocol';
 import { PROMPT_VERSION } from '../agent/prompts';
-import type { TaskFrame, TaskFrameGoal } from '../agent/types';
+import { taskFrameFrom, type TaskFrame, type TaskFrameGoal } from '../agent/types';
 import { conversationService } from './conversation.service';
 import { resolveSubject, latestRevision } from './subject-context';
 import { validateFocus } from './focus';
@@ -24,7 +24,7 @@ export const runService = {
   async startRun(userId: string, conversationId: string, input: TurnRequest) {
     await conversationService.getOwned(userId, conversationId);
 
-    if (!input.text?.trim() && !input.imageAttachmentIds?.length && !input.action) throw invalidFormat('消息不能为空');
+    if (!input.retryOfRunId && !input.text?.trim() && !input.imageAttachmentIds?.length && !input.action) throw invalidFormat('消息不能为空');
     return db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Conversation" WHERE id = ${conversationId} FOR UPDATE`;
       // 同请求幂等依赖数据库唯一约束（§4.9）：重复请求返回已有运行引用
@@ -33,24 +33,32 @@ export const runService = {
       });
       if (existing) return { run: existing, existing: true as const };
 
-      // 学生在旧运行等待时发来新输入：暂停原运行自动续接；已授权的旧材料任务继续保存成果（§4.5）
-      await tx.agentRun.updateMany({
-        where: { conversationId, status: { in: ['running', 'waiting_job'] } },
-        data: {
-          status: 'cancelled',
-          error: { code: 'REPLACED', message: '学生发来新输入，本次运行停止自动续接', retryable: false },
-          finishedAt: new Date(),
-        },
-      });
-
-      if (!input.text && !input.imageAttachmentIds?.length && !input.action) {
-        throw invalidFormat('消息不能为空');
+      // Retry reuses an owned original message, never accepts replacement text/focus from the client.
+      const source = input.retryOfRunId ? await tx.agentRun.findFirst({ where: {
+        id: input.retryOfRunId, conversationId, conversation: { userId },
+      }, include: { userMessage: true } }) : null;
+      if (input.retryOfRunId && !source) throw notFound('重试来源');
+      if (source) {
+        if (!['failed', 'cancelled'].includes(source.status) || !source.userMessage) throw invalidFormat('只能重试已失败或停止的回复');
+        const sourceFrame = taskFrameFrom(source.taskFrame);
+        const original = source.userMessage.content as { blocks?: Array<{ type: string; attachmentIds?: string[] }> };
+        input = { requestId: input.requestId, retryOfRunId: source.id, subjectId: source.subjectId,
+          text: textOf(source.userMessage.content), action: sourceFrame.action, ...sourceFrame.focus,
+          imageAttachmentIds: original.blocks?.find((b) => b.type === 'image')?.attachmentIds };
+        const newerInput = await tx.message.findFirst({ where: { conversationId, subjectId: source.subjectId, role: 'user',
+          OR: [{ createdAt: { gt: source.userMessage.createdAt } }, { createdAt: source.userMessage.createdAt, id: { gt: source.userMessage.id } }] } });
+        if (newerInput) throw revisionConflict('已有后续提问，请继续当前对话，不重试旧回复');
       }
 
       const object = await resolveSubject(tx, conversationId, input.subjectId);
       const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: conversationId } });
       if (conversation.activeSubjectId !== object.id) throw revisionConflict('当前题目已切换，请刷新后重试');
       let subject = await latestRevision(tx, object.id);
+      if (source && source.subjectRevisionId !== (subject?.id ?? null)) throw revisionConflict();
+      if (source) {
+        const previousRetry = await tx.agentRun.findFirst({ where: { retryOfRunId: source.id }, orderBy: { startedAt: 'desc' } });
+        if (previousRetry) return { run: previousRetry, existing: true as const };
+      }
       if (input.expectedRevision !== undefined && input.expectedRevision !== subject?.version) throw revisionConflict();
       if (!subject && input.text?.trim()) {
         subject = await tx.subjectRevision.create({
@@ -62,9 +70,18 @@ export const runService = {
       if (subject) await validateFocus(tx, userId, conversationId, subject.id, input);
       else if (input.artifactId || input.attemptId || input.exerciseId || input.sectionId) throw invalidFormat('请先提供学习内容');
       const recent = await tx.message.findMany({
-        where: { conversationId, subjectId: object.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 12,
+        where: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, status: 'complete',
+          ...(source?.userMessageId ? { id: { not: source.userMessageId } } : {}) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 24,
       });
-      const history = recent.reverse().map((m) => ({ role: m.role, content: textOf(m.content).slice(0, 6000) })).filter((m) => m.content);
+      const focus = { artifactId: input.artifactId, sectionId: input.sectionId, attemptId: input.attemptId, exerciseId: input.exerciseId };
+      const history = recent.reverse().filter((m) => {
+        const old = (m.content as { focus?: TaskFrame['focus'] }).focus ?? {};
+        const sameFocus = (['artifactId', 'sectionId', 'attemptId', 'exerciseId'] as const)
+          .every((key) => (old[key] ?? null) === (focus[key] ?? null));
+        return sameFocus && (!source || m.createdAt <= source.userMessage!.createdAt);
+      }).slice(-12).map((m) => ({ role: m.role, content: textOf(m.content) })).filter((m) => m.content);
+      await tx.agentRun.updateMany({ where: { conversationId, status: { in: ['running', 'waiting_job'] } },
+        data: { status: 'cancelled', error: { code: 'REPLACED', message: '新的输入停止了旧运行自动续接', retryable: false }, finishedAt: new Date() } });
 
       // 用户消息幂等落库（§9.1：重试不重复创建用户消息）
       const blocks: unknown[] = [];
@@ -72,12 +89,12 @@ export const runService = {
       if (input.imageAttachmentIds?.length) {
         blocks.push({ type: 'image', attachmentIds: input.imageAttachmentIds });
       }
-      let userMessage = await tx.message.findUnique({
+      let userMessage = source?.userMessage ?? await tx.message.findUnique({
         where: { conversationId_requestId: { conversationId, requestId: input.requestId } },
       });
       if (!userMessage) {
         userMessage = await tx.message.create({
-          data: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, role: 'user', content: { blocks } as Prisma.InputJsonValue, requestId: input.requestId },
+          data: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, role: 'user', content: { blocks, focus } as Prisma.InputJsonValue, requestId: input.requestId },
         });
       }
 
@@ -89,7 +106,10 @@ export const runService = {
       if (input.action === 'generate_practice') {
         goals.push({ type: 'practice', count: 2 });
       }
-      const taskFrame: TaskFrame = {
+      const taskFrame: TaskFrame = source ? { ...taskFrameFrom(source.taskFrame), goals: taskFrameFrom(source.taskFrame).goals.map(({ failure, startedJobId, ...goal }) => goal), historyCount: history.length } : {
+        planned: Boolean(input.action) || !subject?.confirmedAt,
+        solutionRequested: input.action === 'show_solution',
+        historyCount: history.length,
         kind: input.action === 'show_solution' ? 'solution' : goals.length > 0 ? 'material' : 'chat',
         action: input.action,
         focus: {

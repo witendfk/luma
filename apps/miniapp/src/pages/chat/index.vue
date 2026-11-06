@@ -20,11 +20,12 @@ import SubjectEditor from '@/components/SubjectEditor.vue';
 import StudyDiscussion from '@/components/StudyDiscussion.vue';
 import type { SubjectEdit } from '@/api/conversations';
 import { saveCollection } from '@/api/collections';
+import { request } from '@/utils/request';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
 const notebook = useNotebookPreviewStore();
-onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } });
+onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh(false).catch(() => { /* Keep current content; explicit reload remains available. */ }); });
 const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : (saved.value || store.subjects.some((row) => row.id === store.activeSubjectId && row.collected)));
 const previewStudy = ref(false);
 const previewMeta = ref<PreviewRecord | null>(null);
@@ -38,6 +39,7 @@ const topicNavigation = computed(() => previewMeta.value ?? (store.subjects.leng
 const unit = computed(() => (previewMeta.value?.intent ?? store.subject?.type) === 'knowledge' ? '部分' : '题');
 const nextTopic = computed(() => { const root = previewMeta.value; const index = root?.topics?.findIndex((topic) => topic.id === root.activeTopicId) ?? -1; return root?.topics?.[index + 1]; });
 const draft = ref('');
+const lessonFocus = ref<{ artifactId: string; sectionId: string; heading: string } | null>(null);
 const busy = ref(false);
 const menuOpen = ref(false);
 const accountOpen = ref(false);
@@ -68,7 +70,17 @@ onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previe
 onLoad(async (query) => {
   if (import.meta.env.DEV && query?.preview === 'study') { previewStudy.value = true; return; }
   try {
-    if (query?.id) await openLearning(query.id, query.topic);
+    if (query?.id) {
+      await openLearning(query.id, query.topic);
+      if (query.artifactId && query.sectionId) {
+        const material = await request<{ subjectId: string; subjectRevisionId: string; content: { lesson?: { sections: Array<{ id: string; heading: string }> } } }>({ method: 'GET', path: `/api/artifacts/${encodeURIComponent(query.artifactId)}` });
+        if (material.subjectId !== store.activeSubjectId) await store.switchSubject(material.subjectId, store.progress?.draft ?? '');
+        const section = material.content.lesson?.sections.find((s) => s.id === query.sectionId);
+        if (!section || material.subjectRevisionId !== store.subject?.id) throw new Error('讲解对应的题目已经修改，请阅读新版讲解');
+        lessonFocus.value = { artifactId: query.artifactId, sectionId: section.id, heading: section.heading };
+      }
+      if (query.question) draft.value = query.question;
+    }
     else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
 });
@@ -78,7 +90,7 @@ function scrollToEnd(): void {
 }
 watch(() => store.messages.map((message) => message.text).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), scrollToEnd);
 watch(() => store.currentId, () => { editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; moreActions.value = false; saved.value = false; });
-watch(() => store.subject?.id, () => { summaryOpen.value = false; moreActions.value = false; processOpen.value = false; syncPreview(); });
+watch(() => store.subject?.id, () => { endFocus(); summaryOpen.value = false; moreActions.value = false; processOpen.value = false; syncPreview(); });
 watch(() => store.generating, (value) => { if (!value) syncPreview(); });
 watch(draft, (value) => {
   if (!UI_MOCK || switchingTopic.value || !activeTopic.value) return;
@@ -90,7 +102,7 @@ async function onSend(): Promise<void> {
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   rememberChat();
-  await store.send(text);
+  await store.send(text, undefined, 'question', undefined, undefined, lessonFocus.value ?? undefined);
   if (!store.error) draft.value = '';
 }
 async function onConfirm(): Promise<void> {
@@ -106,9 +118,16 @@ async function onStop(): Promise<void> {
   catch (err) { store.error = err instanceof Error ? err.message : '停止失败'; }
 }
 function newChat(): void { menuOpen.value = false; uni.switchTab({ url: '/pages/home/index', success: () => uni.$emit('luma:new-chat') }); }
+function endFocus(): void { lessonFocus.value = null; }
+function returnToLesson(): void {
+  if (!lessonFocus.value) return;
+  if (getCurrentPages().length > 1) uni.navigateBack();
+  else uni.redirectTo({ url: `/pages/reader/index?artifactId=${encodeURIComponent(lessonFocus.value.artifactId)}&conversationId=${encodeURIComponent(store.currentId ?? '')}` });
+}
 function openConversation(id: string): void {
   menuOpen.value = false;
   if (id === store.currentId) return;
+  endFocus();
   saved.value = false;
   void openLearning(id).catch((err) => { store.error = err.message; });
 }
@@ -122,7 +141,7 @@ function edit(): void {
 async function saveSubject(input: SubjectEdit): Promise<void> {
   editorError.value = '';
   try {
-    if (await store.editSubject(input)) { editorOpen.value = false; uni.showToast({ title: '已保存，请重新核对', icon: 'none' }); }
+    if (await store.editSubject(input)) { endFocus(); editorOpen.value = false; uni.showToast({ title: '已保存，请重新核对', icon: 'none' }); }
   } catch (err) { editorError.value = err instanceof Error ? err.message : '保存失败，修改内容仍保留，请重试'; }
 }
 async function choosePart(index: number): Promise<void> {
@@ -139,8 +158,8 @@ function recommend(): void {
 function action(text: string, kind: TurnRequest['action']): void {
   if (!ready.value) return;
   if (kind === 'show_solution') {
-    uni.showModal({ title: '查看完整解析', content: '建议先自己推一遍。也可以现在查看，之后再独立试一试。', confirmText: '查看解析', cancelText: '继续思考', confirmColor: '#4f6652', success: (res) => { if (res.confirm) void store.send(text, kind); } });
-  } else void store.send(text, kind);
+    uni.showModal({ title: '查看完整解析', content: '建议先自己推一遍。也可以现在查看，之后再独立试一试。', confirmText: '查看解析', cancelText: '继续思考', confirmColor: '#4f6652', success: (res) => { if (res.confirm) void store.send(text, kind, 'question', undefined, undefined, lessonFocus.value ?? undefined); } });
+  } else void store.send(text, kind, 'question', undefined, undefined, lessonFocus.value ?? undefined);
 }
 function rememberChat(): void { if (UI_MOCK && store.currentId) { try { rememberPreviewLocation(activeTopic.value?.id ?? store.currentId, 'chat'); } catch { /* 不阻断学习。 */ } } }
 function upload(): void {
@@ -163,6 +182,7 @@ function openMaterial(type: 'lesson' | 'practice'): void {
     uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?preview=1&scope=${encodeURIComponent(activeTopic.value?.id ?? store.currentId!)}` }); return;
   }
   if (artifact) uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?artifactId=${artifact.id}&conversationId=${store.currentId}` });
+  else if (type === 'lesson' && store.lessonJob) uni.navigateTo({ url: `/pages/reader/index?jobId=${store.lessonJob.id}&conversationId=${store.currentId}` });
   else action(type === 'lesson' ? '请生成图文讲解' : '请出同知识点练习', type === 'lesson' ? 'generate_lesson' : 'generate_practice');
 }
 
@@ -234,6 +254,7 @@ function simulate(): void {
   <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
     <PreviewNotice />
+    <view v-if="lessonFocus" class="focus-note"><text>正在讨论 · {{ lessonFocus.heading }}</text><view><button @tap="returnToLesson">返回讲解</button><button @tap="endFocus">结束追问</button></view></view>
     <TopicNavigator v-if="topicNavigation && (!previewMeta || previewMeta.recognition === 'ready')" :root="topicNavigation" :disabled="store.generating || store.waitingJob || switchingTopic || store.editingSubject || busy" @select="selectTopic" @all="learnAll" />
     <view class="task-toolbar">
       <text class="stage">{{ previewMeta && previewMeta.recognition !== 'ready' ? '先读取图片，再核对内容' : status }}</text>
@@ -273,11 +294,12 @@ function simulate(): void {
         <view v-if="ready && lastReply && !store.error" class="follow-actions">
           <button class="recommend-action" @tap="recommend"><text>{{ recommendLabel }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button>
           <view class="secondary-actions"><button @tap="action('没思路，请给我一个方向提示', 'hint')">给点提示</button><button @tap="action('我想查看完整解析', 'show_solution')">看完整解析</button><button :aria-expanded="moreActions" @tap="moreActions = !moreActions">{{ moreActions ? '收起' : '更多学习方式' }}</button></view>
-          <view v-if="moreActions" class="material-actions"><button v-if="recommended !== 'lesson'" :disabled="store.waitingJob && !lesson" @tap="openMaterial('lesson')">{{ lesson ? '阅读图文讲解' : '生成图文讲解' }}</button><button v-if="recommended !== 'practice'" :disabled="store.waitingJob && !practice" @tap="openMaterial('practice')">{{ practice ? '开始配套练习' : '练同类题' }}</button></view>
+          <view v-if="moreActions" class="material-actions"><button v-if="recommended !== 'lesson'" @tap="openMaterial('lesson')">{{ lesson ? '阅读图文讲解' : store.lessonJob ? '查看讲解进度' : '生成图文讲解' }}</button><button v-if="recommended !== 'practice'" :disabled="store.waitingJob && !practice" @tap="openMaterial('practice')">{{ practice ? '开始配套练习' : '练同类题' }}</button></view>
         </view>
         <view v-if="store.generating" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
-        <view v-if="store.waitingJob" class="progress-state"><view class="pulse" /><text>学习材料正在生成，你可以继续提问。</text></view>
-        <view v-if="store.error" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text></view>
+        <view v-if="store.waitingJob" class="progress-state"><view class="pulse" /><text>学习材料正在生成。</text><button v-if="store.lessonJob" class="retry-link" @tap="openMaterial('lesson')">查看讲解进度</button></view>
+        <view v-if="!store.waitingJob && !lesson && store.lessonJob?.status === 'failed'" class="progress-state"><text>图文讲解暂未完成</text><button class="retry-link" @tap="openMaterial('lesson')">查看草稿与重试</button></view>
+        <view v-if="store.error" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text><button v-if="store.retryRunId && !store.generating && !store.waitingJob" class="retry-link" @tap="store.retry">重新生成这次回复</button></view>
         <button v-if="store.generating || store.waitingJob" class="stop" @tap="onStop">停止本次生成</button>
         <view v-if="previewMeta?.recognition === 'ready' && ready && nextTopic" class="next-topic"><text>{{ previewMeta.learnAll ? '逐项学习已安排，按自己的节奏继续' : '当前内容先学到这里，也可以继续追问' }}</text><button :disabled="store.generating" @tap="selectTopic(nextTopic.id)">看看下一{{ unit }}<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
         <view id="thread-end" class="thread-end" />
@@ -334,6 +356,9 @@ function simulate(): void {
 .part-options button text:last-child { min-width:0; overflow-wrap:anywhere; }
 .follow-actions { margin:0 0 30rpx 68rpx; }
 .chat-page .recommend-action { display:flex; align-items:center; justify-content:space-between; gap:20rpx; width:100%; padding:22rpx 0; border-top:1rpx solid #e1e7d8; text-align:left; font-size:26rpx; color:#516b48; }
+.focus-note { padding:20rpx 32rpx; border-bottom:1rpx solid #e1e7d8; background:#f0f3e9; font-size:23rpx; color:#6b805f; flex-shrink:0; }
+.focus-note>view { display:flex; gap:32rpx; }
+.focus-note button { font-size:22rpx; color:#78916a; min-height:64rpx; }
 .secondary-actions,.material-actions { display:flex; flex-wrap:wrap; gap:8rpx 26rpx; }
 .secondary-actions button,.material-actions button { min-height:72rpx; font-size:21rpx; color:#8a987e; }
 .material-actions { border-top:1rpx solid #e8ecdf; }
@@ -342,6 +367,7 @@ function simulate(): void {
 .progress-state { display:flex; align-items:center; gap:14rpx; padding:20rpx 0 24rpx 68rpx; color:#94a086; font-size:23rpx; }
 .pulse { width:10rpx; height:10rpx; background:#91a27c; border-radius:50%; }
 .error { margin:12rpx 0 16rpx 68rpx; padding:22rpx; background:#f4eee5; border-radius:16rpx; color:#a47d61; font-size:24rpx; }
+.error .retry-link { display:inline-block; margin-top:16rpx; color:#566e4e; font-size:23rpx; border-bottom:1rpx solid #b9c4af; }
 .error-caption { display:block; margin-top:9rpx; color:#a59a88; font-size:20rpx; }
 .chat-page .stop { color:#a08464; font-size:22rpx; padding:16rpx; }
 .thread-end { height:20rpx; }

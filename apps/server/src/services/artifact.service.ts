@@ -1,5 +1,7 @@
 import { db } from '../lib/db';
 import { invalidFormat, notFound } from '../lib/errors';
+import { Diagram } from '@luma/shared';
+import { presentDiagram } from '../lib/teaching-graphic';
 
 /**
  * 成果材料读取（FR-05 / FR-06 / 设计文档 §8.2）。
@@ -14,6 +16,16 @@ export const artifactService = {
     if (!artifact) throw notFound('学习材料');
 
     if (artifact.type === 'lesson') {
+      const rawLesson = (artifact.content as { lesson?: { title: string; sections: Array<{ id: string; heading: string; body: string }>; diagrams?: Array<{ sectionId: string; content: unknown }> } }).lesson;
+      if (!rawLesson) throw invalidFormat('讲义内容不完整');
+      const diagrams = rawLesson.diagrams ?? [];
+      const sections = await Promise.all(rawLesson.sections.map(async (section) => ({
+        ...section,
+        diagram: await (async () => {
+          const item = diagrams.find((item) => item.sectionId === section.id);
+          return item ? presentDiagram(Diagram.parse(item.content)) : undefined;
+        })(),
+      })));
       return {
         id: artifact.id,
         type: artifact.type,
@@ -26,7 +38,7 @@ export const artifactService = {
           tags: artifact.subjectRevision.tags,
           confirmed: Boolean(artifact.subjectRevision.confirmedAt),
         },
-        content: artifact.content,
+        content: { lesson: { title: rawLesson.title, sections } },
         jobId: artifact.jobId,
         createdAt: artifact.createdAt,
       };

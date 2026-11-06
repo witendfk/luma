@@ -12,6 +12,8 @@
 | [design/architecture.md](design/architecture.md) | 系统怎样分工 | 组件职责、业务状态、内容呈现与跨模块规则 | 逐任务状态、测试流水 |
 | [design/agent.md](design/agent.md) | Agent 内部怎样运行 | 执行循环、工具、提示词、上下文、记忆、预算及恢复 | 需求替代品、完成率 |
 | [design/backend-review.md](design/backend-review.md) | 当前服务接入方案哪里有差距 | 一次评审的代码证据、技术判断和整改关联 | 实施进度或新的产品范围 |
+| [design/agent-capability-review.md](design/agent-capability-review.md) | 课程能力如何对应当前 Agent、哪些缺口值得补 | 代码依据、通用学习边界、竞赛版取舍及补齐建议 | 课程全文、实施流水或已完成声明 |
+| [design/project-review.md](design/project-review.md) | 方案是否明确、当前先做什么 | 跨文档与实现评审、阻塞点、下一批实施边界 | 重复需求全文或冒充交付验收 |
 | [design/data-api.md](design/data-api.md) | 数据如何关联、前后端如何通信 | 实体、约束、API/事件、鉴权及契约差异 | 页面截图说明和开发日志 |
 | [design/decisions.md](design/decisions.md) | 为什么选这套技术 | 选型、原因、取舍和引入边界 | 复制 Agent 伪代码、任务清单 |
 | [delivery/plan.md](delivery/plan.md) | 下一步谁做什么、先后如何 | 任务、依赖、产出、完成条件及职责分工 | 已完成流水和功能定义 |
