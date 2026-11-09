@@ -1,167 +1,109 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { onHide, onLoad, onShow } from '@dcloudio/uni-app';
-import { UI_MOCK } from '@/config';
-import PreviewCollectionAction from '@/components/PreviewCollectionAction.vue';
+import { computed, ref } from 'vue';
+import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
-import type { StudyRating } from '@/fixtures/study';
-import { useStudyPreviewStore } from '@/stores/study-preview';
-import { previewExampleKey, rememberPreviewLocation } from '@/mocks/workspace';
-import AttachmentStrip from '@/components/AttachmentStrip.vue';
-import { chooseAttachments, MAX_IMAGES } from '@/utils/attachments';
-import { sessionVersion } from '@/utils/token';
-let scope = 'preview-quadratic';
-let visible = true;
-const choosing = ref(false);
-const invalidImages = ref<Record<string, boolean>>({});
-const study = useStudyPreviewStore();
-const preview = ref(false), historyOpen = ref(false);
-const selectedHistory = ref<string | null>(null);
+import { usePracticeStore } from '@/stores/practice';
+import type { SelfEval } from '@luma/shared';
+
+const study = usePracticeStore();
 const pageHeight = uni.getSystemInfoSync().windowHeight;
-const keyboard = ref(0), scrollTop = ref(0);
-const current = computed(() => study.currentExercise);
-const answer = computed(() => study.currentAnswer);
-const draft = computed({ get: () => study.currentAnswer.text, set: (value: string) => study.answer(value) });
-const exercises = computed(() => study.round.ids.map((id) => study.example.exercises.find((item) => item.id === id)!));
-const answered = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.text.trim() || study.round.answers[id]!.images?.length || study.round.answers[id]!.unknown).length);
-const independent = computed(() => study.round.ids.filter((id) => study.round.answers[id]!.rating === 'independent').length);
-const reviewRound = computed(() => selectedHistory.value ? study.history.find((item) => item.id === selectedHistory.value) : study.round);
-const reviewExercises = computed(() => (reviewRound.value?.ids ?? []).map((id) => study.example.exercises.find((item) => item.id === id)!));
-const reviewTarget = ref('');
-const ratings: Array<{ value: StudyRating; label: string }> = [{ value: 'independent', label: '独立做对' }, { value: 'partial', label: '部分会' }, { value: 'stuck', label: '还不会' }];
-onLoad((query) => { preview.value = UI_MOCK && query?.preview === '1'; if (preview.value) {
-  scope = query?.scope ?? 'preview-quadratic'; study.restore(scope, previewExampleKey(scope));
-  if (query?.historyId) {
-    if (study.history.some((round) => round.id === query.historyId)) selectedHistory.value = query.historyId;
-    else uni.showToast({ title: '该轮记录已不在本机，已回到当前轮次', icon: 'none' });
-  }
-} });
-function rememberVisit(): void { if (visible && UI_MOCK && preview.value && !selectedHistory.value) { try { rememberPreviewLocation(scope, 'practice'); } catch { /* 保留本机作答。 */ } } }
-onShow(() => { visible = true; if (preview.value) { study.restore(scope, previewExampleKey(scope)); study.endFocus(); rememberVisit(); } });
-onHide(() => { visible = false; if (preview.value) study.persist(); keyboard.value = 0; });
-watch(() => [study.round.index, study.round.phase, study.currentAnswer.text, study.currentAnswer.images?.length, selectedHistory.value], rememberVisit);
-async function uploadAnswer(index?: number): Promise<void> {
-  if (choosing.value || study.round.phase !== 'doing') return;
-  const images = study.currentAnswer.images ?? [];
-  if (index === undefined && images.length >= MAX_IMAGES) { uni.showToast({ title: '每题最多添加 3 张作答图片', icon: 'none' }); return; }
-  const round = study.round.id, question = study.currentExercise.id, session = sessionVersion();
-  choosing.value = true;
-  try {
-    const selected = await chooseAttachments(index === undefined ? MAX_IMAGES - images.length : 1);
-    if (!selected?.length || session !== sessionVersion() || study.round.id !== round || study.currentExercise.id !== question || !visible) return;
-    const next = [...images]; if (index === undefined) next.push(...selected); else next.splice(index, 1, selected[0]!);
-    study.answerImages(next); rememberVisit();
-  } finally { choosing.value = false; }
-}
-function removeAnswer(index: number): void { const images = [...(study.currentAnswer.images ?? [])]; images.splice(index, 1); study.answerImages(images); }
-function back(): void {
-  if (getCurrentPages().length > 1) uni.navigateBack(); else uni.switchTab({ url: '/pages/home/index' });
-}
+const keyboard = ref(0), scrollTop = ref(0), reviewTarget = ref(''), fullReview = ref(false);
+let artifactId = '', attemptId: string | undefined, loaded = false;
+const draft = computed({ get: () => study.current?.myAnswer?.textDraft ?? '', set: (text: string) => study.edit({ textDraft: text }) });
+const difficultyLabel = (value: string) => ({ basic: '基础理解', variant: '同类变式', transfer: '综合应用', review: '复测' }[value] ?? '对点练习');
+const ratings: Array<{ value: SelfEval; label: string }> = [{ value: 'independent', label: '独立做对' }, { value: 'partial', label: '部分会' }, { value: 'stuck', label: '还不会' }];
+onLoad(async (query) => { artifactId = query?.artifactId ?? ''; attemptId = query?.attemptId; await load(); loaded = true; });
+onShow(() => { if (loaded) void run(() => study.resume()); });
+onHide(() => { keyboard.value = 0; void study.flush().catch(() => { /* 本机草稿保留，同步状态可重试。 */ }); });
+onUnload(() => { void study.flush().catch(() => {}); });
+async function load(): Promise<void> { if (!artifactId) { study.error = '缺少练习来源，请从对话中的练习卡进入'; return; } await study.open(artifactId, attemptId); }
+async function run(action: () => Promise<unknown>): Promise<void> { try { await action(); } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '操作未完成，请重试', icon: 'none', duration: 2500 }); } }
 function goTop(): void { scrollTop.value = scrollTop.value === 0 ? 1 : 0; }
-function jump(index: number): void { study.jump(index); goTop(); }
+async function back(): Promise<void> {
+  try { await study.flush(); } catch { uni.showToast({ title: '草稿未同步，请先重试保存', icon: 'none' }); return; }
+  if (getCurrentPages().length > 1) uni.navigateBack(); else if (study.material) uni.redirectTo({ url: `/pages/chat/index?id=${encodeURIComponent(study.material.conversationId)}&topic=${encodeURIComponent(study.material.subjectId)}` }); else uni.switchTab({ url: '/pages/home/index' });
+}
+async function jump(index: number): Promise<void> { await run(async () => { await study.jump(index); goTop(); }); }
 function submit(): void {
-  const invalidQuestion = study.round.ids.find((id) => invalidImages.value[id] && study.round.answers[id]?.images?.length);
-  if (invalidQuestion) { jump(study.round.ids.indexOf(invalidQuestion)); uni.showToast({ title: '请先更换或移除这题的失效图片', icon: 'none' }); return; }
-  if (choosing.value) { uni.showToast({ title: '请等待选图完成', icon: 'none' }); return; }
-  if (answered.value < study.round.ids.length) {
-    uni.showModal({ title: '还有未作答的题', content: '可以回去补充，也可以按未完成提交，接下来对照解析自评。', confirmText: '仍然提交', cancelText: '继续作答', confirmColor: '#4f6652', success: (res) => { if (res.confirm) { study.submit(); goTop(); } } });
-  } else { study.submit(); goTop(); }
+  const send = () => void run(async () => { await study.submit(); goTop(); });
+  if (study.answered < study.exercises.length) uni.showModal({ title: '还有未作答的题', content: '可以回去补充，也可以按未完成提交，接下来对照解析自评。', confirmText: '仍然提交', cancelText: '继续作答', confirmColor: '#4f6652', success: (res) => { if (res.confirm) send(); } });
+  else send();
 }
 function finish(): void {
-  if (!study.finish()) {
-    const id = study.round.ids.find((item) => !study.round.answers[item]!.rating);
-    reviewTarget.value = ''; setTimeout(() => { if (id) reviewTarget.value = `review-${id}`; }, 0);
-    uni.showToast({ title: '请为每一道题选择自评结果', icon: 'none' }); return;
-  }
-  goTop();
+  const missing = study.attempt?.exercises.find((ex) => !ex.myAnswer?.selfEval);
+  if (missing) { reviewTarget.value = ''; setTimeout(() => { reviewTarget.value = `review-${missing.id}`; }, 0); uni.showToast({ title: '请为每一道题选择自评结果', icon: 'none' }); return; }
+  void run(async () => { await study.complete(); goTop(); });
 }
-function ask(id: string): void {
-  const index = study.round.ids.indexOf(id); if (index >= 0) study.jump(index);
-  const exercise = study.example.exercises.find((item) => item.id === id)!;
-  study.ask({ kind: 'exercise', id, roundId: study.round.id, heading: `第 ${study.round.ids.indexOf(id) + 1} 题 · ${exercise.kind}`, question: '这道题我还没理解，请先给我一个思考方向。' });
-  uni.navigateTo({ url: '/pages/chat/index?preview=study' });
+async function ask(id: string, hint = false): Promise<void> {
+  await run(async () => {
+    await study.flush();
+    const doc = study.material, attempt = study.attempt;
+    if (!doc || !attempt) return;
+    await study.jump(attempt.exercises.findIndex((ex) => ex.id === id));
+    const question = hint ? '这道题我没思路，请给我一点方向提示。' : study.stage === 'doing' ? '这道题我卡住了，请结合我的作答引导我检查。' : '这道题的解析我还没理解，请结合我的作答讲讲。';
+    uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(doc.conversationId)}&topic=${encodeURIComponent(doc.subjectId)}&artifactId=${encodeURIComponent(doc.id)}&artifactVersion=${doc.version}&attemptId=${encodeURIComponent(attempt.id)}&exerciseId=${encodeURIComponent(id)}&question=${encodeURIComponent(question)}` });
+  });
 }
-function restart(onlyNeeds: boolean): void {
-  uni.showModal({ title: '开始新一轮练习？', content: '本轮作答与自评会保留，新一轮从空白开始。', confirmText: '开始重做', confirmColor: '#4f6652', success: (res) => { if (res.confirm) { study.restart(onlyNeeds); goTop(); } } });
-}
-function more(): void {
-  const items = [...(study.needsPractice.length ? ['重做需巩固的题'] : []), '全部重做', '查看历史轮次'];
-  uni.showActionSheet({ itemList: items, success: ({ tapIndex }) => {
-    const chosen = items[tapIndex];
-    if (chosen === '查看历史轮次') historyOpen.value = true; else restart(chosen === '重做需巩固的题');
-  } });
-}
-function lesson(): void {
-  const pages = getCurrentPages();
-  if (pages.length > 1 && pages[pages.length - 2]?.route === 'pages/reader/index') uni.navigateBack();
-  else uni.navigateTo({ url: `/pages/reader/index?preview=1&scope=${encodeURIComponent(scope)}` });
-}
-function viewHistory(id: string): void { selectedHistory.value = id; historyOpen.value = false; goTop(); }
 </script>
 
 <template>
   <view class="practice-page" :style="{ height: Math.max(260, pageHeight - keyboard) + 'px' }">
-    <view v-if="selectedHistory" class="page-header"><button @tap="selectedHistory = null"><LumaIcon name="chevron-left" :size="18" /><text>回到本轮</text></button><text>历史作答 · 只读</text><text class="header-space" /></view>
-    <view v-if="preview" class="preview-label">交互预览 · 示例题与解析 · 仅保存在本机</view>
-    <PreviewCollectionAction v-if="UI_MOCK && preview" />
-    <view v-if="!preview" class="unavailable"><text>这份练习暂未载入</text><text class="muted">正式作答页面正在接入，已生成的题组仍保存在服务端。</text><button @tap="back">返回对话</button></view>
-    <template v-else>
-      <view v-if="!selectedHistory && study.history.length && study.round.phase !== 'summary'" class="round-tools"><text>当前轮次</text><button @tap="historyOpen = true">历史作答</button></view>
+    <view class="page-header"><button @tap="back"><LumaIcon name="chevron-left" :size="18" /><text>返回学习</text></button><text>配套练习</text><text class="header-space" /></view>
+    <view v-if="study.loading" class="unavailable"><text>正在打开练习…</text></view>
+    <view v-else-if="study.error" class="unavailable"><text>{{ study.error }}</text><button @tap="load">重新加载</button></view>
+    <template v-else-if="study.material">
+      <view v-if="study.saveError" class="save-warning"><text>{{ study.saveError }}</text><button v-if="study.hasConflict" @tap="study.recoverDraft()">恢复本机草稿</button><button v-else @tap="run(() => study.flush())">重试同步</button></view>
       <scroll-view class="content-scroll" scroll-y :scroll-top="scrollTop" :scroll-into-view="reviewTarget">
         <view class="sheet">
-          <template v-if="!selectedHistory && study.round.phase === 'intro'">
-            <text class="eyebrow">PRACTICE</text><text class="page-title">把理解，变成会做。</text><text class="intro">{{ exercises.length }} 题 · 约 5–8 分钟<br />先独立尝试，再对照解析。</text>
-            <view class="route"><text class="route-active">独立作答</text><text>对照自评</text><text>回顾巩固</text></view>
-            <view v-for="(exercise, index) in exercises" :key="exercise.id" class="task-row"><text class="number">0{{ index + 1 }}</text><view><text class="task-title">{{ exercise.kind }}</text><text class="muted">{{ exercise.purpose }}</text></view></view>
-            <text class="footnote">不用急着看答案。卡住时可以要一点提示，或者带着这道题继续问。</text>
+          <template v-if="study.stage === 'intro'">
+            <text class="eyebrow">PRACTICE</text><text class="page-title">试着自己走一遍。</text><text class="intro">{{ study.exercises.length }} 道同知识点练习，先独立尝试，再对照解析自评。</text>
+            <view class="route"><text class="route-active">独立尝试</text><text>对照解析</text><text>回顾巩固</text></view>
+            <view v-for="(exercise, i) in study.exercises" :key="exercise.id" class="task-row"><text class="number">{{ String(i + 1).padStart(2, '0') }}</text><view><text class="task-title">{{ exercise.topic }}</text><text class="muted">{{ difficultyLabel(exercise.difficulty) }} · {{ exercise.purpose }}</text></view></view>
+            <text class="footnote">作答会自动保存，暂时不会也可以先记下来。</text>
           </template>
-          <template v-else-if="!selectedHistory && study.round.phase === 'doing'">
-            <view class="progress"><text>第 {{ study.round.index + 1 }} / {{ exercises.length }} 题</text><text>{{ answered }} 题已有记录</text></view>
-            <view class="progress-line"><view :style="{ width: (study.round.index + 1) / exercises.length * 100 + '%' }" /></view>
-            <view class="question-nav"><button v-for="(exercise, index) in exercises" :key="exercise.id" :class="{ active: study.round.index === index, recorded: study.round.answers[exercise.id]?.text || study.round.answers[exercise.id]?.unknown }" :aria-label="`跳到第 ${index + 1} 题`" @tap="jump(index)">{{ index + 1 }}</button></view>
-            <text class="eyebrow">{{ current.kind }}</text><text class="exercise-stem">{{ current.stem }}</text><text class="purpose">{{ current.purpose }}</text>
-            <view class="answer-heading"><text>我的思路与答案</text><text class="saved">{{ study.savedLocally ? '本机已保存' : '未能保存，请勿退出' }}</text></view>
-            <textarea :key="current.id" v-model="draft" class="draft" :maxlength="4000" placeholder="写下第一步，或试着完整推一遍…" :adjust-position="false" :show-confirm-bar="false" @keyboardheightchange="keyboard = $event.detail.height" />
-            <AttachmentStrip :images="answer.images ?? []" @replace="uploadAnswer($event)" @remove="removeAnswer" @invalid="invalidImages[current.id] = $event" />
-            <view class="answer-tools"><button :disabled="choosing" @tap="uploadAnswer()"><LumaIcon name="photo" :size="14" />添加作答照片</button><button @tap="study.toggleHint()">{{ answer.hint ? '收起提示' : '给点提示' }}</button></view><button class="ask-link" @tap="ask(current.id)">围绕这题追问<LumaIcon name="arrow-diagonal" :size="12" /></button>
-            <view v-if="answer.hint" class="hint"><text class="hint-label">先想一想</text><text>{{ current.hint }}</text></view>
-            <button class="unknown" :class="{ marked: answer.unknown }" @tap="study.markUnknown()"><text class="check">{{ answer.unknown ? '✓' : '' }}</text><text>这题暂时不会，先记下来</text></button>
+          <template v-else-if="study.stage === 'doing' && study.current">
+            <view class="progress"><text>第 {{ study.index + 1 }} / {{ study.exercises.length }} 题</text><text>{{ study.answered }} 题已有记录</text></view>
+            <view class="progress-line"><view :style="{ width: (study.index + 1) / study.exercises.length * 100 + '%' }" /></view>
+            <view class="question-nav"><button v-for="(ex, i) in study.exercises" :key="ex.id" :disabled="study.busy" :class="{ active: study.index === i, recorded: study.attempt?.exercises[i]?.myAnswer?.textDraft || study.attempt?.exercises[i]?.myAnswer?.markedUnknown }" :aria-label="`跳到第 ${i + 1} 题`" @tap="jump(i)">{{ i + 1 }}</button></view>
+            <text class="eyebrow">{{ study.current.topic }} · {{ difficultyLabel(study.current.difficulty) }}</text><view class="exercise-stem"><StudyText :text="study.current.stem" /></view><text class="purpose">{{ study.current.purpose }}</text>
+            <view class="answer-heading"><text>我的思路与答案</text><text class="saved">{{ study.saving ? '正在保存…' : study.dirty.length ? '待同步' : '已保存' }}</text></view>
+            <textarea :key="study.current.id" v-model="draft" :disabled="study.busy" class="draft" :maxlength="8000" placeholder="写下第一步，或试着完整推一遍…" :adjust-position="false" :show-confirm-bar="false" @keyboardheightchange="keyboard = $event.detail.height" />
+            <view class="answer-tools"><button :disabled="study.busy" @tap="ask(study.current!.id, true)">给我一点提示</button><button :disabled="study.busy" class="ask-link" @tap="ask(study.current!.id)">围绕这题追问<LumaIcon name="arrow-diagonal" :size="12" /></button></view>
+            <button class="unknown" :disabled="study.busy" :class="{ marked: study.current.myAnswer?.markedUnknown }" @tap="study.edit({ markedUnknown: !study.current?.myAnswer?.markedUnknown })"><text class="check">{{ study.current.myAnswer?.markedUnknown ? '✓' : '' }}</text><text>这题暂时不会，先记下来</text></button>
           </template>
-          <template v-else-if="selectedHistory || study.round.phase === 'review'">
-            <text class="eyebrow">{{ selectedHistory ? 'HISTORY' : 'SELF REVIEW' }}</text><text class="page-title">对照过程，再判断。</text><text class="intro">{{ selectedHistory ? '这是已完成轮次，只读查看。' : '参考解析已经展开，请按自己的实际过程自评。' }}</text>
-            <view v-for="(exercise, index) in reviewExercises" :id="`review-${exercise.id}`" :key="exercise.id" class="review-section">
-              <text class="task-title">0{{ index + 1 }} · {{ exercise.kind }}</text><text class="review-stem">{{ exercise.stem }}</text>
-              <view class="my-answer"><text class="small-label">我的作答</text><text>{{ reviewRound?.answers[exercise.id]?.text || (reviewRound?.answers[exercise.id]?.images?.length ? '已添加作答照片' : reviewRound?.answers[exercise.id]?.unknown ? '暂时不会，待讲解' : '未填写作答') }}</text></view>
-              <AttachmentStrip :images="reviewRound?.answers[exercise.id]?.images ?? []" readonly />
-              <view class="reference"><text class="small-label">参考答案与解析</text><text class="answer-text">{{ exercise.answer }}</text><StudyText :text="exercise.analysis" /></view>
-              <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :class="{ selected: reviewRound?.answers[exercise.id]?.rating === rating.value }" :disabled="Boolean(selectedHistory)" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ reviewRound?.answers[exercise.id]?.rating === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
-              <button v-if="!selectedHistory" class="ask-link" @tap="ask(exercise.id)">没看懂解析？围绕这题问问<LumaIcon name="arrow-diagonal" :size="12" /></button>
+          <template v-else-if="study.stage === 'review' || fullReview">
+            <text class="eyebrow">{{ fullReview ? 'MY PRACTICE' : 'SELF REVIEW' }}</text><text class="page-title">对照过程，再判断。</text><text class="intro">{{ fullReview ? '本轮已完成，作答和自评只读保留。' : '参考解析已经展开，请按自己的实际过程自评。' }}</text>
+            <view v-for="(exercise, i) in study.attempt?.exercises" :id="`review-${exercise.id}`" :key="exercise.id" class="review-section">
+              <text class="task-title">{{ String(i + 1).padStart(2, '0') }} · {{ exercise.topic }}</text><view class="review-stem"><StudyText :text="exercise.stem" /></view>
+              <view class="my-answer"><text class="small-label">我的作答</text><StudyText :text="exercise.myAnswer?.textDraft || (exercise.myAnswer?.markedUnknown ? '暂时不会，待讲解' : '未填写作答')" /></view>
+              <view class="reference"><text class="small-label">参考答案与解析</text><StudyText :text="exercise.answer ?? ''" /><StudyText :text="exercise.analysis ?? ''" /></view>
+              <text v-if="exercise.myAnswer?.hintsUsed || exercise.myAnswer?.solutionViewedAt" class="help-note">本题曾请求{{ exercise.myAnswer?.solutionViewedAt ? '解析' : '提示' }}，请结合实际过程自评。</text>
+              <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :disabled="study.busy || study.stage === 'summary'" :class="{ selected: exercise.myAnswer?.selfEval === rating.value }" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ exercise.myAnswer?.selfEval === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
+              <button class="ask-link" :disabled="study.busy" @tap="ask(exercise.id)">没看懂解析？围绕这题问问<LumaIcon name="arrow-diagonal" :size="12" /></button>
             </view>
           </template>
-          <template v-else>
+          <template v-else-if="study.stage === 'summary'">
             <text class="eyebrow">REFLECTION</text><text class="page-title">这一次，哪里更清楚了？</text>
-            <view class="result"><text>{{ independent }}</text><text class="result-total"> / {{ exercises.length }} 题独立做对</text></view><text class="self-label">根据你的自评记录</text>
-            <view v-for="(exercise, index) in exercises" :key="exercise.id" class="result-row"><text>0{{ index + 1 }} · {{ exercise.kind }}</text><text class="result-status">{{ ratings.find((rating) => rating.value === study.round.answers[exercise.id]?.rating)?.label }}</text></view>
-            <view class="hint"><text class="hint-label">下一步建议</text><text>{{ study.needsPractice.length ? '先回顾还没理解的步骤，再独立重做需要巩固的题。' : '本轮完成了，可以回看方法，再用新的题目检验理解。' }}</text></view>
-            <view class="result-links"><button @tap="selectedHistory = study.round.id">查看本轮完整作答</button><button v-if="study.needsPractice.length" @tap="ask(study.needsPractice[0]!)">追问不会的题<LumaIcon name="arrow-diagonal" :size="12" /></button><button @tap="more">历史与重做</button></view>
+            <view class="result"><text>{{ study.independent }}</text><text class="result-total"> / {{ study.exercises.length }} 题独立做对</text></view><text class="self-label">根据你的自评记录</text>
+            <view v-for="(exercise, i) in study.attempt?.exercises" :key="exercise.id" class="result-row"><text>{{ String(i + 1).padStart(2, '0') }} · {{ exercise.topic }}</text><text class="result-status">{{ ratings.find((r) => r.value === exercise.myAnswer?.selfEval)?.label }}</text></view>
+            <view class="hint"><text class="hint-label">下一步建议</text><text>{{ study.needsPractice.length ? '先回顾还没理解的步骤，再试着独立推一遍。' : '本轮完成了，可以回到对话继续探索。' }}</text></view>
+            <text v-if="study.usedHelp" class="help-note">本轮有借助提示或解析的记录，已保留在对应题目中。</text>
+            <view class="result-links"><button @tap="fullReview = true; goTop()">查看本轮完整作答</button><button v-if="study.needsPractice.length" @tap="ask(study.needsPractice[0]!.id)">追问不会的题<LumaIcon name="arrow-diagonal" :size="12" /></button></view>
             <text class="footnote">这是本轮自评，不代表考试得分率或知识点掌握率。</text>
           </template>
         </view>
       </scroll-view>
       <view class="action-dock">
-        <template v-if="selectedHistory"><text class="dock-note">已完成轮次 · 只读</text><button class="primary" @tap="selectedHistory = null"><text>回到当前轮次</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
-        <template v-else-if="study.round.phase === 'intro'"><text class="dock-note">先给自己一点思考时间</text><button class="primary" @tap="study.start()"><text>开始作答</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
-        <template v-else-if="study.round.phase === 'doing'"><button v-if="study.round.index" class="secondary" @tap="jump(study.round.index - 1)">上一题</button><text v-else class="dock-note">作答会保留在本机</text><button class="primary" @tap="study.round.index < exercises.length - 1 ? jump(study.round.index + 1) : submit()"><text>{{ study.round.index < exercises.length - 1 ? '下一题' : '提交并自评' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
-        <template v-else-if="study.round.phase === 'review'"><text class="dock-note">{{ study.rated }} / {{ exercises.length }} 题已自评</text><button class="primary" @tap="finish"><text>完成自评</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
-        <template v-else-if="study.needsPractice.length"><button class="secondary" @tap="lesson">回顾讲解</button><button class="primary" @tap="restart(true)"><text>重做需巩固题</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
-        <template v-else><text class="dock-note">本轮已完成</text><button class="primary" @tap="lesson"><text>回顾讲解</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
+        <template v-if="study.stage === 'intro'"><text class="dock-note">先给自己一点思考时间</text><button class="primary" :disabled="study.busy" @tap="study.start()"><text>{{ study.busy ? '正在开始…' : '开始作答' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
+        <template v-else-if="study.stage === 'doing'"><button v-if="study.index" class="secondary" :disabled="study.busy" @tap="jump(study.index - 1)">上一题</button><text v-else class="dock-note">作答自动保存</text><button class="primary" :disabled="study.busy" @tap="study.index < study.exercises.length - 1 ? jump(study.index + 1) : submit()"><text>{{ study.busy ? '正在保存…' : study.index < study.exercises.length - 1 ? '下一题' : '提交并自评' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
+        <template v-else-if="study.stage === 'review'"><text class="dock-note">{{ study.rated }} / {{ study.exercises.length }} 题已自评</text><button class="primary" :disabled="study.busy" @tap="finish"><text>{{ study.busy ? '正在保存…' : '完成自评' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
+        <template v-else-if="fullReview"><text class="dock-note">本轮记录 · 只读</text><button class="primary" @tap="fullReview = false; goTop()">返回反馈</button></template>
+        <template v-else><text class="dock-note">本轮已完成</text><button class="primary" @tap="back"><text>返回继续学习</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
       </view>
     </template>
-    <view v-if="historyOpen" class="history-layer"><view class="scrim" @tap="historyOpen = false" /><view class="history-sheet"><view class="history-heading"><text>历史轮次</text><button aria-label="关闭历史轮次" @tap="historyOpen = false"><LumaIcon name="close" :size="18" /></button></view><scroll-view scroll-y class="history-list"><button v-for="(item, index) in study.history" :key="item.id" @tap="viewHistory(item.id)"><text>第 {{ index + 1 }} 轮</text><text>{{ item.ids.length }} 题 · 已完成 · 只读查看</text></button></scroll-view></view></view>
   </view>
 </template>
-
 <style scoped>
 .practice-page { display:flex; flex-direction:column; overflow:hidden; background:#f8f7f2; color:#42563e; }
 .practice-page button { margin:0; padding:0; background:transparent; border:0; font-weight:400; line-height:1.7; }
@@ -234,4 +176,9 @@ function viewHistory(id: string): void { selectedHistory.value = id; historyOpen
 .history-list { max-height:50vh; }
 .history-list button { display:flex; justify-content:space-between; gap:20rpx; padding:28rpx 0; border-top:1rpx solid #e3e9da; color:#718967; font-size:25rpx; text-align:left; }
 .history-list button text:last-child { color:#a4ad98; font-size:22rpx; }
+.save-warning { display:flex; align-items:center; gap:20rpx; padding:16rpx 30rpx; background:#f4eee5; color:#a08464; font-size:22rpx; line-height:1.7; }
+.save-warning text { flex:1; }
+.save-warning button { flex-shrink:0; color:#667e58; font-size:22rpx; }
+.help-note { display:block; margin-top:18rpx; color:#a08d70; font-size:21rpx; line-height:1.8; }
+.practice-page button[disabled] { opacity:.5; }
 </style>

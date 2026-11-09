@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import StudyText from './StudyText.vue';
 import type { TeachingReply } from '@luma/shared';
-defineProps<{ role: 'user' | 'assistant'; text: string; reply?: TeachingReply; incomplete?: boolean }>();
+defineProps<{ role: 'user' | 'assistant'; text: string; reply?: TeachingReply; incomplete?: boolean; streaming?: boolean }>();
 </script>
 <template>
   <view class="message" :class="role">
@@ -9,7 +9,7 @@ defineProps<{ role: 'user' | 'assistant'; text: string; reply?: TeachingReply; i
     <view class="bubble">
       <text v-if="role === 'assistant'" class="agent-name">Luma</text>
       <StudyText v-if="role === 'assistant'" class="message-text" :text="text" :content="reply" :streaming="incomplete" /><text v-else class="message-text" selectable>{{ text }}</text>
-      <text v-if="incomplete" class="incomplete">回复尚未完成</text>
+      <text v-if="incomplete && !streaming" class="incomplete">回复已中断，以上内容已保留</text>
     </view>
   </view>
 </template>

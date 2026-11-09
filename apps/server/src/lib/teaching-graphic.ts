@@ -25,12 +25,13 @@ export function graphicSvg(input: TeachingGraphic): string {
     content += `<defs><clipPath id="plot"><rect x="${left}" y="${top}" width="${right-left}" height="${bottom-top}"/></clipPath></defs>`;
     content += line(left, oy, right + 6, oy, '#a4b398') + line(ox, bottom, ox, top - 8, '#a4b398');
     content += `<path d="M${right-4},${oy-5} L${right+6},${oy} L${right-4},${oy+5} M${ox-5},${top+2} L${ox},${top-8} L${ox+5},${top+2}" fill="none" stroke="#a4b398" stroke-width="2"/>`;
-    content += label(right + 12, oy + 7, 'x') + label(ox - 14, top - 13, 'y') + label(ox - 22, oy + 28, 'O');
+    const xLabel = g.xLabel ?? 'x', yLabel = g.yLabel ?? 'y';
+    content += label(right + 12, oy + 7, xLabel) + label(ox - 14, top - 13, yLabel) + label(ox - 22, oy + 28, 'O');
     let d = '';
     for (let i = 0; i <= 240; i++) { const x = b.xMin + i / 240 * (b.xMax - b.xMin); const y = g.a*x*x + g.b*x + g.c; d += `${i ? 'L' : 'M'}${px(x).toFixed(2)},${py(y).toFixed(2)} `; }
     content += `<path d="${d}" clip-path="url(#plot)" fill="none" stroke="#617b50" stroke-width="4" stroke-linecap="round"/>`;
     content += line(cx, top + 18, cx, bottom, '#b9a07c', 'dash');
-    content += label(cx > right-110 ? cx-12 : cx+12, top+14, g.revealValues ? `x = ${number(vx)}` : '对称轴', '#9f8562', cx > right-110 ? 'end' : 'start');
+    content += label(cx > right-110 ? cx-12 : cx+12, top+14, g.revealValues ? `${xLabel} = ${number(vx)}` : '对称轴', '#9f8562', cx > right-110 ? 'end' : 'start');
     content += line(ox, cy, cx, cy, '#b9a07c', 'dash');
     content += `<circle cx="${cx}" cy="${cy}" r="9" fill="#faf9f4" stroke="#a98b5e" stroke-width="3"/>`;
     // The prompt can teach how to find the value without revealing the answer on axes or labels.
@@ -53,7 +54,7 @@ export function graphicSvg(input: TeachingGraphic): string {
 
 export async function renderGraphic(graphic: TeachingGraphic): Promise<Buffer> {
   const parsed = TeachingGraphic.parse(graphic);
-  const key = 'graphic-v1:' + JSON.stringify(parsed);
+  const key = 'graphic-v2:' + JSON.stringify(parsed);
   return cache.get(key, () => sharp(Buffer.from(graphicSvg(parsed)), { density: 144 }).png().toBuffer());
 }
 export async function presentDiagram(diagram: Diagram): Promise<Diagram> {

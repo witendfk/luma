@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia';
 import { onScopeDispose, ref } from 'vue';
 import * as api from '@/api/conversations';
-import type { StreamEvent, TurnRequest, LearningSubjectView, ProgressView, TeachingReply } from '@luma/shared';
+import type { StreamEvent, TurnRequest, LearningSubjectView, ProgressView, TeachingReply, MaterialTaskView } from '@luma/shared';
+import { retryJob } from '@/api/jobs';
 import { openTurnStream, type TurnStreamHandle } from '@/utils/sse';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
 import { useHistoryStore } from '@/stores/history';
@@ -19,6 +20,8 @@ export const useConversationStore = defineStore('conversation', () => {
   const switchingSubject = ref(false);
   const artifacts = ref<api.ConversationDetail['artifacts']>([]);
   const lessonJob = ref<api.ConversationDetail['lessonJob']>(null);
+  const materialTasks = ref<MaterialTaskView[]>([]);
+  const retryingJobId = ref<string | null>(null);
   const generating = ref(false);
   const editingSubject = ref(false);
   const confirmingSubject = ref(false);
@@ -65,6 +68,7 @@ export const useConversationStore = defineStore('conversation', () => {
     subjects.value = []; activeSubjectId.value = null; progress.value = null; learnAll.value = false; switchingSubject.value = false;
     artifacts.value = [];
     lessonJob.value = null;
+    materialTasks.value = []; retryingJobId.value = null;
     editingSubject.value = false;
     confirmingSubject.value = false;
     stage.value = 'clarifying';
@@ -90,6 +94,7 @@ export const useConversationStore = defineStore('conversation', () => {
     progress.value = detail.progress; learnAll.value = detail.conversation.learnAll ?? false;
     artifacts.value = detail.artifacts;
     lessonJob.value = detail.lessonJob ?? null;
+    materialTasks.value = detail.materialTasks ?? [];
     stage.value = detail.progress?.stage ?? 'clarifying';
     if (detail.activeRun && !generating.value) {
       waitingJob.value = true;
@@ -123,13 +128,14 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   function pollRun(runId: string, version: number, session: number): void {
+    clearTimeout(polling);
     polling = setTimeout(async () => {
       if (openVersion !== version || sessionVersion() !== session || currentRunId.value !== runId) return;
       try {
         const run = await api.getRun(runId);
         if (openVersion !== version || sessionVersion() !== session || currentRunId.value !== runId) return;
         if (['running', 'waiting_job'].includes(run.status)) {
-          pollRun(runId, version, session);
+          await refresh(run.status === 'running');
           return;
         }
         waitingJob.value = false;
@@ -142,7 +148,7 @@ export const useConversationStore = defineStore('conversation', () => {
     }, 1500);
   }
 
-  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId'>): Promise<void> {
+  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId' | 'attemptId' | 'exerciseId'>): Promise<void> {
     if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;
@@ -164,7 +170,11 @@ export const useConversationStore = defineStore('conversation', () => {
       if (!retryInput) appendLocalMessage({ role: 'user', text });
       const handleEvent = (event: StreamEvent) => {
         if (version !== openVersion || session !== sessionVersion()) return;
-        if (event.type === 'run.started') currentRunId.value = event.runId;
+        if (event.type === 'run.started') {
+          currentRunId.value = event.runId;
+          const last = messages.value[messages.value.length - 1];
+          if (last?.role === 'user' && !last.runId) last.runId = event.runId;
+        }
         if (event.type === 'text.reset') {
           const last = messages.value[messages.value.length - 1];
           if (last?.role === 'assistant' && last.runId === event.runId && last.incomplete) messages.value.pop();
@@ -226,7 +236,7 @@ export const useConversationStore = defineStore('conversation', () => {
       const intent = subject.value?.content.intent ?? subject.value?.type;
       if (intent === 'practice') await send('范围已核对，请生成同知识点练习', 'generate_practice');
       else if (intent === 'knowledge') await send('范围已核对，请生成图文讲解', 'generate_lesson');
-      else await send('题目已核对，请先给我一个思考方向');
+      else await send('内容已核对，请继续解答我原来的问题');
     } finally {
       if (version === openVersion && session === sessionVersion()) confirmingSubject.value = false;
     }
@@ -304,6 +314,18 @@ export const useConversationStore = defineStore('conversation', () => {
     await refresh();
   }
 
-  return { retry, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+  async function retryMaterial(jobId: string): Promise<void> {
+    if (retryingJobId.value || generating.value || waitingJob.value) return;
+    const id = currentId.value, version = openVersion, session = sessionVersion();
+    retryingJobId.value = jobId;
+    try {
+      await retryJob(jobId);
+      if (id === currentId.value && version === openVersion && session === sessionVersion()) await refresh();
+    } finally {
+      if (version === openVersion && session === sessionVersion()) retryingJobId.value = null;
+    }
+  }
+
+  return { retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
     reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });

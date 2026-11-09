@@ -18,6 +18,7 @@
     "test:runtime": "tsx scripts/runtime-check.ts",
     "test:migration": "tsx scripts/migration-check.ts",
     "test:subjects": "tsx scripts/subjects-check.ts",
+    "test:practice": "tsx scripts/practice-check.ts",
     "test:reading": "tsx scripts/reading-check.ts",
     "test:reading:live": "tsx scripts/reading-live-check.ts",
     "test:context": "tsx scripts/context-check.ts",

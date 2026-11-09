@@ -5,6 +5,7 @@ import { Diagram, Lesson } from '@luma/shared';
 import sharp from 'sharp';
 import { graphicSvg, presentDiagram, renderGraphic } from '../src/lib/teaching-graphic';
 import { parseLesson } from '../src/jobs/lesson.task';
+import { applyLessonRepair } from '../src/jobs/lesson-revision';
 
 const parabola = { kind: 'quadratic' as const, a: 1, b: -4, c: 7, bounds: { xMin: -1, xMax: 5, yMin: -1, yMax: 12 }, caption: '观察抛物线最低点', revealValues: false };
 test('实际函数图可显示与放大，提示模式不提前标注最小值', async () => {
@@ -18,6 +19,32 @@ test('实际函数图可显示与放大，提示模式不提前标注最小值',
   const shown = await presentDiagram({ title: '看图理解', graphic: parabola, steps: [{ label: '曲线', detail: '开口向上' }, { label: '最低点', detail: '沿曲线观察' }] });
   assert.match(shown.figure!, /^data:image\/png;base64,/);
   assert.throws(() => graphicSvg({ ...parabola, bounds: { ...parabola.bounds, yMax: 2 } }));
+});
+
+test('平方关系使用a或t作横轴，图中标签与正文一致且旧图仍默认x/y', () => {
+  const square = { ...parabola, b: 0, c: 0, bounds: { xMin: -3, xMax: 3, yMin: -1, yMax: 10 } };
+  const svg = graphicSvg({ ...square, xLabel: 'a', yLabel: 'q', revealValues: true });
+  assert.match(svg, />a<\/text>/);
+  assert.match(svg, />q<\/text>/);
+  assert.match(svg, />a = 0<\/text>/);
+  assert.doesNotMatch(svg, />x<\/text>|>y<\/text>|>x =/);
+  assert.match(graphicSvg(square), />x<\/text>/);
+  assert.match(graphicSvg({ ...square, xLabel: '<t>' }), /&lt;t&gt;/);
+  assert.throws(() => graphicSvg({ ...square, xLabel: '' }));
+});
+
+test('图文复核修复只替换指定图，保留正文和其他图并校验局部范围', () => {
+  const diagram = { title: '图', graphic: parabola, steps: [{ label: '看', detail: '观察曲线' }, { label: '想', detail: '联系图像' }] };
+  const lesson = Lesson.parse({ title: '平方', sections: ['s1', 's2', 's3'].map((id) => ({ id, heading: id, body: '保持正文' })),
+    diagrams: [{ sectionId: 's1', content: diagram }, { sectionId: 's2', content: diagram }] });
+  const patch = { diagrams: [{ sectionId: 's2', content: { ...diagram, graphic: { ...parabola, xLabel: 'a' } } }] };
+  const repaired = applyLessonRepair(lesson, JSON.stringify(patch), 's2');
+  assert.deepEqual(repaired.sections, lesson.sections);
+  assert.deepEqual(repaired.diagrams[0], lesson.diagrams[0]);
+  assert.equal(repaired.diagrams[1]!.content.graphic!.kind === 'quadratic' && repaired.diagrams[1]!.content.graphic!.xLabel, 'a');
+  assert.throws(() => applyLessonRepair(lesson, JSON.stringify(patch), 's1'));
+  assert.throws(() => applyLessonRepair(lesson, JSON.stringify({ diagrams: [{ ...patch.diagrams[0], sectionId: 'missing' }] })));
+  assert.throws(() => applyLessonRepair(lesson, JSON.stringify({ sections: [] })));
 });
 
 test('新讲义不能用纯文字卡冒充图文，也不能指定外部图片地址', () => {
@@ -39,6 +66,16 @@ test('图文讲义将正文和教学图解作为同一份结构化成果校验',
   assert.throws(() => Lesson.parse({ title: '配方法', sections: [
     { id: 's1', heading: '概念', body: '概念' }, { id: 's1', heading: '步骤', body: '步骤' }, { id: 's3', heading: '辨析', body: '辨析' },
   ], diagrams: [{ sectionId: 'missing', content: diagram }] }));
+});
+
+test('讲义按需支持多幅图，但每节最多一幅且最多三幅', () => {
+  const diagram = { title: '示意', graphic: parabola, steps: [{ label: '看', detail: '观察曲线' }, { label: '想', detail: '联系最低点' }] };
+  const base = { title: '配方法', sections: [
+    { id: 's1', heading: '概念', body: '概念' }, { id: 's2', heading: '看图', body: '步骤' }, { id: 's3', heading: '辨析', body: '辨析' },
+  ] };
+  assert.equal(Lesson.parse({ ...base, diagrams: [{ sectionId: 's1', content: diagram }, { sectionId: 's2', content: diagram }] }).diagrams.length, 2);
+  assert.throws(() => Lesson.parse({ ...base, diagrams: [{ sectionId: 's1', content: diagram }, { sectionId: 's1', content: diagram }] }), /每节最多一幅/);
+  assert.throws(() => Lesson.parse({ ...base, diagrams: [diagram, diagram, diagram, diagram].map((content, i) => ({ sectionId: `s${(i % 3) + 1}`, content })) }));
 });
 
 test('讲解内容将 Markdown、行内公式和块公式转成受控小程序节点', async () => {

@@ -3,3 +3,4 @@ export * from './errors';
 export * from './events';
 export * from './api';
 export * from './content';
+export * from './material-tasks';

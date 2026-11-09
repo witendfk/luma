@@ -3,6 +3,7 @@ import { ApiError, invalidFormat, notFound } from '../lib/errors';
 import { resolveSubject } from './subject-context';
 import { validateFocus } from './focus';
 import { createConversationTitle, restoreLegacyTitle } from '../lib/conversation-title';
+import { projectMaterialTasks } from './material-tasks';
 
 /** 会话与消息（FR-02 / FR-10 / 设计文档 §10）：真实实现 */
 
@@ -122,15 +123,21 @@ export const conversationService = {
       const active = subjects.find((row) => row.id === conversation.activeSubjectId);
       const artifacts = active ? await tx.artifact.findMany({
         where: { conversationId, subjectRevision: { subjectId: active.id } }, orderBy: { updatedAt: 'desc' },
-        select: { id: true, type: true, version: true, publishStatus: true, subjectRevisionId: true, jobId: true },
+        select: { id: true, type: true, version: true, publishStatus: true, subjectRevisionId: true, jobId: true, content: true },
       }) : [];
       const activeRun = await tx.agentRun.findFirst({
         where: { conversationId, status: { in: ['running', 'waiting_job'] } }, orderBy: { startedAt: 'desc' }, select: { id: true, status: true },
       });
       const latestRun = active ? await tx.agentRun.findFirst({ where: { conversationId, subjectId: active.id, subjectRevisionId: active.revision?.id }, orderBy: { startedAt: 'desc' }, select: { id: true, status: true, error: true } }) : null;
       const lessonJob = active?.revision ? await tx.generationJob.findFirst({ where: { conversationId, subjectRevisionId: active.revision.id, type: 'lesson' }, orderBy: { createdAt: 'desc' }, select: { id: true, status: true, step: true } }) : null;
+      const jobs = active ? await tx.generationJob.findMany({ where: { conversationId, subjectId: active.id, type: { in: ['lesson', 'exercise_set'] } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { id: true, type: true, runId: true, subjectRevisionId: true, status: true, step: true, resultArtifactId: true, retryOfJobId: true, payload: true, error: true } }) : [];
+      const runs = active ? await tx.agentRun.findMany({ where: { conversationId, subjectId: active.id },
+        select: { id: true, userMessageId: true, subjectRevisionId: true, taskFrame: true } }) : [];
+      const materialTasks = projectMaterialTasks(jobs, artifacts, runs, active?.revision?.id);
       return { conversation, subjects, subject: active?.revision ?? null, progress: active?.progress ?? null,
-        artifacts: artifacts.map((row) => ({ ...row, subjectId: active!.id })), activeRun, latestRun, lessonJob };
+        artifacts: artifacts.map(({ content: _content, ...row }) => ({ ...row, subjectId: active!.id })), activeRun, latestRun, lessonJob, materialTasks };
     }, { isolationLevel: 'RepeatableRead' });
   },
 

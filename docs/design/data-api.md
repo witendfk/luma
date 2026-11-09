@@ -55,7 +55,7 @@
 
 ## 2 接口与事件
 
-接口统一位于 `/api` 下；除登录和不含用户数据的健康检查外，业务接口均校验应用登录态。会新建运行、任务或练习轮次的命令以 `requestId` 去重；草稿更新还需版本校验。当前不是所有更新接口都实现了请求去重，尤其练习开始/重做待 B05 补齐，不能将统一目标当成已有保证。
+接口统一位于 `/api` 下；除登录和不含用户数据的健康检查外，业务接口均校验应用登录态。新运行和任务通过请求标识去重，草稿更新需版本校验。练习普通开始采用题组行锁下的ensure语义，复用最近轮次；显式重做未来需独立命令和请求标识，不共用普通开始命令。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -78,8 +78,9 @@
 | `GET /jobs/:id`、`POST /jobs/:id/retry` | 任务状态、重试 |
 | `POST /runs/:id/cancel` | 取消本轮及其关联未完成任务 |
 | `GET /runs/:id` | 查询运行状态与目标进度，用于断线后恢复 |
-| `POST /practice-attempts` | 开始或重做练习 |
+| `POST /practice-attempts` | 首次开始或继续最近轮次；重复/并发请求不新建轮次 |
 | `GET /practice-attempts/:id` | 读取题目、进度及本人作答 |
+| `PUT /practice-attempts/:id` | 保存当前exerciseId；已完成轮次只读 |
 | `PUT /practice-attempts/:id/answers/:exerciseId` | 保存草稿、图片、提示记录或自评 |
 | `POST /practice-attempts/:id/submit` | 提交作答，进入自评 |
 | `POST /practice-attempts/:id/complete` | 校验自评齐全并完成本轮 |
@@ -97,7 +98,15 @@
 
 错误返回 `code`、用户可读的 `message`、`retryable` 和请求引用。重点区分未登录、无权限、版本已更新、会话忙碌、格式错误、超限、模型不可用及生成中断。
 
-### 2.1 教学回复展示契约
+### 2.1 材料任务卡投影
+
+`GET /conversations/:id`返回`materialTasks: MaterialTaskView[]`，包含稳定卡ID、当前jobId、原runId/userMessageId、subjectRevisionId、type、status、artifactId、title、summary、historical及安全错误信息。前端优先绑定该运行的助理回复，否则绑定原学生消息；无匹配消息时不挂到其他轮次。重试链归并到原卡，保留原轮次归属并更新当前任务引用。
+
+未发布时不投影任务payload中的题干/目标或草稿正文；生成卡仅展示动画和生成提示。已发布才从正式成果提取标题/章节摘要，题组不投影题干或答案。历史版本明确标记；成果缺失不能冒充成功。`step`兼容字段不作为学生端卡片内部阶段展示。
+
+`TaskFrame.goals`支持`source: student_request | teaching_decision`、自主讲义的简短`reason`以及`reuseArtifactId`。缺省来源按学生请求兼容；自主练习不允许。上下文提供同版本已发布且当前权限可读的最多8份讲义标题/章节目录。复用仍须执行器核验会话、版本、发布状态、解析权限与作答焦点，不因模型引用ID直接放行；局部改写不走整份复用。复用不创建生成任务，仍投影本轮的成果入口。
+
+### 2.2 教学回复展示契约
 
 新模型 `respond` 返回 `content: [{type: "paragraph" | "heading" | "formula", text: string}]`，由共享 `TeachingReply` 校验。独立公式块使用不带定界符的LaTeX，正文可含行内公式；模型不能指定展示HTML。消息保存 `content.reply`，原 `blocks[type=text]` 为服务端生成的兼容文本投影，供上下文和检索使用，不要求迁移历史消息。
 
@@ -123,7 +132,7 @@
 - 消息按 `subjectId` 筛选，省略时取当前焦点；发送带 `subjectId` 与 `expectedRevision`。与当前焦点不符的迟到输入被拒绝。
 - 修改题干只增加当前对象版本并清除该对象的材料定位；旧材料和轮次继续保留。后台发布及运行保护按来源对象内的最新版本检查，不按整段会话最大版本检查。
 - 学习进度并发版本独立于题干版本。材料/章节/轮次/题号必须属于该版本；损坏或过期定位在读取时回退对话入口，不以 GET 改写历史。
-- `PracticeAttempt` 共享 DTO 使用 `exercises[].myAnswer`，无顶层 answers；历史接口已提供。开始/重做的 requestId 和 redoOfAttemptId 尚待 B05。
+- `PracticeAttempt`共享DTO包含conversationId及`exercises[].myAnswer`，无顶层answers；历史查询接口已提供。普通开始锁定题组并复用最近轮次，不通过重复POST实现重做；显式重做的requestId和redoOfAttemptId另行实现。同版本同内容的草稿重试幂等，不同内容的旧版本拒绝。submit/complete重复调用返回现有结果，不重设完成时间；提交后禁止修改原作答，完成后整轮只读。
 - 取消收藏记录 `removedAt`，重新收藏复用原行。列表只展示未取消项，详情可读回保留的笔记。
 - 归档/恢复/重命名不更新学习时间；真实新消息在创建运行事务内取消归档，前端不预先发恢复请求。
 - 迁移`20261105090000_learning_subjects`为每个旧会话建立首对象，保留旧字段和既有材料/练习；其他环境执行增量migrate deploy，不使用reset。执行证据只在verification维护。
@@ -137,7 +146,7 @@
 
 页面位置`LearningProgress`、语义记忆`TeachingMemory`和过程摘要`ContextSummary`各自负责不同数据，不能相互覆盖。
 
-滚动摘要独立存 `ContextSummary`：`subjectRevisionId + scopeKey` 唯一，scopeKey包含材料版本/段落、练习轮次/题目及本轮解析权限；body.notes 保存 kind/text/refs/可选quote。条件、计算和要求必须逐字引用，原消息ID必须属于输入或已有摘要。`throughMessageId / throughCreatedAt / coveredMessages` 固定已覆盖边界，`version` 用于并发保存；更新与取消共用会话锁及活动运行校验。只保留最新摘要检查点，不删除原文。迁移 `20261106110000_context_summary` 已应用本地库。
+滚动摘要独立存 `ContextSummary`：`subjectRevisionId + scopeKey` 唯一，scopeKey包含材料版本/段落、练习轮次/题目及本轮解析权限；body.notes 保存 kind/text/refs/可选quote。条件、计算和要求必须逐字引用，原消息ID必须属于输入或已有摘要。`throughMessageId / throughCreatedAt / coveredMessages` 固定已覆盖边界，`version` 用于并发保存；更新与取消共用会话锁及活动运行校验。ContextSummary保留最新检查点；每个新摘要版本及覆盖清单另写内部ToolExecution审计，同事务提交，不删除原文。迁移 `20261106110000_context_summary` 已应用本地库；本批复用现有JSON和执行记录，无新增迁移。
 
 新的运行不预先按token裁掉历史；驱动器按覆盖游标加载后续原文，必要时将旧摘要与新增旧轮次交GPT合并，保存成功再继续。失败保留原文与已提交检查点；摘要不通过校验不得推进覆盖游标。旧权限、其他焦点和旧题干版本的摘要均不装配。
 
@@ -153,7 +162,7 @@
 
 ### 5.3 教学记忆与回读契约
 
-§5.1旧JSON保留兼容历史，新依据从TeachingMemory读取。迁移`20261106160000_teaching_memory`保留旧JSON和消息，旧条目为candidate，不补造原话或核验结论；不提供客户端任意写记忆接口。下文标注AG02.3的覆盖清单和紧凑化是目标契约；已接入/待接入范围只在progress维护。
+§5.1旧JSON保留兼容历史，新依据从TeachingMemory读取。迁移`20261106160000_teaching_memory`保留旧JSON和消息，旧条目为candidate，不补造原话或核验结论；不提供客户端任意写记忆接口。下文定义覆盖清单和结果回读协议；实现与验收状态只在progress维护。
 
 | TeachingMemory字段 | 约束 |
 | --- | --- |
@@ -166,13 +175,15 @@
 
 - respond的内部teaching更新扩展为带证据的add/resolve/supersede候选；范围、引用和状态转移由服务端验证。学生表达及模型推测分别保存，不用语义text去重替代稳定ID。题干更正仍通过SubjectRevision确认流程，不借记忆写接口更改已确认题目。
 - 现有12条notes迁移为有来源的候选或材料引用，不补造逐字原话，不标记已核验。迁移保留原JSON和消息，不reset数据库；讲义章节目录由Artifact提供，不再占学生卡点保留名额。
-- **待实施AG02.3**：摘要仍用ContextSummary检查点；增加关联覆盖清单（消息ID、处理类别、条目/来源引用），存储在DB，不把全量清单每轮注入模型。校验本次被覆盖学生消息均有处理、已有有效关键条目及未解决问题未被无理由丢弃、替代关系有效；不声称此检查证明语义完整。
+- 摘要仍用ContextSummary检查点；每批学生消息的coverage包含messageId、disposition（retained/duplicate/resolved/process）、refs、reason。按消息ID恰好覆盖本批学生消息；保留项有摘要来源、重复项有保留来源、解决项有后续证据。条件/计算/要求的有效逐字引用继续保留；未解决问题是否被错误归类仍需语义评测。内部ToolExecution的tool为contextSummaryCheckpoint，resultRef保存scopeKey、完整检查点、coverage及retired来源，toolCallId=`context:<scopeKey>:<version>`；同检查点CAS事务提交，不向模型注册该审计工具、不计作业务工具调用、不把累计全量清单注入后续请求。
 - readLearningContext扩展query检索模式，与现有messageIds精确读取/游标分页互斥。query限制长度，禁止任意正则/SQL；参数化查询先过滤当前账号、对象版本及可见焦点/答案，再作受控字面匹配。返回短命中片段、原消息ID、排序/分页引用；独立读取命中轮次及相邻上下文，每次有总token预算。
 - 明确历史指代/来源冲突在TaskFrame增加回读要求，保存触发消息、候选引用和pending/read/clarified状态；程序检查已读有效来源或已澄清，再允许相关目标完成。自由语义仍由GPT理解，字段不伪装成数学正确性证明。
-- **待实施AG02.3**：大只读工具结果沿用ToolExecution中的正式结果或有权限材料引用；发送给模型的紧凑版携带原toolCallId和可回读引用，不修改原执行记录或重复执行写工具。完整本轮协议仍可恢复。
+- 历史工具正文已与Message历史分离，原run.protocol/ToolExecution保留完整调用/结果，当前轮不改写toolCallId或裁剪工具配对。学习数据携带最近30个候选中最多5个可读纯读引用；`readLearningContext(ref=tool_result, executionId, offset?)`只恢复原resultRef，不执行原操作。仅subject/artifacts/messages的成功纯读可进入目录，排除attempt副作用、失败、写工具和嵌套结果回读。按账号/对象版本/焦点/原解析权限/本轮时间上界过滤，并复验材料版本、发布状态和消息可见性；旧引用失效返回STALE_REFERENCE。返回encoding=json-chunk、text、offset、complete、nextOffset，每块预算6000 tokens，须续读至complete才是完整快照。
 - 主Agent与后台统一使用版本化EvidencePack：对象/来源版本、目标、创建时权限、相关条目ID及版本、必要原文/材料快照。任务创建时固定并验证，重试沿用，不临时采集其他焦点的新状态；按任务只投影需要的字段。
 
-具体读模式：query/messageIds/aroundMessageId互斥，query可配beforeMessageId分页；offset仅用于单条messageIds续读。每次原文正文预算6000 tokens，返回truncated/nextRead/pendingMessageIds；搜索最多扫描1000条已授权消息、返回最多10条短索引并给nextCursor。NFKC及数学符号规范化后作字面匹配，不支持任意SQL/正则。SQL先过滤账号/对象版本/焦点（含材料版本）/解析权限。
+具体消息读模式：query/messageIds/aroundMessageId互斥，query可配beforeMessageId分页；offset用于单条messageIds续读。tool_result以executionId独立读取，不与消息搜索/游标混用，其offset是JSON快照字符偏移。每次原文正文预算6000 tokens，返回truncated/nextRead/pendingMessageIds；搜索最多扫描1000条已授权消息、返回最多10条短索引并给nextCursor。NFKC及数学符号规范化后作字面匹配，不支持任意SQL/正则。SQL先过滤账号/对象版本/焦点（含材料版本）/解析权限。
+
+摘要保护边界由倒序历史分页计算，最近3个完整用户轮次及未回复尾部不进入覆盖游标。旧检查点已侵入保护区时按原文重建，沿用原DB版本CAS，不删除历史审计。resolved/superseded条目按原消息+逐字片段过滤相应摘要引用，同消息其他要求保留；该过滤每次装配都执行。无法用来源证明失效的语义冲突仍回读/澄清，不凭摘要自动改题。
 
 状态变更需targetId/expectedVersion/kind/scope及当前学生原话匹配；错误尝试和模型推断为candidate，学生要求为active，条件更正为conflicted并回题干核对。superseded/resolved保留原记录、替代关系及解决证据。容量不足明确失败，不slice淘汰；相同来源和文本写入使用稳定ID去重。拒绝原因记入TaskFrame.memoryWrite.rejected。
 

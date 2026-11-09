@@ -90,15 +90,23 @@ export const runService = {
         userMessage = await tx.message.create({
           data: { conversationId, subjectId: object.id, subjectRevisionId: subject?.id, role: 'user', content: { blocks, focus } as Prisma.InputJsonValue, requestId: input.requestId },
         });
+        // Count help only after a real student turn is accepted, not when opening the question composer.
+        if (input.attemptId && input.exerciseId && input.action !== 'show_solution') {
+          await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${input.attemptId} FOR UPDATE`;
+          const attempt = await tx.practiceAttempt.findFirst({ where: { id: input.attemptId, userId, stage: 'doing' } });
+          if (attempt) await tx.practiceAnswer.upsert({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: input.exerciseId } },
+            create: { attemptId: attempt.id, exerciseId: input.exerciseId, hintsUsed: 1 }, update: { hintsUsed: { increment: 1 } } });
+        }
+
       }
 
-      // TaskFrame（§4.3）：目标来自学生本次请求，不自行扩充
+      // Explicit actions are preplanned; free input may select a diagram lesson as a teaching decision.
       const goals: TaskFrameGoal[] = [];
       if (input.action === 'generate_lesson') {
-        goals.push({ type: 'lesson', target: input.text?.slice(0, 200) ?? '按已确认范围生成讲义' });
+        goals.push({ type: 'lesson', source: 'student_request', target: input.text?.slice(0, 200) ?? '按已确认范围生成讲义' });
       }
       if (input.action === 'generate_practice') {
-        goals.push({ type: 'practice', count: 2 });
+        goals.push({ type: 'practice', source: 'student_request', count: 2 });
       }
       const taskFrame: TaskFrame = source ? { ...taskFrameFrom(source.taskFrame), goals: taskFrameFrom(source.taskFrame).goals.map(({ failure, startedJobId, ...goal }) => goal), historyCount: history.length } : {
         readback: input.artifactId || input.attemptId ? undefined : initialReadback(input.text ?? '', userMessage.id),

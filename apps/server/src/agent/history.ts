@@ -15,6 +15,7 @@ export async function* historyPages(tx: Prisma.TransactionClient, input: {
   conversationId: string; subjectId: string; subjectRevisionId: string;
   focus: TaskFrame['focus']; allowSolution: boolean;
   before: { id: string; createdAt: Date }; after?: { id: string; createdAt: Date };
+  direction?: 'asc' | 'desc';
 }): AsyncGenerator<HistoryRow[]> {
   let cursor: string | undefined;
   for (;;) {
@@ -24,7 +25,7 @@ export async function* historyPages(tx: Prisma.TransactionClient, input: {
         { OR: [{ createdAt: { lt: input.before.createdAt } }, { createdAt: input.before.createdAt, id: { lt: input.before.id } }] },
         ...(input.after ? [{ OR: [{ createdAt: { gt: input.after.createdAt } }, { createdAt: input.after.createdAt, id: { gt: input.after.id } }] }] : []),
       ],
-    }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 100, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+    }, orderBy: [{ createdAt: input.direction ?? 'asc' }, { id: input.direction ?? 'asc' }], take: 100, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
     const rows = page.filter((m) => historyMatches(m.content, input.focus, input.allowSolution))
       .map((m) => ({ id: m.id, createdAt: m.createdAt, role: m.role as 'user' | 'assistant', content: textOf(m.content) })).filter((m) => m.content);
     if (rows.length) yield rows;

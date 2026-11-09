@@ -2,13 +2,14 @@ import { Prisma } from '@prisma/client';
 import { db } from '../lib/db';
 import { env } from '../lib/env';
 import { extractJson, summarizeContext, type ModelMessage, type ToolSet, type TokenUsage } from '../lib/model';
-import { compactHistory, CompactionError, summaryMessage, summaryScope, SummaryBody, type SummaryCheckpoint } from './compaction';
+import { compactHistory, CompactionError, protectedHistoryStart, summaryMessage, summaryScope, SummaryBody, type RetiredSource, type SummaryCheckpoint } from './compaction';
 import { historyPages } from './history';
 import { fixedContextTokens } from './context';
 import type { TurnPolicy } from './policy';
 import { loadPrompt, PROMPT_VERSION } from './prompts';
 import { modelBudgetAvailable, recordModelRequest, recordUsage, type RunCounters } from './limits';
 import { RunStoppedError, withActiveRun } from './run-guard';
+import { memoryVisible } from './teaching-memory';
 
 export function prefixCacheKey(userId: string, conversationId: string): string {
   return `luma:${PROMPT_VERSION}:${summaryScope(conversationId, { artifactId: userId }, false).slice(0, 32)}`;
@@ -32,23 +33,45 @@ export async function prepareContextMemory(input: {
     (stored.throughCreatedAt.getTime() === boundary.createdAt.getTime() && stored.throughMessageId >= boundary.id))) {
     throw new RunStoppedError('摘要来源已更新，请继续当前对话');
   }
-  const previous: SummaryCheckpoint | null = stored && body?.success ? { ...stored, body: body.data } : null;
+  let previous: SummaryCheckpoint | null = stored && body?.success ? { ...stored, body: body.data } : null;
+  const historyInput = { conversationId: input.conversationId, subjectId: input.policy.subjectId,
+    subjectRevisionId: input.policy.subjectRevisionId, focus: input.policy.focus, allowSolution: input.policy.allowSolution,
+    before: boundary };
+  const protectedFrom = await protectedHistoryStart(historyPages(db, { ...historyInput, direction: 'desc' }));
+  // Old-version checkpoints may have swallowed a recent round. Rebuild from raw history,
+  // retaining the stored CAS version and immutable audits rather than replaying that summary.
+  if (previous && (!protectedFrom || previous.throughCreatedAt > protectedFrom.createdAt ||
+    (previous.throughCreatedAt.getTime() === protectedFrom.createdAt.getTime() && previous.throughMessageId >= protectedFrom.id))) previous = null;
+  // Query lifecycle only for quoted sources actually present in this checkpoint.
+  async function retiredSources(refs: string[]): Promise<RetiredSource[]> {
+    if (!refs.length) return [];
+    const inactive = await db.teachingMemory.findMany({ where: {
+      subjectRevisionId: input.policy.subjectRevisionId!, status: { in: ['resolved', 'superseded'] },
+      OR: refs.map((messageId) => ({ evidence: { array_contains: [{ messageId }] } })),
+    } });
+    return inactive.filter((m) => memoryVisible({ ...m, status: 'active' }, input.policy)).flatMap((m) => {
+      const original = (m.evidence as Array<{ messageId: string; quote: string }>)[0];
+      return original?.quote && refs.includes(original.messageId) ? [{ memoryId: m.id, ...original, status: m.status }] : [];
+    });
+  }
+  const retired = await retiredSources([...new Set(previous?.body.notes.flatMap((n) => n.quote ? n.refs : []) ?? [])]);
   const result = await compactHistory({
-    pages: historyPages(db, { conversationId: input.conversationId, subjectId: input.policy.subjectId,
-      subjectRevisionId: input.policy.subjectRevisionId, focus: input.policy.focus, allowSolution: input.policy.allowSolution,
-      before: boundary, ...(previous ? { after: { id: previous.throughMessageId, createdAt: previous.throughCreatedAt } } : {}) }),
+    pages: historyPages(db, { ...historyInput, ...(previous ? { after: { id: previous.throughMessageId, createdAt: previous.throughCreatedAt } } : {}) }),
+    protectedFrom, retired, initialVersion: stored?.version,
     previous, fixedTokens: fixedContextTokens(input), inputLimit: env().CONTEXT_INPUT_TOKENS,
     outputReserve: env().MODEL_OUTPUT_TOKENS, ratio: env().CONTEXT_COMPACT_RATIO, summaryTokens: env().CONTEXT_SUMMARY_TOKENS,
     summarize: async (prior, rows, maxOutputTokens) => {
       input.signal.throwIfAborted();
+      for (const source of await retiredSources(rows.map((r) => r.id))) if (!retired.some((r) => r.memoryId === source.memoryId)) retired.push(source);
       if (!modelBudgetAvailable(input.counters)) throw new CompactionError('摘要调用已达本轮预算，原对话已保留');
       recordModelRequest(input.counters, 'context_summary');
       await withActiveRun(input.runId, input.owner, (tx) => tx.agentRun.update({ where: { id: input.runId }, data: { counters: input.counters as unknown as Prisma.InputJsonValue } }));
       const started = Date.now(); let usage: TokenUsage | undefined, error: string | undefined;
       try {
-        if (env().LUMA_MOCK_AGENT) return { notes: [{ kind: 'progress', text: '（模型mock）已有讨论的来源已记录。', refs: [rows[0]!.id] }] };
+        if (env().LUMA_MOCK_AGENT) return { notes: [{ kind: 'progress', text: '（模型mock）已有讨论的来源已记录。', refs: [rows[0]!.id] }],
+          coverage: rows.filter((r) => r.role === 'user').map((r) => ({ messageId: r.id, disposition: 'process', refs: [r.id], reason: '隔离测试中的一般讨论' })) };
         const generated = await summarizeContext({ system: await loadPrompt('compact'),
-          prompt: JSON.stringify({ previous: prior, messages: rows.map(({ id, role, content }) => ({ id, role, text: content })) }), maxOutputTokens,
+          prompt: JSON.stringify({ previous: prior, retired, messages: rows.map(({ id, role, content }) => ({ id, role, text: content })) }), maxOutputTokens,
           cacheKey: prefixCacheKey(input.userId, input.conversationId),
           abortSignal: AbortSignal.any([input.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
         usage = generated.usage;
@@ -62,7 +85,7 @@ export async function prepareContextMemory(input: {
         await withActiveRun(input.runId, input.owner, (tx) => tx.agentRun.update({ where: { id: input.runId }, data: { counters: input.counters as unknown as Prisma.InputJsonValue } }));
       }
     },
-    save: async (checkpoint, expectedVersion) => {
+    save: async (checkpoint, expectedVersion, audit) => {
       await withActiveRun(input.runId, input.owner, async (tx) => {
         const data = { ...key, ...checkpoint, body: checkpoint.body as unknown as Prisma.InputJsonValue };
         if (!expectedVersion) await tx.contextSummary.create({ data });
@@ -70,6 +93,12 @@ export async function prepareContextMemory(input: {
           const saved = await tx.contextSummary.updateMany({ where: { ...key, version: expectedVersion }, data });
           if (saved.count !== 1) throw new RunStoppedError('摘要版本冲突，未覆盖已有摘要');
         }
+        // Immutable per-version manifest: same guarded transaction as the checkpoint cursor.
+        // Internal audit, not a model-callable tool and never replayed as an operation.
+        const reference = `context:${scopeKey}:${checkpoint.version}`;
+        await tx.toolExecution.create({ data: { runId: input.runId, decisionId: reference, toolCallId: reference,
+          tool: 'contextSummaryCheckpoint', batchOrder: 0, status: 'succeeded',
+          resultRef: { scopeKey, ...checkpoint, throughCreatedAt: checkpoint.throughCreatedAt.toISOString(), ...audit } as unknown as Prisma.InputJsonValue } });
       });
     },
   });

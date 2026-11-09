@@ -9,6 +9,8 @@ import { textOf } from './blocks';
 import { LessonSource } from '../jobs/lesson-revision';
 import { evidencePack } from './teaching-memory';
 import { readHistory, type MessageReadOptions } from './history-reader';
+import { readHistoricalToolResult } from './tool-result-memory';
+import { canReuseLesson } from './lesson-reuse';
 
 /**
  * 工具执行器（设计文档 §4.12 / §6.1）。
@@ -184,7 +186,8 @@ async function markExecution(
 }
 
 interface ReadContextInput extends Partial<MessageReadOptions> {
-  ref: 'subject' | 'artifacts' | 'attempt' | 'messages';
+  ref: 'subject' | 'artifacts' | 'attempt' | 'messages' | 'tool_result';
+  executionId?: string;
   attemptId?: string;
   sectionId?: string;
   artifactId?: string;
@@ -195,6 +198,10 @@ interface ReadContextInput extends Partial<MessageReadOptions> {
 
 export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'userId' | 'conversationId' | 'policy'> & { runId?: string }, input: ReadContextInput): Promise<unknown> {
   if (!await db.conversation.findFirst({ where: { id: ctx.conversationId, userId: ctx.userId }, select: { id: true } })) return { ok: false, code: 'NOT_FOUND', message: '学习会话不存在' };
+  if (input.ref === 'tool_result') {
+    if (!input.executionId || input.query || input.messageIds || input.aroundMessageId || input.beforeMessageId) return { ok: false, code: 'INVALID_INPUT', message: '结果回读需单独提供executionId和可选offset' };
+    return readHistoricalToolResult(ctx, input.executionId, input.offset);
+  }
   if (input.ref === 'subject') {
     const subject = await db.subjectRevision.findFirst({
       where: { id: ctx.policy.subjectRevisionId ?? '', conversationId: ctx.conversationId, subjectId: ctx.policy.subjectId },
@@ -251,9 +258,14 @@ export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'user
     if (!attempt) return { ok: false, code: 'NOT_FOUND', message: '练习轮次不存在' };
     const ids = (attempt.exerciseIds as string[]).filter((id) => id === ctx.policy.focus.exerciseId);
     if (!ids.length) return { ok: false, code: 'INVALID_INPUT', message: '请明确要追问的当前练习题' };
-    if (ctx.policy.answerPermission) {
-      await db.practiceAnswer.upsert({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: ids[0]! } },
-        create: { attemptId: attempt.id, exerciseId: ids[0]!, solutionViewedAt: new Date() }, update: { solutionViewedAt: new Date() } });
+    if (ctx.policy.answerPermission && attempt.stage === 'doing') {
+      await db.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${attempt.id} FOR UPDATE`;
+        const current = await tx.practiceAttempt.findUnique({ where: { id: attempt.id } });
+        if (current?.stage !== 'doing') return;
+        await tx.practiceAnswer.upsert({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: ids[0]! } },
+          create: { attemptId: attempt.id, exerciseId: ids[0]!, solutionViewedAt: new Date() }, update: { solutionViewedAt: new Date() } });
+      });
     }
     return {
       ok: true,
@@ -297,8 +309,16 @@ async function createMaterialJob(
   const frame = taskFrameFrom(run.taskFrame);
   if (frame.conditionCorrection || frame.readback?.status === 'pending') return { kind: 'error', code: 'EVIDENCE_REQUIRED', message: '先回读历史依据或澄清/确认更正条件，再生成材料', retryable: false };
   const goal = frame.goals.find((g) => g.type === goalType);
-  if (!goal) return { kind: 'error', code: 'NOT_REQUESTED', message: '学生本轮未请求这种材料，不得擅自扩充目标', retryable: false };
+  if (!goal) return { kind: 'error', code: 'NOT_REQUESTED', message: '本轮尚未规划这种材料目标，不能跳过教学决策', retryable: false };
   if (goal.completedArtifactId) return { kind: 'result', value: { ok: true, artifactId: goal.completedArtifactId, type: toolName === 'createLesson' ? 'lesson' : 'exercise_set', status: 'published' } };
+  if (toolName === 'createLesson' && goal.reuseArtifactId) {
+    if (ctx.policy.focus.sectionId || input.sectionRef) return { kind: 'error', code: 'INVALID_INPUT', message: '局部改写必须生成新版本，不能直接复用旧段落', retryable: false };
+    const artifact = await db.artifact.findFirst({ where: { id: goal.reuseArtifactId, conversationId: ctx.conversationId,
+      subjectRevisionId: ctx.policy.subjectRevisionId, type: 'lesson', publishStatus: 'published' } });
+    const source = artifact?.jobId ? await db.generationJob.findUnique({ where: { id: artifact.jobId }, select: { payload: true } }) : null;
+    if (!artifact || !canReuseLesson(ctx.policy, source?.payload)) return { kind: 'error', code: 'FORBIDDEN', message: '讲义版本或解析权限不适用于本轮', retryable: false };
+    return { kind: 'result', value: { ok: true, artifactId: artifact.id, type: 'lesson', status: 'published', reused: true } };
+  }
   const key = `run:${ctx.runId}:goal:${goalType}`;
   const existing = await db.generationJob.findUnique({ where: { idempotencyKey: key } });
   if (existing) {

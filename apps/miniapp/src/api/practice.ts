@@ -23,16 +23,16 @@ export interface SaveAnswerInput {
   draftVersion: number;
 }
 
-export function saveAnswer(attemptId: string, exerciseId: string, input: SaveAnswerInput): Promise<void> {
-  return request<void>({
+export function saveAnswer(attemptId: string, exerciseId: string, input: SaveAnswerInput): Promise<{ saved: boolean; draftVersion: number }> {
+  return request({
     method: 'PUT',
     path: `/api/practice-attempts/${attemptId}/answers/${exerciseId}`,
     data: input,
   });
 }
 
-export function submitAttempt(attemptId: string): Promise<unknown> {
-  return request<unknown>({ method: 'POST', path: `/api/practice-attempts/${attemptId}/submit` });
+export function submitAttempt(attemptId: string): Promise<AttemptView> {
+  return request<AttemptView>({ method: 'POST', path: `/api/practice-attempts/${attemptId}/submit` });
 }
 
 export function completeAttempt(attemptId: string): Promise<unknown> {
@@ -41,4 +41,8 @@ export function completeAttempt(attemptId: string): Promise<unknown> {
 
 export function listAttempts(artifactId: string): Promise<AttemptHistoryItem[]> {
   return request({ method: 'GET', path: `/api/artifacts/${artifactId}/attempts` });
+}
+
+export function savePosition(attemptId: string, exerciseId: string): Promise<{ currentExerciseId: string }> {
+  return request({ method: 'PUT', path: `/api/practice-attempts/${attemptId}`, data: { exerciseId } });
 }

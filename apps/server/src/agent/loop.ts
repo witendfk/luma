@@ -216,7 +216,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       }
       const planning = !taskFrame.planned;
       const tools = nativeToolSet(planning);
-      const facts = await learningData(policy, conversation.userId, run.conversationId, taskFrame);
+      const facts = await learningData(policy, conversation.userId, run.conversationId, taskFrame, runId);
       const system = await assembleSystem(policy, taskFrame);
       const current = protocol.slice(taskFrame.historyCount ?? 0);
       const memory = await prepareContextMemory({ runId, owner, userId: conversation.userId, conversationId: run.conversationId,
@@ -259,7 +259,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
       if (step.kind === 'plan') {
         if (!planning) { await failRun(runId, 'PROTOCOL', '本轮目标已记录，不能重复规划', false, emit, owner); return; }
-        const goals = policy.subjectConfirmed ? [...new Map(step.plan.goals.map((goal) => [goal.type, goal])).values()] : [];
+        const goals = policy.subjectConfirmed ? [...new Map(step.plan.goals.map((goal) => [goal.type, { ...goal, source: goal.source ?? 'student_request' as const }])).values()] : [];
         taskFrame.conditionCorrection ||= step.plan.conditionCorrection;
         taskFrame.memoryCandidates = step.plan.memories;
         taskFrame.planned = true; taskFrame.goals = taskFrame.conditionCorrection ? [] : goals;

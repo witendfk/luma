@@ -101,6 +101,23 @@ export interface ConversationDetail {
   activeRun?: { id: string; status: string } | null;
   latestRun?: { id: string; status: string; error: { code?: string; message?: string; retryable?: boolean } | null } | null;
   lessonJob?: { id: string; status: string; step: string | null } | null;
+  materialTasks?: MaterialTaskView[];
+}
+/** Persisted material task scoped to its teaching turn; no lesson body or exercise answers. */
+export interface MaterialTaskView {
+  id: string;
+  jobId: string | null;
+  runId: string | null;
+  userMessageId: string | null;
+  subjectRevisionId: string | null;
+  type: 'lesson' | 'exercise_set';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
+  step: string | null;
+  artifactId: string | null;
+  title: string;
+  summary: string;
+  historical: boolean;
+  error: { message: string; retryable: boolean } | null;
 }
 export const SubjectContent = z.object({ text: z.string().trim().min(1).max(8000), intent: z.enum(['question', 'knowledge', 'practice']).optional() }).passthrough();
 export const CreateSubjectRequest = z.object({ type: z.enum(['question', 'knowledge']), content: SubjectContent });
@@ -130,7 +147,7 @@ export interface ExerciseView {
   id: string; order: number; stem: string; topic: string; difficulty: string; purpose: string;
 }
 export interface AttemptView {
-  id: string; artifactId: string; subjectId: string; subjectRevisionId: string;
+  id: string; artifactId: string; conversationId: string; subjectId: string; subjectRevisionId: string;
   stage: 'intro' | 'doing' | 'review' | 'summary'; currentExerciseId: string | null;
   submittedAt: string | null; completedAt: string | null; answersHidden: boolean;
   exercises: Array<ExerciseView & { answer?: string; analysis?: string; myAnswer: AttemptAnswerView | null }>;

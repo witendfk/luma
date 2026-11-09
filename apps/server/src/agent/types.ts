@@ -5,6 +5,9 @@ import type { ExplicitAction } from '@luma/shared';
 /** TaskFrame：学生目标与已验证成果，记录可核验的工作进展，不是模型思维链 */
 export interface TaskFrameGoal {
   type: 'lesson' | 'practice';
+  source?: 'student_request' | 'teaching_decision';
+  reason?: string;
+  reuseArtifactId?: string;
   target?: string;
   count?: number;
   difficulty?: 'basic' | 'variant' | 'transfer';

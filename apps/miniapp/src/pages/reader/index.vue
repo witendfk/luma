@@ -139,7 +139,7 @@ function jump(id: string): void {
   activeSection.value = id; directoryOpen.value = false; scrollTarget.value = '';
   void nextTick(() => { if (document.value) scrollTarget.value = `section-${document.value.sections.findIndex((item) => item.id === id)}`; }); remember();
 }
-function trackScroll(): void {
+function trackScroll(event: { detail: { scrollTop: number; scrollHeight: number } }): void {
   if (tab.value !== 'lesson') return;
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
@@ -148,10 +148,12 @@ function trackScroll(): void {
     query.select('.reading-scroll').boundingClientRect(); query.selectAll('.lesson-section').boundingClientRect();
     query.exec((results) => {
       if (!alive || !document.value) return;
-      const top = (results[0] as { top: number } | null)?.top;
+      const viewport = results[0] as { top: number; height: number } | null;
+      const top = viewport?.top;
       const sections = results[1] as Array<{ top: number }> | null;
       if (top === undefined || !sections?.length) return;
       let index = 0; sections.forEach((item, i) => { if (item.top <= top + 90) index = i; });
+      if (viewport && event.detail.scrollTop > 0 && event.detail.scrollTop + viewport.height >= event.detail.scrollHeight - 12) index = sections.length - 1;
       activeSection.value = document.value.sections[index]?.id ?? activeSection.value; remember();
     });
   }, 140);

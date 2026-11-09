@@ -7,11 +7,11 @@ export const dynamic = 'force-dynamic';
 
 const StartBody = z.object({
   artifactId: z.string().min(1),
-  /** 重做时可选：全部重做省略；部分重做传自评为 partial/stuck 的题目 */
+  /** 首次开始可选范围；继续同轮次不得改变范围。 */
   exerciseIds: z.array(z.string()).optional(),
 });
 
-/** POST /practice-attempts —— 开始或重做练习（FR-07：重做创建新轮次，沿用原题） */
+/** POST /practice-attempts —— 开始或继续最近轮次；显式重做另行实现 */
 export async function POST(req: NextRequest) {
   return withRoute(req, async () => {
     const { userId } = await requireUser(req);

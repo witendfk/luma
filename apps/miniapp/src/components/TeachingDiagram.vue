@@ -15,7 +15,7 @@ const formulaText = (text: string) => text.includes('$') ? text : '$$' + text + 
     <text class="diagram-title">{{ diagram.title }}</text>
     <view v-if="diagram.figure" class="diagram-visual" @tap="preview">
       <image class="diagram-image" :src="diagram.figure" mode="widthFix" :show-menu-by-longpress="true" />
-      <text class="diagram-caption">{{ diagram.graphic?.caption }} · 轻触放大</text>
+      <view class="diagram-caption"><StudyText v-if="diagram.graphic?.caption" :text="diagram.graphic.caption" /><text class="preview-hint">轻触图片放大</text></view>
     </view>
     <text v-else-if="diagram.figureError" class="diagram-caption">{{ diagram.figureError }}</text>
     <view v-for="(step, index) in diagram.steps" :key="index" class="diagram-step">
@@ -37,6 +37,7 @@ const formulaText = (text: string) => text.includes('$') ? text : '$$' + text + 
 .diagram-visual { margin:0 0 26rpx; }
 .diagram-image { display:block; width:100%; border-radius:8rpx; }
 .diagram-caption { display:block; margin-top:12rpx; color:#819076; font-size:21rpx; line-height:1.7; }
+.preview-hint { display:block; margin-top:6rpx; color:#99a38e; font-size:19rpx; }
 .diagram-step { display:flex; gap:18rpx; min-height:84rpx; }
 .step-marker { display:flex; width:36rpx; flex-shrink:0; flex-direction:column; align-items:center; }
 .step-marker text { color:#a18b6c; font-family:Georgia,serif; font-size:20rpx; line-height:1.5; }

@@ -60,6 +60,8 @@ export const artifactService = {
         publishStatus: artifact.publishStatus,
         subjectRevisionId: artifact.subjectRevisionId,
         subjectId: artifact.subjectRevision.subjectId,
+        conversationId: artifact.conversationId,
+        subjectVersion: artifact.subjectRevision.version,
         answersHidden: !includeAnswers,
         attemptId: activeAttempt?.id ?? null,
         exercises: artifact.exercises.map((ex) => ({

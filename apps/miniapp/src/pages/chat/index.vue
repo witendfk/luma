@@ -8,10 +8,11 @@ import { previewRoot, selectPreviewTopic, recognizeAttachments, setRecognition, 
 import { previewAttachment } from '@/utils/attachments';
 import { sessionVersion } from '@/utils/token';
 import PreviewNotice from '@/components/PreviewNotice.vue';
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app';
-import type { TurnRequest } from '@luma/shared';
+import { materialTaskAnchors, type MaterialTaskView, type TurnRequest } from '@luma/shared';
 import MessageBubble from '@/components/MessageBubble.vue';
+import MaterialTaskCard from '@/components/MaterialTaskCard.vue';
 import LearningHeader from '@/components/LearningHeader.vue';
 import LearningDrawer from '@/components/LearningDrawer.vue';
 import AccountPanel from '@/components/AccountPanel.vue';
@@ -39,6 +40,7 @@ const topicNavigation = computed(() => previewMeta.value ?? (store.subjects.leng
 const unit = computed(() => (previewMeta.value?.intent ?? store.subject?.type) === 'knowledge' ? '部分' : '题');
 const nextTopic = computed(() => { const root = previewMeta.value; const index = root?.topics?.findIndex((topic) => topic.id === root.activeTopicId) ?? -1; return root?.topics?.[index + 1]; });
 const draft = ref('');
+const exerciseFocus = ref<{ artifactId: string; artifactVersion: number; attemptId: string; exerciseId: string; heading: string } | null>(null);
 const lessonFocus = ref<{ artifactId: string; artifactVersion: number; sectionId?: string; heading: string } | null>(null);
 let preparedAction: TurnRequest['action'], preparedQuestion = '';
 const busy = ref(false);
@@ -50,29 +52,37 @@ const editorOpen = ref(false);
 const processOpen = ref(false);
 const editorError = ref('');
 const summaryOpen = ref(false);
-const moreActions = ref(false);
 const focused = ref(false);
 const pageHeight = uni.getSystemInfoSync().windowHeight;
 const keyboardHeight = ref(0);
 const scrollTarget = ref('');
+const followOutput = ref(true), newOutput = ref(false);
+const instance = getCurrentInstance();
 const isKnowledge = computed(() => store.subject?.type === 'knowledge');
-const status = computed(() => !store.subject?.confirmedAt ? (isKnowledge.value ? '先核对学习范围' : '先确认题目内容') : store.waitingJob ? '学习材料正在整理' : practice.value ? '同类练习已准备好' : lesson.value ? '图文讲解已准备好' : '先提示，再逐步推导');
-const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating && !store.confirmingSubject && !store.editingSubject);
+const status = computed(() => !store.subject?.confirmedAt ? (isKnowledge.value ? '先核对学习范围' : '先确认题目内容') : '围绕当前问题，继续学习');
+const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating && !store.waitingJob && !store.confirmingSubject && !store.editingSubject);
 const lesson = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'lesson' && item.publishStatus === 'published'));
-const practice = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'exercise_set' && item.publishStatus === 'published'));
-const recommended = computed(() => practice.value ? 'practice' : lesson.value ? 'lesson' : 'thinking');
-const recommendLabel = computed(() => recommended.value === 'practice' ? '开始配套练习' : recommended.value === 'lesson' ? '阅读图文讲解' : '写下我的思路');
+const cardsByMessage = computed(() => materialTaskAnchors(store.messages, store.materialTasks));
+const currentTaskPending = computed(() => store.materialTasks.some((t) => !t.historical && ['queued', 'running'].includes(t.status)));
+const streaming = computed(() => store.generating && store.messages.some((m) => m.runId === store.currentRunId && m.role === 'assistant' && m.incomplete && m.text));
 const subquestions = computed(() => store.subject?.subquestions ?? []);
 const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
 const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
-const lastReply = computed(() => [...store.messages].reverse().find((message) => message.role === 'assistant'));
 onHide(() => { if (!UI_MOCK) void store.saveDraft(draft.value).catch(() => { store.error = '草稿暂未保存，请重试'; }); pageActive = false; clearTimeout(recognitionTimer); });
 onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
   try {
     if (query?.id) {
       await openLearning(query.id, query.topic);
-      if (query.artifactId) {
+      if (query.attemptId && query.exerciseId && query.artifactId) {
+        const attempt = await request<import('@luma/shared').AttemptView>({ method: 'GET', path: `/api/practice-attempts/${encodeURIComponent(query.attemptId)}` });
+        if (attempt.artifactId !== query.artifactId || attempt.conversationId !== query.id) throw new Error('练习来源不匹配');
+        if (attempt.subjectId !== store.activeSubjectId) await store.switchSubject(attempt.subjectId, store.progress?.draft ?? '');
+        if (attempt.subjectRevisionId !== store.subject?.id) throw new Error('学习内容已修改，请回到原练习查看');
+        const index = attempt.exercises.findIndex((ex) => ex.id === query.exerciseId);
+        if (index < 0) throw new Error('该题不在本轮练习中');
+        exerciseFocus.value = { artifactId: query.artifactId, artifactVersion: Number(query.artifactVersion), attemptId: attempt.id, exerciseId: query.exerciseId, heading: `第 ${index + 1} 题 · ${attempt.exercises[index]!.topic}` };
+      } else if (query.artifactId) {
         const material = await request<{ version: number; subjectId: string; subjectRevisionId: string; content: { lesson?: { title: string; sections: Array<{ id: string; heading: string }> } } }>({ method: 'GET', path: `/api/artifacts/${encodeURIComponent(query.artifactId)}` });
         if (material.subjectId !== store.activeSubjectId) await store.switchSubject(material.subjectId, store.progress?.draft ?? '');
         const section = material.content.lesson?.sections.find((s) => s.id === query.sectionId);
@@ -86,12 +96,23 @@ onLoad(async (query) => {
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
 });
 function scrollToEnd(): void {
+  followOutput.value = true; newOutput.value = false;
   scrollTarget.value = '';
   void nextTick(() => { scrollTarget.value = 'thread-end'; });
 }
-watch(() => store.messages.map((message) => message.text).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), scrollToEnd);
-watch(() => store.currentId, () => { editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; moreActions.value = false; saved.value = false; });
-watch(() => store.subject?.id, () => { endFocus(); summaryOpen.value = false; moreActions.value = false; processOpen.value = false; syncPreview(); });
+function onThreadScroll(event: { detail: { scrollTop: number; scrollHeight: number } }): void {
+  const query = uni.createSelectorQuery().in(instance?.proxy);
+  query.select('.thread-scroll').boundingClientRect((rect) => {
+    if (!rect || Array.isArray(rect) || rect.height === undefined) return;
+    followOutput.value = event.detail.scrollTop + rect.height >= event.detail.scrollHeight - 70;
+    if (followOutput.value) newOutput.value = false;
+  }).exec();
+}
+watch(() => store.messages.map((message) => message.text).join('') + store.materialTasks.map((t) => t.id + t.status + t.step).join('') + store.subject?.version + Boolean(store.subject?.confirmedAt), () => {
+  if (followOutput.value) scrollToEnd(); else newOutput.value = true;
+});
+watch(() => store.currentId, () => { followOutput.value = true; newOutput.value = false; editorOpen.value = false; editorError.value = ''; summaryOpen.value = false; saved.value = false; });
+watch(() => store.subject?.id, () => { endFocus(); summaryOpen.value = false; processOpen.value = false; syncPreview(); });
 watch(() => store.generating, (value) => { if (!value) syncPreview(); });
 watch(draft, (value) => {
   if (!UI_MOCK || switchingTopic.value || !activeTopic.value) return;
@@ -103,7 +124,8 @@ async function onSend(): Promise<void> {
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   rememberChat();
-  await store.send(text, text === preparedQuestion ? preparedAction : undefined, 'question', undefined, undefined, lessonFocus.value ?? undefined);
+  scrollToEnd();
+  await store.send(text, text === preparedQuestion ? preparedAction : undefined, 'question', undefined, undefined, exerciseFocus.value ?? lessonFocus.value ?? undefined);
   if (!store.error) { draft.value = ''; preparedAction = undefined; preparedQuestion = ''; }
 }
 async function onConfirm(): Promise<void> {
@@ -119,7 +141,13 @@ async function onStop(): Promise<void> {
   catch (err) { store.error = err instanceof Error ? err.message : '停止失败'; }
 }
 function newChat(): void { menuOpen.value = false; uni.switchTab({ url: '/pages/home/index', success: () => uni.$emit('luma:new-chat') }); }
-function endFocus(): void { lessonFocus.value = null; preparedAction = undefined; preparedQuestion = ''; }
+function endFocus(): void { exerciseFocus.value = null; lessonFocus.value = null; preparedAction = undefined; preparedQuestion = ''; }
+function returnToPractice(): void {
+  const focus = exerciseFocus.value; if (!focus) return;
+  const pages = getCurrentPages();
+  if (pages[pages.length - 2]?.route === 'pages/practice/index') uni.navigateBack();
+  else uni.redirectTo({ url: `/pages/practice/index?artifactId=${encodeURIComponent(focus.artifactId)}&attemptId=${encodeURIComponent(focus.attemptId)}` });
+}
 function returnToLesson(): void {
   if (!lessonFocus.value) return;
   const target = lesson.value?.id ?? lessonFocus.value.artifactId;
@@ -156,16 +184,14 @@ async function choosePart(index: number): Promise<void> {
   try { await store.editSubject({ content: subject.content, tags: subject.tags, subquestions: subquestions.value, subquestionIndex: index, expectedRevision: subject.version }); }
   catch (err) { store.error = err instanceof Error ? err.message : '小问切换失败，请重试'; }
 }
-function recommend(): void {
-  if (recommended.value !== 'thinking') { openMaterial(recommended.value); return; }
-  focused.value = false;
-  void nextTick(() => { focused.value = true; });
+function openTask(task: MaterialTaskView): void {
+  if (!task.artifactId || task.status !== 'succeeded') return;
+  uni.navigateTo({ url: `/pages/${task.type === 'exercise_set' ? 'practice' : 'reader'}/index?artifactId=${encodeURIComponent(task.artifactId)}&conversationId=${encodeURIComponent(store.currentId ?? '')}` });
 }
-function action(text: string, kind: TurnRequest['action']): void {
-  if (!ready.value) return;
-  if (kind === 'show_solution') {
-    uni.showModal({ title: '查看完整解析', content: '建议先自己推一遍。也可以现在查看，之后再独立试一试。', confirmText: '查看解析', cancelText: '继续思考', confirmColor: '#4f6652', success: (res) => { if (res.confirm) void store.send(text, kind, 'question', undefined, undefined, lessonFocus.value ?? undefined); } });
-  } else void store.send(text, kind, 'question', undefined, undefined, lessonFocus.value ?? undefined);
+async function retryTask(task: MaterialTaskView): Promise<void> {
+  if (!task.jobId) return;
+  try { await store.retryMaterial(task.jobId); }
+  catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '重试未能开始', icon: 'none' }); }
 }
 function rememberChat(): void { if (UI_MOCK && store.currentId) { try { rememberPreviewLocation(activeTopic.value?.id ?? store.currentId, 'chat'); } catch { /* 不阻断学习。 */ } } }
 function upload(): void {
@@ -182,16 +208,6 @@ async function save(): Promise<void> {
   catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存失败，请重试', icon: 'none' }); }
   finally { saving.value = false; }
 }
-function openMaterial(type: 'lesson' | 'practice'): void {
-  const artifact = type === 'lesson' ? lesson.value : practice.value;
-  if (artifact && UI_MOCK && (store.currentId === 'preview-quadratic' || activeTopic.value?.exampleKey)) {
-    uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?preview=1&scope=${encodeURIComponent(activeTopic.value?.id ?? store.currentId!)}` }); return;
-  }
-  if (artifact) uni.navigateTo({ url: `/pages/${type === 'lesson' ? 'reader' : 'practice'}/index?artifactId=${artifact.id}&conversationId=${store.currentId}` });
-  else if (type === 'lesson' && store.lessonJob) uni.navigateTo({ url: `/pages/reader/index?jobId=${store.lessonJob.id}&conversationId=${store.currentId}` });
-  else action(type === 'lesson' ? '请生成图文讲解' : '请出同知识点练习', type === 'lesson' ? 'generate_lesson' : 'generate_practice');
-}
-
 function syncPreview(): void {
   if (!UI_MOCK || previewStudy.value || !store.currentId) { previewMeta.value = null; return; }
   const root = previewRoot(store.currentId);
@@ -260,7 +276,8 @@ function simulate(): void {
   <view v-else class="chat-page" :style="{ height: Math.max(250, pageHeight - keyboardHeight) + 'px' }">
     <LearningHeader :title="store.title || '新建对话'" @menu="menuOpen = true" @new="newChat" />
     <PreviewNotice />
-    <view v-if="lessonFocus" class="focus-note"><text>正在讨论 · {{ lessonFocus.heading }}</text><view><button @tap="returnToLesson">返回讲解</button><button @tap="endFocus">结束追问</button></view></view>
+    <view v-if="exerciseFocus" class="focus-note"><text>正在讨论 · {{ exerciseFocus.heading }}</text><view><button @tap="returnToPractice">返回练习</button><button @tap="endFocus">结束追问</button></view></view>
+    <view v-else-if="lessonFocus" class="focus-note"><text>正在讨论 · {{ lessonFocus.heading }}</text><view><button @tap="returnToLesson">返回讲解</button><button @tap="endFocus">结束追问</button></view></view>
     <TopicNavigator v-if="topicNavigation && (!previewMeta || previewMeta.recognition === 'ready')" :root="topicNavigation" :disabled="store.generating || store.waitingJob || switchingTopic || store.editingSubject || busy" @select="selectTopic" @all="learnAll" />
     <view class="task-toolbar">
       <text class="stage">{{ previewMeta && previewMeta.recognition !== 'ready' ? '先读取图片，再核对内容' : status }}</text>
@@ -269,7 +286,7 @@ function simulate(): void {
       </view>
     </view>
     <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>
-    <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="true">
+    <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="onThreadScroll">
       <view class="thread">
         <view v-if="previewMeta" class="source-attachments">
           <view class="source-heading"><text>本次添加 · {{ previewMeta.attachments?.length }} 张图片</text><button v-if="previewMeta.recognition === 'ready'" @tap="previewAttachment(previewMeta.attachments ?? [], 0)">查看原图</button><button @tap="simulate">模拟异常</button></view>
@@ -288,7 +305,10 @@ function simulate(): void {
           <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
         </view>
         <view v-if="!store.messages.length && !store.subject && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
-        <MessageBubble v-for="msg in store.messages" :key="msg.id" :role="msg.role" :text="msg.text" :reply="msg.reply" :incomplete="msg.incomplete" />
+        <view v-for="msg in store.messages" :key="msg.id">
+          <MessageBubble :role="msg.role" :text="msg.text" :reply="msg.reply" :incomplete="msg.incomplete" :streaming="store.generating && msg.runId === store.currentRunId" />
+          <MaterialTaskCard v-for="task in cardsByMessage[msg.id] || []" :key="task.id" :task="task" :busy="store.generating || store.waitingJob" :retrying="task.jobId === store.retryingJobId" :can-stop="!task.historical && store.waitingJob" @open="openTask(task)" @retry="retryTask(task)" @stop="onStop" />
+        </view>
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
           <text class="subject-text" selectable>{{ store.subject.content.text }}</text>
@@ -297,21 +317,16 @@ function simulate(): void {
           <text class="check-note">{{ store.subject.version > 1 ? '后续讲解与练习将依据修改后的内容。' : isKnowledge ? '确认要学习的内容，不清楚的范围可以先补充。' : '请检查题干、公式和已知条件。' }}</text>
           <view class="confirmation-actions"><button class="edit-action" :disabled="busy || store.generating || store.editingSubject" @tap="edit">{{ isKnowledge ? '补充内容' : '修改题目' }}</button><button class="confirm-action" :disabled="busy || store.generating || store.editingSubject" @tap="onConfirm">{{ busy ? '正在确认…' : confirmLabel }}</button></view>
         </view>
-        <view v-if="ready && lastReply && !store.error" class="follow-actions">
-          <button class="recommend-action" @tap="recommend"><text>{{ recommendLabel }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button>
-          <view class="secondary-actions"><button @tap="action('没思路，请给我一个方向提示', 'hint')">给点提示</button><button @tap="action('我想查看完整解析', 'show_solution')">看完整解析</button><button :aria-expanded="moreActions" @tap="moreActions = !moreActions">{{ moreActions ? '收起' : '更多学习方式' }}</button></view>
-          <view v-if="moreActions" class="material-actions"><button v-if="recommended !== 'lesson'" @tap="openMaterial('lesson')">{{ lesson ? '阅读图文讲解' : store.lessonJob ? '查看讲解进度' : '生成图文讲解' }}</button><button v-if="recommended !== 'practice'" :disabled="store.waitingJob && !practice" @tap="openMaterial('practice')">{{ practice ? '开始配套练习' : '练同类题' }}</button></view>
-        </view>
-        <view v-if="store.generating" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
-        <view v-if="store.waitingJob" class="progress-state"><view class="pulse" /><text>学习材料正在生成。</text><button v-if="store.lessonJob" class="retry-link" @tap="openMaterial('lesson')">查看讲解进度</button></view>
-        <view v-if="!store.waitingJob && !lesson && store.lessonJob?.status === 'failed'" class="progress-state"><text>图文讲解暂未完成</text><button class="retry-link" @tap="openMaterial('lesson')">查看草稿与重试</button></view>
+        <view v-if="store.generating && !streaming" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
+        <view v-if="store.waitingJob && !currentTaskPending" class="progress-state"><view class="pulse" /><text>Luma 正在整理回复…</text></view>
         <view v-if="store.error" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text><button v-if="store.retryRunId && !store.generating && !store.waitingJob" class="retry-link" @tap="store.retry">重新生成这次回复</button></view>
-        <button v-if="store.generating || store.waitingJob" class="stop" @tap="onStop">停止本次生成</button>
+        <button v-if="store.generating || (store.waitingJob && !currentTaskPending)" class="stop" @tap="onStop">停止本次生成</button>
         <view v-if="previewMeta?.recognition === 'ready' && ready && nextTopic" class="next-topic"><text>{{ previewMeta.learnAll ? '逐项学习已安排，按自己的节奏继续' : '当前内容先学到这里，也可以继续追问' }}</text><button :disabled="store.generating" @tap="selectTopic(nextTopic.id)">看看下一{{ unit }}<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
         <view id="thread-end" class="thread-end" />
       </view>
     </scroll-view>
     <view v-if="!previewMeta || previewMeta.recognition === 'ready'" class="input-dock">
+      <button v-if="newOutput" class="new-output" @tap="scrollToEnd">查看新回复 ↓</button>
       <view class="composer">
         <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
         <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
@@ -360,16 +375,9 @@ function simulate(): void {
 .part-options button.selected { color:#4f6652; }
 .part-index { flex-shrink:0; }
 .part-options button text:last-child { min-width:0; overflow-wrap:anywhere; }
-.follow-actions { margin:0 0 30rpx 68rpx; }
-.chat-page .recommend-action { display:flex; align-items:center; justify-content:space-between; gap:20rpx; width:100%; padding:22rpx 0; border-top:1rpx solid #e1e7d8; text-align:left; font-size:26rpx; color:#516b48; }
 .focus-note { padding:20rpx 32rpx; border-bottom:1rpx solid #e1e7d8; background:#f0f3e9; font-size:23rpx; color:#6b805f; flex-shrink:0; }
 .focus-note>view { display:flex; gap:32rpx; }
 .focus-note button { font-size:22rpx; color:#78916a; min-height:64rpx; }
-.secondary-actions,.material-actions { display:flex; flex-wrap:wrap; gap:8rpx 26rpx; }
-.secondary-actions button,.material-actions button { min-height:72rpx; font-size:21rpx; color:#8a987e; }
-.material-actions { border-top:1rpx solid #e8ecdf; }
-.material-actions button { color:#718661; }
-.material-actions button[disabled] { opacity:.45; }
 .progress-state { display:flex; align-items:center; gap:14rpx; padding:20rpx 0 24rpx 68rpx; color:#94a086; font-size:23rpx; }
 .pulse { width:10rpx; height:10rpx; background:#91a27c; border-radius:50%; }
 .error { margin:12rpx 0 16rpx 68rpx; padding:22rpx; background:#f4eee5; border-radius:16rpx; color:#a47d61; font-size:24rpx; }
@@ -378,6 +386,7 @@ function simulate(): void {
 .chat-page .stop { color:#a08464; font-size:22rpx; padding:16rpx; }
 .thread-end { height:20rpx; }
 .input-dock { padding:14rpx 24rpx max(24rpx,env(safe-area-inset-bottom)); flex-shrink:0; background:#f8f7f2; }
+.chat-page .new-output { margin:0 auto 12rpx; width:fit-content; padding:10rpx 20rpx; color:#718861; font-size:22rpx; }
 .composer { padding:22rpx 26rpx 18rpx; border:1rpx solid #dde5d1; border-radius:38rpx; background:#fffefa; }
 .input { box-sizing:border-box; width:100%; height:76rpx; max-height:180rpx; font-size:29rpx; line-height:1.75; color:#405443; }
 .composer-bar { display:flex; align-items:center; justify-content:space-between; margin-top:8rpx; }

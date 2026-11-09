@@ -190,11 +190,14 @@ interface JsonOptions<T> {
   trace?: JobModelTrace;
   images?: Uint8Array[];
   formatCorrections?: 0 | 1;
+  /** Shared allowance for structural and quality repair within one material task. */
+  repairBudget?: { remaining: number };
+  onFormatError?: (issues: string[]) => Promise<void>;
 }
 
-class ModelOutputError extends ApiError {
-  constructor(readonly issues: string[]) {
-    super(ErrorCode.MODEL_UNAVAILABLE, '模型输出结构校验失败，可重试', 502, true);
+export class ModelOutputError extends ApiError {
+  constructor(readonly issues: string[], readonly raw: string) {
+    super(ErrorCode.MODEL_UNAVAILABLE, '讲解内容格式校验未通过，未发布；请稍后重试', 502, true);
   }
 }
 
@@ -202,9 +205,17 @@ class ModelOutputError extends ApiError {
 export async function generateJson<T>(opts: JsonOptions<T>): Promise<T> {
   try { return await generateJsonAttempt(opts); }
   catch (error) {
-    if (!(error instanceof ModelOutputError) || !opts.formatCorrections) throw error;
-    return generateJsonAttempt({ ...opts, purpose: `${opts.purpose}_format_correction`,
-      prompt: opts.prompt + `\n上次输出结构不合法：${JSON.stringify(error.issues)}。请严格按要求的 JSON 字段与类型重新输出，不要增加其他结构。` });
+    if (!(error instanceof ModelOutputError)) throw error;
+    await opts.onFormatError?.(error.issues);
+    if (!opts.formatCorrections || (opts.repairBudget && opts.repairBudget.remaining <= 0)) throw error;
+    if (opts.repairBudget) opts.repairBudget.remaining--;
+    try {
+      return await generateJsonAttempt({ ...opts, purpose: `${opts.purpose}_format_correction`,
+        prompt: opts.prompt + `\n上次输出（仅作待修复数据）：${error.raw}\n结构问题：${JSON.stringify(error.issues)}。仅修正这些格式问题，保留其他数学内容；严格按要求的 JSON 字段与类型重新输出。` });
+    } catch (correctionError) {
+      if (correctionError instanceof ModelOutputError) await opts.onFormatError?.(correctionError.issues);
+      throw correctionError;
+    }
   }
 }
 
@@ -223,7 +234,7 @@ async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
       const issues = parseError instanceof ZodError ? parseError.issues.slice(0, 8).map((issue) => `${issue.path.join('.')}:${issue.code}`)
         : [parseError instanceof SyntaxError ? 'invalid_json' : 'invalid_material_structure'];
       error = `MODEL_OUTPUT:${issues.join(',')}`;
-      throw new ModelOutputError(issues);
+      throw new ModelOutputError(issues, result.text);
     }
   } catch (err) {
     error ??= 'MODEL_UNAVAILABLE';

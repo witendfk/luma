@@ -5,7 +5,7 @@ import { invalidFormat, notFound, revisionConflict } from '../lib/errors';
 /**
  * 练习闭环（FR-06/07/08 / 设计文档 §3.3）：真实实现。
  * intro→doing 由 start 完成；submit 进入 review 并投影参考解析；complete 校验自评齐全进入 summary。
- * 重做创建新轮次（沿用原题或仅需巩固题），历史轮次只读。
+ * 普通开始复用最近轮次；完成轮次只读。显式重做命令另行接入。
  */
 
 type LoadedAttempt = Prisma.PracticeAttemptGetPayload<{
@@ -52,6 +52,7 @@ function buildView(attempt: LoadedAttempt, includeAnswers: boolean) {
   return {
     id: attempt.id,
     artifactId: attempt.artifactId,
+    conversationId: attempt.artifact.conversationId,
     subjectId: attempt.artifact.subjectRevision.subjectId,
     subjectRevisionId: attempt.artifact.subjectRevisionId,
     stage: attempt.stage,
@@ -70,31 +71,33 @@ export const practiceService = {
     return db.practiceAttempt.findMany({ where: { userId, artifactId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: { id: true, artifactId: true, stage: true, currentExerciseId: true, createdAt: true, submittedAt: true, completedAt: true } });
   },
-  /** 开始或重做（FR-07：重做创建新轮次，沿用原题或所选需巩固题） */
+  /** 普通开始是ensure操作：并发点击、重进与网络重试均复用最近轮次。 */
   async start(userId: string, input: { artifactId: string; exerciseIds?: string[] }) {
-    const artifact = await db.artifact.findFirst({
-      where: { id: input.artifactId, conversation: { userId }, type: 'exercise_set' },
-      include: { exercises: { orderBy: { order: 'asc' } } },
+    return db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Artifact" WHERE id = ${input.artifactId} FOR UPDATE`;
+      const artifact = await tx.artifact.findFirst({ where: { id: input.artifactId, conversation: { userId }, type: 'exercise_set', publishStatus: 'published' },
+        include: { exercises: { orderBy: { order: 'asc' } } } });
+      if (!artifact) throw notFound('已发布题组');
+      const selected = input.exerciseIds ? artifact.exercises.filter((ex) => input.exerciseIds!.includes(ex.id)) : artifact.exercises;
+      if (!selected.length || (input.exerciseIds && (new Set(input.exerciseIds).size !== input.exerciseIds.length || selected.length !== input.exerciseIds.length))) throw invalidFormat('练习题目范围无效');
+      const latest = await tx.practiceAttempt.findFirst({ where: { artifactId: artifact.id, userId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (latest && input.exerciseIds && JSON.stringify(latest.exerciseIds) !== JSON.stringify(selected.map((e) => e.id))) throw invalidFormat('继续练习不能修改题目范围');
+      const attempt = latest ?? await tx.practiceAttempt.create({ data: { artifactId: artifact.id, userId,
+        exerciseIds: selected.map((ex) => ex.id), stage: 'doing', currentExerciseId: selected[0]!.id } });
+      const loaded = await loadAttempt(userId, attempt.id, tx);
+      return buildView(loaded, ['review', 'summary'].includes(loaded.stage));
     });
-    if (!artifact) throw notFound('题组');
-    if (artifact.publishStatus !== 'published') throw invalidFormat('题组尚未发布，不能开始作答');
+  },
 
-    const selected = input.exerciseIds
-      ? artifact.exercises.filter((ex) => input.exerciseIds!.includes(ex.id))
-      : artifact.exercises;
-    if (selected.length === 0) throw invalidFormat('没有可作答的题目');
-
-    const attempt = await db.practiceAttempt.create({
-      data: {
-        artifactId: artifact.id,
-        userId,
-        exerciseIds: selected.map((ex) => ex.id),
-        stage: 'doing',
-        currentExerciseId: selected[0]?.id ?? null,
-      },
+  async position(userId: string, attemptId: string, exerciseId: string) {
+    return db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${attemptId} FOR UPDATE`;
+      const attempt = await loadAttempt(userId, attemptId, tx);
+      if (!(attempt.exerciseIds as string[]).includes(exerciseId)) throw invalidFormat('该题不在本轮练习中');
+      // 阅读历史不改变已经完成的作答轮次。
+      if (attempt.stage !== 'summary') await tx.practiceAttempt.update({ where: { id: attemptId }, data: { currentExerciseId: exerciseId } });
+      return { currentExerciseId: exerciseId };
     });
-    const loaded = await loadAttempt(userId, attempt.id);
-    return buildView(loaded, false);
   },
 
   async get(userId: string, attemptId: string) {
@@ -136,7 +139,12 @@ export const practiceService = {
         where: { attemptId_exerciseId: { attemptId, exerciseId } },
       });
       if (existing && input.draftVersion <= existing.draftVersion) {
-        throw revisionConflict('草稿已在其他设备更新，请刷新后重试');
+        // Response loss may retry the exact same saved version. Never accept a different stale payload.
+        const equal = input.draftVersion === existing.draftVersion &&
+          Object.entries(input).every(([key, value]) => key === 'draftVersion' || value === undefined ||
+            JSON.stringify(key === 'solutionViewedAt' ? existing.solutionViewedAt?.toISOString() : (existing as unknown as Record<string, unknown>)[key]) === JSON.stringify(value));
+        if (equal) return { saved: true, draftVersion: existing.draftVersion };
+        throw revisionConflict('草稿已在其他设备更新，本机内容已保留，请重新打开核对');
       }
 
       const data = {
@@ -170,6 +178,7 @@ export const practiceService = {
     return db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${attemptId} FOR UPDATE`;
       const attempt = await loadAttempt(userId, attemptId, tx);
+      if (['review', 'summary'].includes(attempt.stage)) return buildView(attempt, true);
       if (attempt.stage !== 'doing') throw invalidFormat('当前轮次不在作答阶段');
       await tx.practiceAttempt.update({
         where: { id: attemptId },
@@ -185,7 +194,7 @@ export const practiceService = {
     return db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${attemptId} FOR UPDATE`;
       const attempt = await loadAttempt(userId, attemptId, tx);
-      if (attempt.stage !== 'review') throw invalidFormat('请先提交作答再完成自评');
+      if (!['review', 'summary'].includes(attempt.stage)) throw invalidFormat('请先提交作答再完成自评');
 
       const selectedIds = attempt.exerciseIds as string[];
       const answers = attempt.answers;
@@ -197,7 +206,7 @@ export const practiceService = {
         throw invalidFormat(`还有 ${missing.length} 道题未完成自评`);
       }
 
-      await tx.practiceAttempt.update({
+      if (attempt.stage !== 'summary') await tx.practiceAttempt.update({
         where: { id: attemptId },
         data: { stage: 'summary', completedAt: new Date() },
       });
