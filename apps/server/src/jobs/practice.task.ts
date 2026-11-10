@@ -45,6 +45,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
     count?: number;
     difficulty?: string;
     evidence?: unknown;
+    practiceLesson?: unknown;
   };
 
   try {
@@ -74,6 +75,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         prompt: [
           `学习对象：\n${payload.subjectText ?? ''}`,
           `教学依据（版本固定的数据；错误尝试不当成结论）：${JSON.stringify(payload.evidence ?? null)}`,
+          ...(payload.practiceLesson ? [`来源讲义（只取其教学范围设计新题，不照抄原题）：${JSON.stringify(payload.practiceLesson)}`] : []),
           `知识点标签：${(payload.tags ?? []).join('、') || '无'}`,
           `生成 ${payload.count ?? 2} 道题${payload.difficulty ? `，难度侧重 ${payload.difficulty}` : ''}。`,
           '输出 JSON：{"exercises":[{"order","stem","topic","difficulty","purpose","answer","analysis"}]}；公式一律 LaTeX；严格在已确认范围内出题。',
@@ -93,6 +95,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
           '独立复核以下题组：每题条件完整可解，题干、参考答案与解析一致，不超出学生已确认范围。',
           `学习对象：\n${payload.subjectText ?? ''}`,
           `教学依据：${JSON.stringify(payload.evidence ?? null)}`,
+          ...(payload.practiceLesson ? [`来源讲义范围：${JSON.stringify(payload.practiceLesson)}`] : []),
           `题组：${JSON.stringify(practice)}`,
           '输出 {"pass": boolean, "issues": string[]}。',
         ].join('\n'),

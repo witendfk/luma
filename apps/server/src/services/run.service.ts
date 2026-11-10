@@ -16,6 +16,7 @@ import { conversationService } from './conversation.service';
 import { resolveSubject, latestRevision } from './subject-context';
 import { validateFocus } from './focus';
 import { createConversationTitle } from '../lib/conversation-title';
+import { practiceSource } from './lesson-practice';
 
 /**
  * 运行服务（设计文档 §4.5 / §4.9 / §10）：
@@ -70,6 +71,10 @@ export const runService = {
       }
       if (subject) await validateFocus(tx, userId, conversationId, subject.id, input);
       else if (input.artifactId || input.attemptId || input.exerciseId || input.sectionId) throw invalidFormat('请先提供学习内容');
+      if (input.practiceMode) {
+        if (input.action !== 'generate_practice' || !input.artifactId || !input.artifactVersion || input.sectionId || input.attemptId || input.exerciseId) throw invalidFormat('配套练习入口需要完整讲义来源');
+        await practiceSource(tx, userId, input.artifactId, input.artifactVersion);
+      }
       const focus = { artifactId: input.artifactId, artifactVersion: input.artifactVersion, sectionId: input.sectionId, attemptId: input.attemptId, exerciseId: input.exerciseId };
       // The driver loads raw history and its rolling checkpoint outside this short write transaction.
       // Never silently drop the oldest messages before they can be summarized.
@@ -115,6 +120,7 @@ export const runService = {
         historyCount: history.length,
         kind: input.action === 'show_solution' ? 'solution' : goals.length > 0 ? 'material' : 'chat',
         action: input.action,
+        practiceMode: input.practiceMode,
         focus: {
           artifactId: input.artifactId,
           artifactVersion: input.artifactVersion,

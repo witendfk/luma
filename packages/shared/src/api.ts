@@ -25,10 +25,16 @@ export const TurnRequest = z.object({
   sectionId: z.string().optional(),
   attemptId: z.string().optional(),
   exerciseId: z.string().optional(),
+  /** Reader entry means open/ensure its default set; free requests keep the new-generation semantics. */
+  practiceMode: z.literal('ensure').optional(),
   /** 显式重试来源运行（设计文档 §10：显式重试携带新 requestId 及 retryOfRunId） */
   retryOfRunId: z.string().optional(),
 });
 export type TurnRequest = z.infer<typeof TurnRequest>;
+
+export type LessonPracticeView = { status: 'none' } | {
+  status: 'queued' | 'running' | 'succeeded' | 'failed'; jobId: string; artifactId: string | null;
+};
 
 /** 分页查询通用参数 */
 export const PageQuery = z.object({

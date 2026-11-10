@@ -22,6 +22,7 @@ import StudyDiscussion from '@/components/StudyDiscussion.vue';
 import type { SubjectEdit } from '@/api/conversations';
 import { saveCollection } from '@/api/collections';
 import { request } from '@/utils/request';
+import { getLessonPractice } from '@/api/practice';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
@@ -43,6 +44,8 @@ const draft = ref('');
 const exerciseFocus = ref<{ artifactId: string; artifactVersion: number; attemptId: string; exerciseId: string; heading: string } | null>(null);
 const lessonFocus = ref<{ artifactId: string; artifactVersion: number; sectionId?: string; heading: string } | null>(null);
 let preparedAction: TurnRequest['action'], preparedQuestion = '';
+let preparedPracticeMode: 'ensure' | undefined;
+const targetJobId = ref(''), resolvingPractice = ref(false);
 const busy = ref(false);
 const menuOpen = ref(false);
 const accountOpen = ref(false);
@@ -63,6 +66,14 @@ const status = computed(() => !store.subject?.confirmedAt ? (isKnowledge.value ?
 const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating && !store.waitingJob && !store.confirmingSubject && !store.editingSubject);
 const lesson = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'lesson' && item.publishStatus === 'published'));
 const cardsByMessage = computed(() => materialTaskAnchors(store.messages, store.materialTasks));
+const targetTask = computed(() => store.materialTasks.find((task) => task.jobId === targetJobId.value));
+const unanchoredTarget = computed(() => targetTask.value && !Object.values(cardsByMessage.value).some((tasks) => tasks.some((task) => task.id === targetTask.value!.id)) ? targetTask.value : null);
+function focusMaterial(): void {
+  if (!targetTask.value) return;
+  followOutput.value = false; newOutput.value = false; scrollTarget.value = '';
+  void nextTick(() => { if (targetTask.value) scrollTarget.value = `material-${targetTask.value.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`; });
+}
+watch(() => targetTask.value?.id + ':' + targetTask.value?.status, () => { if (targetJobId.value) focusMaterial(); });
 const currentTaskPending = computed(() => store.materialTasks.some((t) => !t.historical && ['queued', 'running'].includes(t.status)));
 const streaming = computed(() => store.generating && store.messages.some((m) => m.runId === store.currentRunId && m.role === 'assistant' && m.incomplete && m.text));
 const subquestions = computed(() => store.subject?.subquestions ?? []);
@@ -74,6 +85,7 @@ onLoad(async (query) => {
   try {
     if (query?.id) {
       await openLearning(query.id, query.topic);
+      if (query.materialJobId) { targetJobId.value = query.materialJobId; focusMaterial(); }
       if (query.attemptId && query.exerciseId && query.artifactId) {
         const attempt = await request<import('@luma/shared').AttemptView>({ method: 'GET', path: `/api/practice-attempts/${encodeURIComponent(query.attemptId)}` });
         if (attempt.artifactId !== query.artifactId || attempt.conversationId !== query.id) throw new Error('练习来源不匹配');
@@ -91,6 +103,7 @@ onLoad(async (query) => {
       }
       if (query.question) { try { draft.value = decodeURIComponent(query.question); } catch { draft.value = query.question; } }
       if (query.action === 'generate_lesson' || query.action === 'generate_practice') { preparedAction = query.action; preparedQuestion = draft.value; }
+      if (query.practiceMode === 'ensure' && preparedAction === 'generate_practice' && lessonFocus.value && !lessonFocus.value.sectionId) preparedPracticeMode = 'ensure';
     }
     else { store.reset(); if (query?.text) await store.send(decodeURIComponent(query.text), undefined, query.type === 'knowledge' ? 'knowledge' : 'question', query.intent === 'practice' ? 'practice' : query.intent === 'knowledge' ? 'knowledge' : 'question'); }
   } catch (err) { store.error = err instanceof Error ? err.message : '对话加载失败'; }
@@ -120,13 +133,29 @@ watch(draft, (value) => {
 }, { flush: 'sync' });
 async function onSend(): Promise<void> {
   const text = draft.value.trim();
-  if (!text || store.generating || store.editingSubject || store.confirmingSubject) return;
+  if (!text || store.generating || store.editingSubject || store.confirmingSubject || resolvingPractice.value) return;
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   rememberChat();
   scrollToEnd();
-  await store.send(text, text === preparedQuestion ? preparedAction : undefined, 'question', undefined, undefined, exerciseFocus.value ?? lessonFocus.value ?? undefined);
-  if (!store.error) { draft.value = ''; preparedAction = undefined; preparedQuestion = ''; }
+  const ensure = text === preparedQuestion && preparedPracticeMode === 'ensure' && lessonFocus.value;
+  if (ensure) {
+    resolvingPractice.value = true; const session = sessionVersion(), source = lessonFocus.value!;
+    try {
+      const found = await getLessonPractice(source.artifactId, source.artifactVersion);
+      if (!pageActive || session !== sessionVersion()) return;
+      if (found.status !== 'none') {
+        draft.value = ''; endFocus();
+        if (found.status === 'succeeded' && found.artifactId) uni.navigateTo({ url: `/pages/practice/index?artifactId=${encodeURIComponent(found.artifactId)}` });
+        else { await store.refresh(); targetJobId.value = found.jobId; focusMaterial(); }
+        return;
+      }
+    } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '练习状态暂时不可用，请重试', icon: 'none' }); return; }
+    finally { resolvingPractice.value = false; }
+  }
+  targetJobId.value = '';
+  await store.send(text, text === preparedQuestion ? preparedAction : undefined, 'question', undefined, undefined, { ...(exerciseFocus.value ?? lessonFocus.value ?? {}), ...(ensure ? { practiceMode: 'ensure' as const } : {}) });
+  if (!store.error) { draft.value = ''; preparedAction = undefined; preparedQuestion = ''; preparedPracticeMode = undefined; }
 }
 async function onConfirm(): Promise<void> {
   if (busy.value) return;
@@ -141,7 +170,7 @@ async function onStop(): Promise<void> {
   catch (err) { store.error = err instanceof Error ? err.message : '停止失败'; }
 }
 function newChat(): void { menuOpen.value = false; uni.switchTab({ url: '/pages/home/index', success: () => uni.$emit('luma:new-chat') }); }
-function endFocus(): void { exerciseFocus.value = null; lessonFocus.value = null; preparedAction = undefined; preparedQuestion = ''; }
+function endFocus(): void { exerciseFocus.value = null; lessonFocus.value = null; preparedAction = undefined; preparedQuestion = ''; preparedPracticeMode = undefined; }
 function returnToPractice(): void {
   const focus = exerciseFocus.value; if (!focus) return;
   const pages = getCurrentPages();
@@ -307,8 +336,9 @@ function simulate(): void {
         <view v-if="!store.messages.length && !store.subject && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
         <view v-for="msg in store.messages" :key="msg.id">
           <MessageBubble :role="msg.role" :text="msg.text" :reply="msg.reply" :incomplete="msg.incomplete" :streaming="store.generating && msg.runId === store.currentRunId" />
-          <MaterialTaskCard v-for="task in cardsByMessage[msg.id] || []" :key="task.id" :task="task" :busy="store.generating || store.waitingJob" :retrying="task.jobId === store.retryingJobId" :can-stop="!task.historical && store.waitingJob" @open="openTask(task)" @retry="retryTask(task)" @stop="onStop" />
+          <view v-for="task in cardsByMessage[msg.id] || []" :id="`material-${task.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`" :key="task.id"><MaterialTaskCard :task="task" :busy="store.generating || store.waitingJob" :retrying="task.jobId === store.retryingJobId" :can-stop="!task.historical && store.waitingJob" @open="openTask(task)" @retry="retryTask(task)" @stop="onStop" /></view>
         </view>
+        <view v-if="unanchoredTarget" :id="`material-${unanchoredTarget.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`"><MaterialTaskCard :task="unanchoredTarget" :busy="store.generating || store.waitingJob" :retrying="unanchoredTarget.jobId === store.retryingJobId" @open="openTask(unanchoredTarget)" @retry="retryTask(unanchoredTarget)" /></view>
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
           <text class="subject-text" selectable>{{ store.subject.content.text }}</text>

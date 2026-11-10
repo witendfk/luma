@@ -148,7 +148,7 @@ export const useConversationStore = defineStore('conversation', () => {
     }, 1500);
   }
 
-  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId' | 'attemptId' | 'exerciseId'>): Promise<void> {
+  async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId' | 'attemptId' | 'exerciseId' | 'practiceMode'>): Promise<void> {
     if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;

@@ -8,6 +8,7 @@ async function main() {
   const { db } = await import('../src/lib/db');
   const { conversationService } = await import('../src/services/conversation.service');
   const { practiceService: practice } = await import('../src/services/practice.service');
+  const { ensureLessonPractice, practiceSource, getLessonPractice } = await import('../src/services/lesson-practice');
   const user = await db.user.create({ data: { openid: `dev:practice-check-${randomUUID()}` } });
   try {
     const convo = await conversationService.create(user.id, { initialText: '隔离练习检查', subjectType: 'knowledge' });
@@ -16,6 +17,35 @@ async function main() {
       type: 'exercise_set', version: 1, publishStatus: 'published', content: {}, exercises: { create: [1, 2].map((i) => ({
         order: i, stem: `${i}+1=?`, topic: '隔离检查', difficulty: 'basic', purpose: '验证协议', answer: String(i + 1), analysis: '加一',
       })) } }, include: { exercises: { orderBy: { order: 'asc' } } } });
+    const lesson = await db.artifact.create({ data: { conversationId: convo.id, subjectRevisionId: detail.subject!.id,
+      type: 'lesson', version: 1, publishStatus: 'published', content: { lesson: { title: '隔离来源讲义' } } } });
+    const source = await practiceSource(db, user.id, lesson.id, 1);
+    assert.deepEqual(await getLessonPractice(user.id, lesson.id, 1), { status: 'none' });
+    await assert.rejects(getLessonPractice('not-owner', lesson.id, 1));
+    await assert.rejects(getLessonPractice(user.id, lesson.id, 2));
+    const ensure = () => db.$transaction((tx) => ensureLessonPractice(tx, convo.id, source, () => tx.generationJob.create({ data: {
+      type: 'exercise_set', conversationId: convo.id, subjectId: detail.subject!.subjectId, subjectRevisionId: detail.subject!.id,
+      status: 'queued', idempotencyKey: `isolated-practice-${randomUUID()}`, payload: { practiceSource: { ...source } },
+      // Block the real worker from claiming any isolated fixture. No model is invoked by this script.
+      leasedUntil: new Date(Date.now() + 3600000),
+    } })));
+    const [left, right] = await Promise.all([ensure(), ensure()]);
+    assert.equal(left.job.id, right.job.id);
+    assert.equal(await db.generationJob.count({ where: { conversationId: convo.id } }), 1);
+    assert.equal((await getLessonPractice(user.id, lesson.id, 1)).status, 'queued');
+    await db.generationJob.update({ where: { id: left.job.id }, data: { status: 'failed', error: { message: '隔离失败', retryable: true } } });
+    assert.equal((await ensure()).job.id, left.job.id, '失败仅复用原任务，不自动重试');
+    const retry = await db.generationJob.create({ data: { type: 'exercise_set', conversationId: convo.id, subjectRevisionId: detail.subject!.id,
+      subjectId: detail.subject!.subjectId, status: 'queued', retryOfJobId: left.job.id,
+      idempotencyKey: `isolated-retry-${randomUUID()}`, payload: { practiceSource: { ...source } }, leasedUntil: new Date(Date.now() + 3600000) } });
+    assert.equal((await ensure()).job.id, retry.id);
+    await db.generationJob.update({ where: { id: retry.id }, data: { status: 'succeeded', resultArtifactId: artifact.id } });
+    assert.equal((await ensure()).artifact!.id, artifact.id);
+    assert.equal((await getLessonPractice(user.id, lesson.id, 1) as { artifactId: string }).artifactId, artifact.id);
+    const secondLesson = await db.artifact.create({ data: { conversationId: convo.id, subjectRevisionId: detail.subject!.id,
+      type: 'lesson', version: 2, publishStatus: 'published', content: {} } });
+    assert.deepEqual(await getLessonPractice(user.id, secondLesson.id, 2), { status: 'none' });
+    console.log('PASS lesson practice: read-only lookup, source/version ownership, concurrent ensure, failed job reuse, latest retry, published reuse, different lesson isolation; worker-blocked fixtures, no model calls');
     const [a, b] = await Promise.all([practice.start(user.id, { artifactId: artifact.id }), practice.start(user.id, { artifactId: artifact.id })]);
     assert.equal(a.id, b.id);
     assert.equal(await db.practiceAttempt.count({ where: { artifactId: artifact.id } }), 1);

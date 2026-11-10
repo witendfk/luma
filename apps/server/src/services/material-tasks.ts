@@ -44,14 +44,14 @@ export function projectMaterialTasks(jobs: MaterialJob[], artifacts: MaterialArt
       error: job.status === 'succeeded' && !artifact ? { message: '成果暂未载入，请稍后重新打开', retryable: false }
         : error ? { message: error.message || '本次生成未完成', retryable: error.retryable === true } : null };
   });
-  // A reused lesson has no new generation job, but its verified completion still needs a turn-local entry.
+  // Reused material has no new job, but its verified completion still needs a turn-local entry.
   for (const run of runs) for (const goal of taskFrameFrom(run.taskFrame).goals) {
-    if (goal.type !== 'lesson' || !goal.completedArtifactId || goal.startedJobId) continue;
+    if (!goal.completedArtifactId || goal.startedJobId) continue;
     if (jobs.some((j) => j.runId === run.id && j.resultArtifactId === goal.completedArtifactId)) continue;
     const artifact = artifacts.find((a) => a.id === goal.completedArtifactId && a.publishStatus === 'published');
     if (!artifact) continue;
     cards.push({ id: `reuse:${run.id}:${artifact.id}`, jobId: null, runId: run.id, userMessageId: run.userMessageId,
-      subjectRevisionId: run.subjectRevisionId, type: 'lesson', status: 'succeeded', step: null, artifactId: artifact.id,
+      subjectRevisionId: run.subjectRevisionId, type: goal.type === 'lesson' ? 'lesson' : 'exercise_set', status: 'succeeded', step: null, artifactId: artifact.id,
       ...materialPreview(artifact), historical: run.subjectRevisionId !== revisionId, error: null });
   }
   return cards;

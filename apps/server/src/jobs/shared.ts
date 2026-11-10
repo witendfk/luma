@@ -80,7 +80,14 @@ export async function publishArtifact(
       return null;
     }
     if (job.type !== type) throw new Error('任务与成果类型不一致');
-    const payload = job.payload as { sourceLesson?: unknown; answerPermission?: boolean } | null;
+    const payload = job.payload as { sourceLesson?: unknown; answerPermission?: boolean;
+      practiceSource?: { artifactId: string; artifactVersion: number; subjectRevisionId: string } } | null;
+    if (type === 'exercise_set' && payload?.practiceSource) {
+      const source = payload.practiceSource;
+      const lesson = await tx.artifact.findFirst({ where: { id: source.artifactId, version: source.artifactVersion,
+        conversationId: job.conversationId, subjectRevisionId: job.subjectRevisionId, type: 'lesson', publishStatus: 'published' } });
+      if (!lesson || source.subjectRevisionId !== job.subjectRevisionId) throw new Error('练习来源讲义版本不匹配');
+    }
     if (payload?.sourceLesson) {
       const source = LessonSource.parse(payload.sourceLesson);
       const original = await tx.artifact.findFirst({ where: { id: source.artifactId, conversationId: job.conversationId,

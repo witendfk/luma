@@ -31,6 +31,7 @@ export interface TaskFrame {
   historyCount?: number;
   solutionRequested?: boolean;
   action?: ExplicitAction;
+  practiceMode?: 'ensure';
   focus?: {
     artifactId?: string;
     artifactVersion?: number;
@@ -55,6 +56,7 @@ export function taskFrameFrom(json: unknown): TaskFrame {
     historyCount: src.historyCount ?? 0,
     solutionRequested: src.solutionRequested ?? false,
     action: src.action,
+    practiceMode: src.practiceMode,
     focus: src.focus,
     goals: Array.isArray(src.goals) ? src.goals : [],
   };

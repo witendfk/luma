@@ -11,6 +11,7 @@ import { evidencePack } from './teaching-memory';
 import { readHistory, type MessageReadOptions } from './history-reader';
 import { readHistoricalToolResult } from './tool-result-memory';
 import { canReuseLesson } from './lesson-reuse';
+import { ensureLessonPractice, practiceSource, type PracticeSource } from '../services/lesson-practice';
 
 /**
  * 工具执行器（设计文档 §4.12 / §6.1）。
@@ -327,6 +328,20 @@ async function createMaterialJob(
 
   const subject = await db.subjectRevision.findUnique({ where: { id: ctx.policy.subjectRevisionId } });
   const type = toolName === 'createLesson' ? 'lesson' : 'exercise_set';
+  const ensurePractice = toolName === 'createPractice' && frame.practiceMode === 'ensure';
+  const count = ensurePractice ? 2 : Number(input.count ?? 2);
+  const difficulty = ensurePractice ? 'basic' : typeof input.difficulty === 'string' ? input.difficulty : 'basic';
+  let source: PracticeSource | undefined;
+  let practiceLesson: unknown;
+  if (toolName === 'createPractice' && ctx.policy.focus.artifactId && !ctx.policy.focus.sectionId && !ctx.policy.focus.attemptId) {
+    const lesson = await db.artifact.findFirst({ where: { id: ctx.policy.focus.artifactId, type: 'lesson', conversationId: ctx.conversationId,
+      subjectRevisionId: subject!.id, publishStatus: 'published' } });
+    if (lesson) {
+      source = await practiceSource(db, ctx.userId, lesson.id, ctx.policy.focus.artifactVersion ?? lesson.version, count, difficulty);
+      practiceLesson = (lesson.content as { lesson?: unknown }).lesson;
+    }
+  }
+  if (ensurePractice && !source) return { kind: 'error', code: 'INVALID_INPUT', message: '请从有效的完整讲义打开配套练习', retryable: false };
   let sourceLesson: LessonSource | undefined;
   if (toolName === 'createLesson' && (ctx.policy.focus.sectionId || input.sectionRef)) {
     const sectionId = ctx.policy.focus.sectionId ?? String(input.sectionRef);
@@ -345,14 +360,19 @@ async function createMaterialJob(
     subjectText: (subject!.content as { text?: string }).text ?? '',
     tags: subject!.tags,
     // 任务参数创建时固定（§6.1），worker 不从可变状态重建
-    ...(toolName === 'createLesson' ? { target: String(input.target ?? '') , sectionRef: input.sectionRef } : { count: input.count ?? 2, difficulty: input.difficulty }),
+    ...(toolName === 'createLesson' ? { target: String(input.target ?? '') , sectionRef: input.sectionRef } : { count, ...(difficulty ? { difficulty } : {}) }),
+    ...(source ? { practiceSource: source, practiceLesson } : {}),
     answerPermission: ctx.policy.allowSolution,
     teachingMode: ctx.policy.teachingMode ?? 'question',
     evidence: await evidencePack(ctx),
     ...(sourceLesson ? { sourceLesson } : {}),
   };
 
-  const job = await withActiveRun(ctx.runId, ctx.leaseOwner, (tx) => tx.generationJob.create({
+  return withActiveRun(ctx.runId, ctx.leaseOwner, async (tx): Promise<ToolOutcome> => {
+    // Recheck inside the same conversation lock, including parallel tool executions.
+    const previous = await tx.generationJob.findUnique({ where: { idempotencyKey: key } });
+    if (previous) return { kind: 'deferred', jobId: previous.id, artifactId: previous.resultArtifactId, artifactType: type };
+    const create = () => tx.generationJob.create({
     data: {
       type,
       conversationId: ctx.conversationId,
@@ -364,9 +384,17 @@ async function createMaterialJob(
       payload: payload as object,
       deadlineAt: new Date(Date.now() + env().JOB_TOTAL_MS),
     },
-  }));
-  // 不预建 Artifact：发布由 worker 的 publishArtifact 在事务内完成（§8.4）
-  return { kind: 'deferred', jobId: job.id, artifactId: null, artifactType: type };
+    });
+    if (ensurePractice && source) {
+      const found = await ensureLessonPractice(tx, ctx.conversationId, source, create);
+      if (found.artifact) return { kind: 'result', value: { ok: true, artifactId: found.artifact.id, type: 'exercise_set', status: 'published', reused: true } };
+      if (found.job.status === 'failed') return { kind: 'error', code: 'EXISTING_PRACTICE_FAILED', retryable: false, message: '对应练习生成失败，请在原任务卡重试，不要重复出题' };
+      return { kind: 'deferred', jobId: found.job.id, artifactId: null, artifactType: 'exercise_set' };
+    }
+    const job = await create();
+    // 不预建 Artifact：发布由 worker 的 publishArtifact 在事务内完成（§8.4）
+    return { kind: 'deferred', jobId: job.id, artifactId: null, artifactType: type };
+  });
 }
 
 /** deferred 任务终态检查：worker 完成后补回真实结果（§4.13） */

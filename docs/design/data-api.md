@@ -75,6 +75,7 @@
 | `GET /artifacts/:id/attempts` | 本人该题组的历史轮次，不创建轮次、不揭示答案 |
 | `POST /conversations/:id/process-transcripts/:transcriptId/confirm` | 确认或修正解题过程步骤 |
 | `GET /artifacts/:id` | 按权限与当前阶段返回讲义或题组 |
+| `GET /artifacts/:id/practice?version=N` | 只读查找该讲义版本的默认整份配套题组，返回none/queued/running/succeeded/failed及对应jobId/artifactId；不生成、不返回答案 |
 | `GET /jobs/:id`、`POST /jobs/:id/retry` | 任务状态、重试 |
 | `POST /runs/:id/cancel` | 取消本轮及其关联未完成任务 |
 | `GET /runs/:id` | 查询运行状态与目标进度，用于断线后恢复 |
@@ -133,6 +134,7 @@
 - 修改题干只增加当前对象版本并清除该对象的材料定位；旧材料和轮次继续保留。后台发布及运行保护按来源对象内的最新版本检查，不按整段会话最大版本检查。
 - 学习进度并发版本独立于题干版本。材料/章节/轮次/题号必须属于该版本；损坏或过期定位在读取时回退对话入口，不以 GET 改写历史。
 - `PracticeAttempt`共享DTO包含conversationId及`exercises[].myAnswer`，无顶层answers；历史查询接口已提供。普通开始锁定题组并复用最近轮次，不通过重复POST实现重做；显式重做的requestId和redoOfAttemptId另行实现。同版本同内容的草稿重试幂等，不同内容的旧版本拒绝。submit/complete重复调用返回现有结果，不重设完成时间；提交后禁止修改原作答，完成后整轮只读。
+- 配套练习的生成与作答轮次分开去重。讲义入口提交`generate_practice + practiceMode=ensure`及准确artifactId/artifactVersion，不接受章节/练习焦点。服务端在会话锁下按`practiceSource={artifactId,artifactVersion,subjectRevisionId,scope:whole_lesson,count:2,difficulty:basic}`查找或创建；复用成功/生成中任务，失败不自动付费重试，停止或失效任务不复用。普通自由输入未带ensure时可请求新一组，不覆盖原题。任务保存来源讲义内容快照供生成/复核，发布再核对来源版本。旧任务只通过已有evidence.focus中的准确整份讲义引用和相同训练参数关联，无法确认来源时不猜测。
 - 取消收藏记录 `removedAt`，重新收藏复用原行。列表只展示未取消项，详情可读回保留的笔记。
 - 归档/恢复/重命名不更新学习时间；真实新消息在创建运行事务内取消归档，前端不预先发恢复请求。
 - 迁移`20261105090000_learning_subjects`为每个旧会话建立首对象，保留旧字段和既有材料/练习；其他环境执行增量migrate deploy，不使用reset。执行证据只在verification维护。

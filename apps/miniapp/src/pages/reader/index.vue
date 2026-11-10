@@ -12,6 +12,7 @@ import { request } from '@/utils/request';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
 import { getJob, retryJob } from '@/api/jobs';
 import { getConversation } from '@/api/conversations';
+import { getLessonPractice } from '@/api/practice';
 import { readingProgress } from '@/utils/reading-progress';
 import type { Diagram, JobView } from '@luma/shared';
 interface Section { id: string; heading: string; body: string; diagram?: Diagram; formula?: string; note?: string }
@@ -22,6 +23,7 @@ const tab = ref<'lesson' | 'source'>('lesson');
 const loading = ref(true), error = ref(''), directoryOpen = ref(false);
 const document = ref<Document | null>(null);
 const job = ref<JobView | null>(null), retrying = ref(false);
+const openingPractice = ref(false);
 const draftOnly = computed(() => !!job.value && job.value.status !== 'succeeded');
 const scrollTarget = ref(''), activeSection = ref('');
 const pageHeight = uni.getSystemInfoSync().windowHeight;
@@ -175,8 +177,25 @@ function ask(section: Section, example: boolean): void {
   study.ask({ kind: 'section', id: section.id, heading: section.heading, question: example ? `关于「${section.heading}」，可以换个例子解释吗？` : `我没理解「${section.heading}」这一步，请再引导我一下。` });
   uni.navigateTo({ url: '/pages/chat/index?preview=study' });
 }
-function practice(): void {
-  if (!preview.value) { if (draftOnly.value) return; uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(conversationId)}&topic=${encodeURIComponent(subjectId)}&artifactId=${encodeURIComponent(artifactId)}&artifactVersion=${document.value!.version}&question=${encodeURIComponent('请根据这份讲解生成两道同知识点练习')}&action=generate_practice` }); return; }
+async function practice(): Promise<void> {
+  if (!preview.value) {
+    if (draftOnly.value || openingPractice.value || !document.value || !artifactId) return;
+    openingPractice.value = true;
+    const session = sessionVersion(), sourceId = artifactId, version = document.value.version;
+    try {
+      const existing = await getLessonPractice(sourceId, version);
+      if (!alive || !visible || session !== sessionVersion() || sourceId !== artifactId) return;
+      await flushPosition();
+      const base = `/pages/chat/index?id=${encodeURIComponent(conversationId)}&topic=${encodeURIComponent(subjectId)}`;
+      const url = existing.status === 'succeeded' && existing.artifactId
+        ? `/pages/practice/index?artifactId=${encodeURIComponent(existing.artifactId)}`
+        : existing.status !== 'none' ? `${base}&materialJobId=${encodeURIComponent(existing.jobId)}`
+        : `${base}&artifactId=${encodeURIComponent(sourceId)}&artifactVersion=${version}&question=${encodeURIComponent('请根据这份讲解生成两道同知识点练习')}&action=generate_practice&practiceMode=ensure`;
+      uni.navigateTo({ url, fail: () => uni.showToast({ title: '页面未能打开，请重试', icon: 'none' }) });
+    } catch (err) { if (alive && session === sessionVersion()) uni.showToast({ title: err instanceof Error ? err.message : '练习状态暂时不可用，请重试', icon: 'none' }); }
+    finally { openingPractice.value = false; }
+    return;
+  }
   remember(); uni.navigateTo({ url: `/pages/practice/index?preview=1&scope=${encodeURIComponent(scope)}` });
 }
 </script>
