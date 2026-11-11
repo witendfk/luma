@@ -177,6 +177,7 @@ model SubjectRevision {
   teachingState          Json?
   contextSummaries       ContextSummary[]
   teachingMemories       TeachingMemory[]
+  learningRoutes         LearningRoute[]
   createdAt              DateTime    @default(now())
 
   conversation     Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -526,4 +527,91 @@ model TeachingMemory {
   updatedAt         DateTime @updatedAt
   subjectRevision   SubjectRevision @relation(fields: [subjectRevisionId], references: [id], onDelete: Cascade)
   @@index([subjectRevisionId, status, scopeKey])
+}
+
+/// Short, evidence-based companion route. It is separate from navigation and formal practice.
+model LearningRoute {
+  id                    String               @id @default(cuid())
+  subjectRevisionId     String
+  goal                  String
+  status                String               @default("active")
+  version               Int                  @default(1)
+  contentProfileId      String
+  contentProfileVersion String
+  sourceMessageId       String
+  sourceQuote           String
+  sourceRunId           String               @unique
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  subjectRevision       SubjectRevision      @relation(fields: [subjectRevisionId], references: [id], onDelete: Cascade)
+  nodes                 LearningRouteNode[]
+  events                LearningRouteEvent[]
+
+  @@index([subjectRevisionId, createdAt])
+}
+
+model LearningRouteNode {
+  id            String          @id @default(cuid())
+  routeId       String
+  key           String
+  position      Int
+  objective     String
+  prerequisites String[]        @default([])
+  status        String          @default("pending")
+  version       Int             @default(1)
+  passCriteria  Json
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  route         LearningRoute   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  checks        LearningCheck[]
+
+  @@unique([routeId, key])
+  @@unique([routeId, position])
+}
+
+model LearningCheck {
+  id              String                    @id @default(cuid())
+  nodeId          String
+  sourceRunId     String                    @unique
+  issuedMessageId String
+  prompt          String
+  taskKind        String
+  rubricVersion   String
+  criteria        Json
+  supportLevel    String                    @default("independent")
+  createdAt       DateTime                  @default(now())
+  node            LearningRouteNode         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  evaluations     LearningCheckEvaluation[]
+
+  @@index([nodeId, createdAt])
+}
+
+/// Evaluations are append-only; an uncertain result never becomes an invented score.
+model LearningCheckEvaluation {
+  id               String        @id @default(cuid())
+  checkId          String
+  runId            String
+  attemptMessageId String
+  answerSnapshot   String
+  evaluation       String
+  supportLevel     String
+  criteriaResults  Json
+  createdAt        DateTime      @default(now())
+  check            LearningCheck @relation(fields: [checkId], references: [id], onDelete: Cascade)
+
+  @@unique([checkId, runId])
+  @@unique([checkId, attemptMessageId])
+}
+
+model LearningRouteEvent {
+  id              String        @id @default(cuid())
+  routeId         String
+  version         Int
+  requestId       String        @unique
+  sourceMessageId String?
+  changes         Json
+  createdAt       DateTime      @default(now())
+  route           LearningRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@unique([routeId, version])
 }

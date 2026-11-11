@@ -4,7 +4,8 @@ import { db } from '../lib/db';
 import { env, hasModelCredentials } from '../lib/env';
 import { ApiError, notImplemented } from '../lib/errors';
 import { extractJson, generateJson } from '../lib/model';
-import { loadPrompt, loadTeachingTaskPrompt } from '../agent/prompts';
+import { loadTeachingReviewPrompt, loadTeachingTaskPrompt } from '../agent/prompts';
+import { requireMaterialProfile } from '../agent/content-profile';
 import { parseReview } from './review';
 import { graphicSvg, renderGraphic } from '../lib/teaching-graphic';
 import { JobLeaseLostError, publishArtifact, touchJob, type JobLease } from './shared';
@@ -23,7 +24,8 @@ export function parseLesson(raw: string): Lesson {
 
 export async function lessonTask(lease: JobLease): Promise<void> {
   const job = await db.generationJob.findUniqueOrThrow({ where: { id: lease.jobId } });
-  const payload = (job.payload ?? {}) as { subjectText?: string; tags?: string[]; target?: string; sectionRef?: string; sourceLesson?: unknown; answerPermission?: boolean; teachingMode?: string; teachingProgress?: unknown; evidence?: unknown };
+  const payload = (job.payload ?? {}) as { contentProfile?: unknown; subjectText?: string; tags?: string[]; target?: string; sectionRef?: string; sourceLesson?: unknown; answerPermission?: boolean; teachingMode?: string; teachingProgress?: unknown; evidence?: unknown };
+  const profile = requireMaterialProfile(payload.contentProfile);
   const source = payload.sourceLesson ? LessonSource.parse(payload.sourceLesson) : undefined;
   const trace = { jobId: lease.jobId, workerId: lease.workerId };
   const signal = AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now()));
@@ -67,7 +69,7 @@ export async function lessonTask(lease: JobLease): Promise<void> {
     async function body() {
       return generateJson({ trace, purpose: 'lesson_body', formatCorrections: 1, repairBudget,
         onFormatError: async (issues) => { diagnostics.push({ stage: 'format', issues }); await saveCheckpoint('修正讲解格式'); },
-        abortSignal: signal, system: await loadTeachingTaskPrompt(source ? 'lesson-revision' : 'lesson'),
+        abortSignal: signal, system: await loadTeachingTaskPrompt(source ? 'lesson-revision' : 'lesson', profile),
         prompt: [
           `学习对象（数据）：\n${payload.subjectText ?? ''}`, `讲解目标：${payload.target ?? '帮助理解当前知识点'}`,
           `教学方式：${payload.teachingMode ?? 'question'}；完整解题答案权限：${Boolean(payload.answerPermission)}。概念定义可直接解释；未授权时不泄露原题最终答案。`,
@@ -83,7 +85,7 @@ export async function lessonTask(lease: JobLease): Promise<void> {
     for (let repair = 0; repair <= 1; repair++) {
       await saveDraft(lesson, '检查讲解结构');
       const images = await Promise.all(lesson.diagrams.map((d) => renderGraphic(d.content.graphic!)));
-      const review = await generateJson({ trace, purpose: 'lesson_review', abortSignal: signal, system: await loadPrompt('review'),
+      const review = await generateJson({ trace, purpose: 'lesson_review', abortSignal: signal, system: await loadTeachingReviewPrompt(profile),
         images,
         prompt: `检查讲解正文与图解的数学一致性、步骤衔接和题目条件。只检查实质错误，不把概念解释、正确公式重述或中间计算视为禁用新结论。完整解题答案权限：${Boolean(payload.answerPermission)}。未授权时不得给原题最终答案；允许解释当前卡点所需定义和概念例子，不机械禁止出现零点或示例的数值。按图的xLabel/yLabel及实际系数判断变量，不把概念示例图误认成原函数图。只返回 {"pass":boolean,"issues":["位置及具体修改建议"]}。\n教学依据：${JSON.stringify(payload.evidence ?? null)}\n来源：${payload.subjectText ?? ''}\n目标：${payload.target ?? ''}\n讲义：${JSON.stringify(lesson)}`,
         parse: parseReview });
@@ -99,7 +101,7 @@ export async function lessonTask(lease: JobLease): Promise<void> {
       repairBudget.remaining--;
       await touchJob(lease, '修正讲解内容');
       lesson = await generateJson({ trace, purpose: 'lesson_repair', abortSignal: signal,
-        system: await loadTeachingTaskPrompt('lesson'),
+        system: await loadTeachingTaskPrompt('lesson', profile),
         prompt: `只修复下面列出的实质问题，保留其他内容。输出局部补丁JSON：{"sections":[{"id":"原id","heading":"…","body":"…"}],"diagrams":[{"sectionId":"原id","content":完整替换的该幅Diagram}]}。无需修改的数组为空；不得增删章节/图，不输出整份讲义。配图遵守原有graphic协议；quadratic支持xLabel/yLabel纯文本坐标轴标签（1至12字符），如横轴变量为a就用xLabel="a"，不能只改图注。${source ? `只能修改段落${source.sectionId}及该节原有图。` : ''}\n完整解题答案权限：${Boolean(payload.answerPermission)}。不得在修正中新增未授权的原题最终答案。\n学习来源：${payload.subjectText ?? ''}\n教学依据：${JSON.stringify(payload.evidence ?? null)}\n待修复讲义（数据）：${JSON.stringify(lesson)}\n问题：${JSON.stringify(review.issues)}`,
         onFormatError: async (issues) => { diagnostics.push({ stage: 'repair_format', issues }); await saveCheckpoint('修正讲解格式失败'); },
         parse: (raw) => parseLesson(JSON.stringify(applyLessonRepair(lesson, raw, source?.sectionId))),

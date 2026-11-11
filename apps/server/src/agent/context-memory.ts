@@ -7,7 +7,9 @@ import { historyPages } from './history';
 import { fixedContextTokens } from './context';
 import type { TurnPolicy } from './policy';
 import { loadPrompt, PROMPT_VERSION } from './prompts';
-import { modelBudgetAvailable, recordModelRequest, recordUsage, type RunCounters } from './limits';
+import { settleModelRequest, type RunCounters } from './limits';
+import { reserveRunModel } from '../lib/model-accounting';
+import { estimateTokens } from '../lib/token-budget';
 import { RunStoppedError, withActiveRun } from './run-guard';
 import { memoryVisible } from './teaching-memory';
 
@@ -63,22 +65,21 @@ export async function prepareContextMemory(input: {
     summarize: async (prior, rows, maxOutputTokens) => {
       input.signal.throwIfAborted();
       for (const source of await retiredSources(rows.map((r) => r.id))) if (!retired.some((r) => r.memoryId === source.memoryId)) retired.push(source);
-      if (!modelBudgetAvailable(input.counters)) throw new CompactionError('摘要调用已达本轮预算，原对话已保留');
-      recordModelRequest(input.counters, 'context_summary');
-      await withActiveRun(input.runId, input.owner, (tx) => tx.agentRun.update({ where: { id: input.runId }, data: { counters: input.counters as unknown as Prisma.InputJsonValue } }));
+      const system = await loadPrompt('compact');
+      const prompt = JSON.stringify({ previous: prior, retired, messages: rows.map(({ id, role, content }) => ({ id, role, text: content })) });
+      const callId = await reserveRunModel({ ...input, purpose: 'context_summary', inputTokens: estimateTokens({ system, prompt }) + 512, outputTokens: maxOutputTokens });
       const started = Date.now(); let usage: TokenUsage | undefined, error: string | undefined;
       try {
         if (env().LUMA_MOCK_AGENT) return { notes: [{ kind: 'progress', text: '（模型mock）已有讨论的来源已记录。', refs: [rows[0]!.id] }],
           coverage: rows.filter((r) => r.role === 'user').map((r) => ({ messageId: r.id, disposition: 'process', refs: [r.id], reason: '隔离测试中的一般讨论' })) };
-        const generated = await summarizeContext({ system: await loadPrompt('compact'),
-          prompt: JSON.stringify({ previous: prior, retired, messages: rows.map(({ id, role, content }) => ({ id, role, text: content })) }), maxOutputTokens,
+        const generated = await summarizeContext({ system, prompt, maxOutputTokens,
           cacheKey: prefixCacheKey(input.userId, input.conversationId),
           abortSignal: AbortSignal.any([input.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
         usage = generated.usage;
         return extractJson(generated.raw);
       } catch { error = 'CONTEXT_SUMMARY_FAILED'; throw new CompactionError('长对话摘要生成失败，原文和已有摘要均已保留，可重试'); }
       finally {
-        recordUsage(input.counters, usage);
+        settleModelRequest(input.counters, callId, usage);
         input.counters.calls.push({ purpose: 'context_summary', model: env().LUMA_MOCK_AGENT ? 'mock' : env().LUMA_MODEL_ID,
           attempt: input.counters.modelRequests.context_summary!, durationMs: Date.now() - started,
           inputTokens: usage?.inputTokens ?? null, outputTokens: usage?.outputTokens ?? null, cachedInputTokens: usage?.cachedInputTokens ?? null, ...(error ? { error } : {}) });

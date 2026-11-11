@@ -136,7 +136,9 @@ export const conversationService = {
       const runs = active ? await tx.agentRun.findMany({ where: { conversationId, subjectId: active.id },
         select: { id: true, userMessageId: true, subjectRevisionId: true, taskFrame: true } }) : [];
       const materialTasks = projectMaterialTasks(jobs, artifacts, runs, active?.revision?.id);
+      const learningRoute = await learningRouteView(tx, active?.revision?.id);
       return { conversation, subjects, subject: active?.revision ?? null, progress: active?.progress ?? null,
+        learningRoute,
         artifacts: artifacts.map(({ content: _content, ...row }) => ({ ...row, subjectId: active!.id })), activeRun, latestRun, lessonJob, materialTasks };
     }, { isolationLevel: 'RepeatableRead' });
   },
@@ -178,3 +180,4 @@ export const conversationService = {
 
   touch,
 };
+import { learningRouteView } from './learning-route';

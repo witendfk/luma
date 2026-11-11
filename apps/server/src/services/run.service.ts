@@ -17,6 +17,7 @@ import { resolveSubject, latestRevision } from './subject-context';
 import { validateFocus } from './focus';
 import { createConversationTitle } from '../lib/conversation-title';
 import { practiceSource } from './lesson-practice';
+import { ContentProfileRef, UNCONFIGURED_PROFILE } from '../agent/content-profile';
 
 /**
  * 运行服务（设计文档 §4.5 / §4.9 / §10）：
@@ -105,7 +106,10 @@ export const runService = {
 
       }
 
-      // Explicit actions are preplanned; free input may select a diagram lesson as a teaching decision.
+      const previousTurn = subject ? await tx.agentRun.findFirst({ where: { conversationId, subjectRevisionId: subject.id,
+        status: { in: ['completed', 'waiting_user'] } }, orderBy: { startedAt: 'desc' }, select: { taskFrame: true } }) : null;
+      const previousProfile = ContentProfileRef.safeParse(taskFrameFrom(previousTurn?.taskFrame).contentProfile);
+      // Explicit material actions reuse a known profile; new scope is classified in the existing planning step.
       const goals: TaskFrameGoal[] = [];
       if (input.action === 'generate_lesson') {
         goals.push({ type: 'lesson', source: 'student_request', target: input.text?.slice(0, 200) ?? '按已确认范围生成讲义' });
@@ -115,7 +119,8 @@ export const runService = {
       }
       const taskFrame: TaskFrame = source ? { ...taskFrameFrom(source.taskFrame), goals: taskFrameFrom(source.taskFrame).goals.map(({ failure, startedJobId, ...goal }) => goal), historyCount: history.length } : {
         readback: input.artifactId || input.attemptId ? undefined : initialReadback(input.text ?? '', userMessage.id),
-        planned: Boolean(input.action) || !subject?.confirmedAt,
+        planned: !subject?.confirmedAt || (Boolean(input.action) && previousProfile.success && previousProfile.data.id === 'math'),
+        contentProfile: !subject?.confirmedAt ? UNCONFIGURED_PROFILE : input.action && previousProfile.success ? previousProfile.data : undefined,
         solutionRequested: input.action === 'show_solution',
         historyCount: history.length,
         kind: input.action === 'show_solution' ? 'solution' : goals.length > 0 ? 'material' : 'chat',

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { activeControllers, RunStoppedError, withActiveRun } from './run-guard';
 import type { StreamEvent } from '@luma/shared';
-import { aggregateJobUsage } from '../lib/model-accounting';
+import { aggregateJobUsage, reserveRunModel } from '../lib/model-accounting';
 import { db } from '../lib/db';
 import { env } from '../lib/env';
 import type { EventEmitter } from '../lib/sse';
@@ -11,13 +11,12 @@ import { assembleSystem, learningData, budgetContext, ContextBudgetError } from 
 import {
   clearFailure,
   recordFailure,
-  modelBudgetAvailable,
+  ModelBudgetError,
   correctionAllowed,
   countersFrom,
   initialCounters,
   recordCorrection,
-  recordModelRequest,
-  recordUsage,
+  settleModelRequest,
   spendDecision,
   spendToolRound,
   type RunCounters,
@@ -33,6 +32,8 @@ import { nativeToolSet } from './tools';
 import { taskFrameFrom, type PendingBatch, type TaskFrame } from './types';
 import { prefixCacheKey, prepareContextMemory } from './context-memory';
 import { CompactionError } from './compaction';
+import { MATH_PROFILE, UNCONFIGURED_PROFILE } from './content-profile';
+import { LearningUpdateError, saveLearningUpdate } from '../services/learning-route';
 
 /**
  * 驱动器（设计文档 §4.12）：唯一的循环所有者。
@@ -139,6 +140,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         solutionRequested: taskFrame.solutionRequested,
         focus: taskFrame.focus,
       });
+      if (taskFrame.contentProfile?.id === 'unconfigured') policy.allowedTools = policy.allowedTools.filter((name) => !['createLesson', 'createPractice'].includes(name));
 
       // 恢复点：先完成已有工具批次，不能重发模型请求跳过旧结果（§4.12）
       if (run.pendingBatch) {
@@ -215,7 +217,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         return;
       }
       const planning = !taskFrame.planned;
-      const tools = nativeToolSet(planning);
+      const tools = nativeToolSet(planning, policy.allowedTools);
       const facts = await learningData(policy, conversation.userId, run.conversationId, taskFrame, runId);
       const system = await assembleSystem(policy, taskFrame);
       const current = protocol.slice(taskFrame.historyCount ?? 0);
@@ -224,10 +226,8 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       protocol.splice(0, protocol.length, ...memory.history, ...current);
       taskFrame.historyCount = memory.history.length;
       const context = budgetContext({ system, facts, protocol, historyCount: taskFrame.historyCount, tools });
-      if (!modelBudgetAvailable(counters)) {
-        await failRun(runId, 'LIMIT', '本轮模型请求或累计用量已达保护上限', false, emit, owner); return;
-      }
-      recordModelRequest(counters, 'agent');
+      const callId = await reserveRunModel({ runId, owner, counters, purpose: 'agent',
+        inputTokens: context.estimatedInputTokens, outputTokens: env().MODEL_OUTPUT_TOKENS });
       // Reserve before network calls; a process failure cannot erase an attempted request.
       await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: {
         counters: asJson(counters), protocol: asJson(protocol), taskFrame: asJson(taskFrame),
@@ -238,7 +238,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       const step = await nextAgentStep({
         purpose: 'agent', system, messages: context.messages, tools, cacheKey: prefixCacheKey(conversation.userId, run.conversationId),
         abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]),
-        mock: planning ? { kind: 'plan', plan: { goals: [], solutionRequested: false, memories: [] }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { goals: [], solutionRequested: false, memories: [] } }] } : mockStep(policy, taskFrame, subjectText),
+        mock: planning ? { kind: 'plan', plan: { contentProfileId: 'math', goals: [], solutionRequested: false, memories: [] }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { contentProfileId: 'math', goals: [], solutionRequested: false, memories: [] } }] } : mockStep(policy, taskFrame, subjectText),
         onText: async (delta) => {
           controller.signal.throwIfAborted(); partialText += delta;
           if (emit) {
@@ -248,7 +248,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         },
         onReset: resetPartial,
       });
-      recordUsage(counters, step.usage);
+      settleModelRequest(counters, callId, step.usage);
       counters.calls.push({ purpose: 'agent', model: env().LUMA_MOCK_AGENT ? 'mock' : env().LUMA_MODEL_ID,
         attempt: counters.modelRequests.agent!, durationMs: Date.now() - started,
         inputTokens: step.usage?.inputTokens ?? null, outputTokens: step.usage?.outputTokens ?? null,
@@ -259,14 +259,15 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
       if (step.kind === 'plan') {
         if (!planning) { await failRun(runId, 'PROTOCOL', '本轮目标已记录，不能重复规划', false, emit, owner); return; }
-        const goals = policy.subjectConfirmed ? [...new Map(step.plan.goals.map((goal) => [goal.type, { ...goal, source: goal.source ?? 'student_request' as const }])).values()] : [];
+        taskFrame.contentProfile = step.plan.contentProfileId === 'math' ? MATH_PROFILE : UNCONFIGURED_PROFILE;
+        const goals = policy.subjectConfirmed && taskFrame.contentProfile.id === 'math' ? [...new Map([...step.plan.goals, ...taskFrame.goals].map((goal) => [goal.type, { ...goal, source: goal.source ?? 'student_request' as const }])).values()] : [];
         taskFrame.conditionCorrection ||= step.plan.conditionCorrection;
         taskFrame.memoryCandidates = step.plan.memories;
         taskFrame.planned = true; taskFrame.goals = taskFrame.conditionCorrection ? [] : goals;
         taskFrame.solutionRequested = !taskFrame.conditionCorrection && policy.subjectConfirmed && step.plan.solutionRequested;
         taskFrame.kind = goals.length ? 'material' : taskFrame.solutionRequested ? 'solution' : 'chat';
         protocol.push(assistantToolCallsMessage(step.calls), toolResultsMessage([{ toolCallId: step.calls[0]!.toolCallId, toolName: 'planTurn',
-          value: { ok: true, goals: taskFrame.goals, solutionRequested: taskFrame.solutionRequested } }]));
+          value: { ok: true, contentProfile: taskFrame.contentProfile, goals: taskFrame.goals, solutionRequested: taskFrame.solutionRequested } }]));
         await withActiveRun(runId, owner, async (tx) => {
           if (run.subjectRevisionId && run.userMessageId && taskFrame.memoryCandidates?.length) {
             taskFrame.memoryWrite = await applyTeachingMemory(tx, {
@@ -275,7 +276,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
             });
           }
           await tx.toolExecution.create({ data: { runId, decisionId: `${runId}:d${counters.decisions}`, toolCallId: step.calls[0]!.toolCallId,
-            tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
+            tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ contentProfile: taskFrame.contentProfile, goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
           await tx.agentRun.update({ where: { id: runId }, data: { taskFrame: asJson(taskFrame), protocol: asJson(protocol) } });
         });
         continue;
@@ -284,7 +285,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
       if (step.kind === 'respond') {
         const requiresEvidence = taskFrame.conditionCorrection || taskFrame.readback?.status === 'pending';
-        const validation = validateReadback(taskFrame, step) ?? (requiresEvidence ? { ok: true as const } : await validateRespond(step.disposition, taskFrame));
+        const validation = requiresEvidence && step.learning ? { ok: false as const, message: '先回读/澄清或确认题干更正，不得同时保存学习路线或验证结果' } : validateReadback(taskFrame, step) ?? (requiresEvidence ? { ok: true as const } : await validateRespond(step.disposition, taskFrame));
         if (!validation.ok) {
           // finish 条件不满足：协议校正，有限次（§4.11）
           await resetPartial();
@@ -316,11 +317,16 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         }
 
         const nextStatus = step.disposition === 'finish' ? 'completed' : 'waiting_user';
-        await withActiveRun(runId, owner, async (tx) => {
-          const data = { content: { blocks, ...(step.content ? { reply: step.content } : {}), focus: taskFrame.focus ?? {}, containsSolution: policy.allowSolution } as Prisma.InputJsonValue, status: 'complete' as const };
+        let route: Awaited<ReturnType<typeof saveLearningUpdate>> = null;
+        try { await withActiveRun(runId, owner, async (tx) => {
+          const data = { content: { blocks, ...(step.content ? { reply: step.content } : {}), focus: taskFrame.focus ?? {}, containsSolution: policy.allowSolution,
+            learningAssistance: policy.allowSolution ? 'solution' : step.assistance ?? 'explanation' } as Prisma.InputJsonValue, status: 'complete' as const };
           const savedMessage = partialMessageId ? await tx.message.update({ where: { id: partialMessageId }, data })
           : await tx.message.create({ data: { conversationId: run.conversationId, subjectId: run.subjectId, role: 'assistant',
             runId, subjectRevisionId: run.subjectRevisionId, ...data } });
+          if (run.subjectRevisionId) route = await saveLearningUpdate(tx, { revisionId: run.subjectRevisionId, conversationId: run.conversationId,
+            userId: conversation.userId, runId, userMessageId: run.userMessageId, messageId: savedMessage.id,
+            policy, profile: taskFrame.contentProfile ?? MATH_PROFILE, update: step.learning, assistance: step.assistance });
           if (run.subjectRevisionId) taskFrame.memoryWrite = await saveTeachingUpdate(tx, { revisionId: run.subjectRevisionId, userMessageId: run.userMessageId,
             messageId: savedMessage.id, policy, update: step.teaching,
             candidates: taskFrame.memoryCandidates?.map((m) => ({ ...m, action: 'add' as const, source: 'student' as const })) });
@@ -333,7 +339,16 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
             },
           });
           await tx.conversation.update({ where: { id: run.conversationId }, data: { lastActiveAt: new Date() } });
-        });
+        }); } catch (error) {
+          if (!(error instanceof LearningUpdateError)) throw error;
+          await resetPartial();
+          if (!correctionAllowed(counters)) { await failRun(runId, 'PROTOCOL', error.message, true, emit, owner); return; }
+          recordCorrection(counters);
+          protocol.push(correctionMessage(`学习进度未保存：${error.message}。修正learning候选，不得声称已保存或已通过。`));
+          await withActiveRun(runId, owner, (tx) => tx.agentRun.update({ where: { id: runId }, data: { protocol: asJson(protocol), counters: asJson(counters) } }));
+          continue;
+        }
+        if (route) emit?.({ type: 'route.updated', runId, route });
         if (!partialText) emit?.({ type: 'text.delta', runId, delta: step.text });
         partialText = ''; partialMessageId = undefined;
         if (nextStatus === 'completed') {
@@ -396,7 +411,9 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       return;
     }
   } catch (err) {
-    if (err instanceof CompactionError) {
+    if (err instanceof ModelBudgetError) {
+      await failRun(runId, 'LIMIT', err.message, false, emit, owner);
+    } else if (err instanceof CompactionError) {
       await failRun(runId, 'CONTEXT_COMPACTION', err.message, true, emit, owner);
     } else if (err instanceof ContextBudgetError || err instanceof TeachingMemoryCapacityError) {
       await failRun(runId, 'CONTEXT_LIMIT', err.message, false, emit, owner);

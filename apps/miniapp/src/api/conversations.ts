@@ -84,3 +84,7 @@ export function focusSubject(id: string, subjectId: string, learnAll?: boolean):
 export function saveProgress(id: string, subjectId: string, input: ProgressRequest): Promise<ProgressView> {
   return request({ method: 'PUT', path: `/api/conversations/${id}/subjects/${subjectId}/progress`, data: input });
 }
+
+export function updateLearningRoute(id: string, subjectId: string, input: import('@luma/shared').LearningRouteAction): Promise<import('@luma/shared').LearningRouteView | null> {
+  return request({ method: 'PUT', path: `/api/conversations/${id}/subjects/${subjectId}/learning-route`, data: input });
+}

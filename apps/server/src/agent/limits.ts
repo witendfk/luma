@@ -1,4 +1,17 @@
 import { env } from '../lib/env';
+import { randomUUID } from 'node:crypto';
+import { ApiError } from '../lib/errors';
+import { ErrorCode } from '@luma/shared';
+
+export interface ModelReservation {
+  purpose: string;
+  input: number;
+  output: number;
+  status: 'pending' | 'unknown' | 'settled';
+}
+export class ModelBudgetError extends ApiError {
+  constructor() { super(ErrorCode.RATE_LIMITED, '本轮模型请求或累计用量已达保护上限，请缩小本次任务范围', 429, false); }
+}
 
 /**
  * 分项资源计数（设计文档 §4.7）：决策步骤、工具往返、工具执行、各类模型请求、
@@ -18,7 +31,8 @@ export interface RunCounters {
   /** 协议校正次数 */
   corrections: number;
   unknownUsageCalls: number;
-  background?: { requests: number; input: number; output: number; unknown: number; cachedInput?: number };
+  background?: { requests: number; input: number; output: number; unknown: number; cachedInput?: number; reservedInput?: number; reservedOutput?: number };
+  modelReservations: Record<string, ModelReservation>;
   calls: Array<{ purpose: string; model: string; attempt: number; durationMs: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens?: number | null; error?: string }>;
 
   tokens: { input: number; output: number; cachedInput?: number };
@@ -35,6 +49,7 @@ export function initialCounters(): RunCounters {
     modelRequests: {},
     corrections: 0,
     calls: [],
+    modelReservations: {},
     unknownUsageCalls: 0,
     tokens: { input: 0, output: 0 },
     lastFailureKey: null,
@@ -46,12 +61,21 @@ export function countersFrom(json: unknown): RunCounters {
   if (!json || typeof json !== 'object') return initialCounters();
   const base = initialCounters();
   const src = json as Partial<RunCounters>;
-  return {
+  const restored = {
     ...base,
     ...src,
     modelRequests: { ...base.modelRequests, ...(src.modelRequests ?? {}) },
     tokens: { ...base.tokens, ...(src.tokens ?? {}) },
+    modelReservations: { ...(src.modelReservations ?? {}) },
   };
+  // Old checkpoints did not reserve tokens. Missing/unknown requests must not become free on recovery.
+  if (!src.modelReservations) {
+    const missing = Math.max(0, Object.values(restored.modelRequests).reduce((sum, n) => sum + n, 0) - restored.calls.length);
+    const unknown = Math.max(restored.unknownUsageCalls, missing);
+    if (unknown) restored.modelReservations.legacy = { purpose: 'legacy_unknown', status: 'unknown',
+      input: unknown * Math.max(env().CONTEXT_INPUT_TOKENS, env().LONG_TASK_CONTEXT_INPUT_TOKENS), output: unknown * env().MODEL_OUTPUT_TOKENS };
+  }
+  return restored;
 }
 
 export function recordModelRequest(counters: RunCounters, purpose: string): void {
@@ -109,6 +133,43 @@ export function clearFailure(counters: RunCounters): void {
 }
 
 export function modelBudgetAvailable(counters: RunCounters): boolean {
-  return Object.values(counters.modelRequests).reduce((n, value) => n + value, 0) + (counters.background?.requests ?? 0) < env().MAX_MODEL_REQUESTS &&
-    counters.tokens.input + counters.tokens.output + (counters.background?.input ?? 0) + (counters.background?.output ?? 0) < env().MAX_RUN_TOKENS;
+  const totals = modelBudgetTotals(counters);
+  return totals.requests < env().MAX_MODEL_REQUESTS && totals.tokens < env().MAX_RUN_TOKENS;
+}
+
+export function reservedTokens(counters: RunCounters) {
+  return Object.values(counters.modelReservations).reduce((sum, r) => ({ input: sum.input + r.input, output: sum.output + r.output }), { input: 0, output: 0 });
+}
+
+export function modelBudgetTotals(counters: RunCounters) {
+  const reserved = reservedTokens(counters), b = counters.background;
+  return { requests: Object.values(counters.modelRequests).reduce((sum, n) => sum + n, 0) + (b?.requests ?? 0),
+    tokens: counters.tokens.input + counters.tokens.output + reserved.input + reserved.output +
+      (b?.input ?? 0) + (b?.output ?? 0) + (b?.reservedInput ?? 0) + (b?.reservedOutput ?? 0) };
+}
+
+/** Reserve the full next request BEFORE network I/O; persist this ledger before calling the provider. */
+export function reserveModelRequest(counters: RunCounters, purpose: string, input: number, output: number,
+  limits = { requests: env().MAX_MODEL_REQUESTS, tokens: env().MAX_RUN_TOKENS }): string {
+  if (![input, output].every((n) => Number.isSafeInteger(n) && n >= 0)) throw new Error('模型预留额度无效');
+  const totals = modelBudgetTotals(counters);
+  if (totals.requests + 1 > limits.requests || totals.tokens + input + output > limits.tokens) throw new ModelBudgetError();
+  const callId = randomUUID();
+  counters.modelReservations[callId] = { purpose, input, output, status: 'pending' };
+  recordModelRequest(counters, purpose);
+  return callId;
+}
+
+/** Settle only once. Unknown components keep their reservation, including across process recovery. */
+export function settleModelRequest(counters: RunCounters, callId: string,
+  usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }): boolean {
+  const reservation = counters.modelReservations[callId];
+  if (!reservation || reservation.status !== 'pending') return false;
+  const valid = (n: number | undefined) => n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  const normalized = { inputTokens: valid(usage?.inputTokens), outputTokens: valid(usage?.outputTokens), cachedInputTokens: valid(usage?.cachedInputTokens) };
+  recordUsage(counters, normalized);
+  if (normalized.inputTokens !== undefined) reservation.input = 0;
+  if (normalized.outputTokens !== undefined) reservation.output = 0;
+  reservation.status = normalized.inputTokens === undefined || normalized.outputTokens === undefined ? 'unknown' : 'settled';
+  return true;
 }

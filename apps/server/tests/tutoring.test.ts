@@ -21,14 +21,15 @@ test('实际模型SDK请求收到教学Skill正文和本轮权限，不依赖模
   assert.ok(sent.includes(await loadTutoringPolicy('dialogue')));
   assert.match(sent, /"allowSolution":false/);
   assert.doesNotMatch(sent, /github\.com|\/tmp\/|当前仅完成规格|解题每轮只推进一层/);
-  assert.match(sent, /专用存储尚未接通/);
+  assert.match(sent, /respond\.learning/);
+  assert.doesNotMatch(sent, /专用存储尚未接通/);
 });
 
 test('后台任务包含相同教学方法，但任务范围和JSON协议仍由具体任务约束', async () => {
   for (const name of ['lesson', 'lesson-revision', 'practice'] as const) {
     const prompt = await loadTeachingTaskPrompt(name);
     const task = name === 'practice' ? 'practice' : 'lesson';
-    assert.ok(prompt.startsWith(await loadTutoringPolicy(task)));
+    assert.ok(prompt.includes(await loadTutoringPolicy(task)));
     assert.match(prompt, /JSON/);
     assert.match(prompt, name === 'practice' ? /不重新摸底、不创建路线、不等待回答/ : /不与学生现场对话，不等待回答/);
   }

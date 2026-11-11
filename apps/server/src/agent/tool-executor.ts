@@ -259,29 +259,39 @@ export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'user
     if (!attempt) return { ok: false, code: 'NOT_FOUND', message: '练习轮次不存在' };
     const ids = (attempt.exerciseIds as string[]).filter((id) => id === ctx.policy.focus.exerciseId);
     if (!ids.length) return { ok: false, code: 'INVALID_INPUT', message: '请明确要追问的当前练习题' };
+    let focusedAnswers = attempt.answers.filter((a) => ids.includes(a.exerciseId));
     if (ctx.policy.answerPermission && attempt.stage === 'doing') {
-      await db.$transaction(async (tx) => {
+      const viewedAnswer = await db.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "PracticeAttempt" WHERE id = ${attempt.id} FOR UPDATE`;
         const current = await tx.practiceAttempt.findUnique({ where: { id: attempt.id } });
-        if (current?.stage !== 'doing') return;
-        await tx.practiceAnswer.upsert({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: ids[0]! } },
-          create: { attemptId: attempt.id, exerciseId: ids[0]!, solutionViewedAt: new Date() }, update: { solutionViewedAt: new Date() } });
+        if (current?.stage !== 'doing') return null;
+        const where = { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: ids[0]! } };
+        const existing = await tx.practiceAnswer.findUnique({ where });
+        const solutionViewedAt = existing?.solutionViewedAt ?? new Date();
+        return tx.practiceAnswer.upsert({ where,
+          create: { attemptId: attempt.id, exerciseId: ids[0]!, solutionViewedAt }, update: { solutionViewedAt } });
       });
+      if (viewedAnswer) focusedAnswers = [viewedAnswer];
     }
     return {
       ok: true,
       attempt: {
         id: attempt.id,
         stage: attempt.stage,
+        submittedAt: attempt.submittedAt,
+        completedAt: attempt.completedAt,
+        assessmentSource: 'student_self_report',
         exercises: attempt.artifact.exercises
           .filter((ex) => ids.includes(ex.id))
           .map((ex) => ({ id: ex.id, order: ex.order, stem: ex.stem, topic: ex.topic, difficulty: ex.difficulty,
             ...(ctx.policy.answerPermission ? { answer: ex.answer, analysis: ex.analysis } : {}) })),
-        answers: attempt.answers.filter((a) => ids.includes(a.exerciseId)).map((a) => ({
+        answers: focusedAnswers.map((a) => ({
           exerciseId: a.exerciseId,
           textDraft: a.textDraft,
           markedUnknown: a.markedUnknown,
           hintsUsed: a.hintsUsed,
+          selfEval: a.selfEval,
+          solutionViewedAt: a.solutionViewedAt,
         })),
       },
     };
@@ -308,6 +318,7 @@ async function createMaterialJob(
   const goalType = toolName === 'createLesson' ? 'lesson' : 'practice';
   const run = await db.agentRun.findUniqueOrThrow({ where: { id: ctx.runId } });
   const frame = taskFrameFrom(run.taskFrame);
+  if (frame.contentProfile?.id === 'unconfigured') return { kind: 'error', code: 'UNSUPPORTED_CONTENT', message: '当前内容未配置材料生成能力，不能套用数学讲义或题组', retryable: false };
   if (frame.conditionCorrection || frame.readback?.status === 'pending') return { kind: 'error', code: 'EVIDENCE_REQUIRED', message: '先回读历史依据或澄清/确认更正条件，再生成材料', retryable: false };
   const goal = frame.goals.find((g) => g.type === goalType);
   if (!goal) return { kind: 'error', code: 'NOT_REQUESTED', message: '本轮尚未规划这种材料目标，不能跳过教学决策', retryable: false };
@@ -355,6 +366,7 @@ async function createMaterialJob(
     if (!sourceLesson.lesson.sections.some((s) => s.id === sectionId)) return { kind: 'error', code: 'INVALID_INPUT', retryable: false, message: '原段落不存在' };
   }
   const payload = {
+    contentProfile: frame.contentProfile ?? { id: 'math', version: '1' },
     type,
     subjectRevisionId: subject!.id,
     subjectText: (subject!.content as { text?: string }).text ?? '',

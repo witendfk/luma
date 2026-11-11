@@ -48,3 +48,4 @@
 - 回读仍无明确依据时以wait_user回复，在clarification填reason=history_ambiguous、question=正文中实际向学生展示的问题；条件更正用subject_correction。不要只填写内部标记而不向学生提问。
 - 有段落焦点的“换个例子/重写这一段”属于局部讲义目标，调用 createLesson 修改原段落；仅“为什么/没懂”先对话解释，不擅自重新生成整份讲义。
 - 当前练习追问只依据“当前练习题”与本人作答，原题是练习来源，不要将原题条件混入变式题；未经授权不读取参考答案。
+- 练习中的selfEval是学生自评，不是客观判分或掌握度；结合文字作答核实卡点。submittedAt/completedAt仅表示流程进度，solutionViewedAt表示曾有解析帮助，不能据此认定独立完成，也不自动授权本轮完整答案；没有作答或自评时不推测补全。

@@ -13,6 +13,7 @@ import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app';
 import { materialTaskAnchors, type MaterialTaskView, type TurnRequest } from '@luma/shared';
 import MessageBubble from '@/components/MessageBubble.vue';
 import MaterialTaskCard from '@/components/MaterialTaskCard.vue';
+import LearningRoute from '@/components/LearningRoute.vue';
 import LearningHeader from '@/components/LearningHeader.vue';
 import LearningDrawer from '@/components/LearningDrawer.vue';
 import AccountPanel from '@/components/AccountPanel.vue';
@@ -26,6 +27,16 @@ import { getLessonPractice } from '@/api/practice';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
+async function routeAction(action: 'pause' | 'resume' | 'skip', nodeId?: string): Promise<void> {
+  try { await store.actOnRoute(action, nodeId); }
+  catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '进度暂未更新，请重试', icon: 'none' }); }
+}
+function continueRoute(objective: string): void {
+  if (store.generating || store.waitingJob || store.updatingRoute || store.stopping) return;
+  if (draft.value.trim()) { uni.showToast({ title: '请先发送或清空当前输入', icon: 'none' }); return; }
+  draft.value = `接着学习「${objective}」，从上次停留的地方继续。`;
+  scrollToEnd();
+}
 const notebook = useNotebookPreviewStore();
 onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh().catch(() => { /* Keep current content; explicit reload remains available. */ }); });
 const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : (saved.value || store.subjects.some((row) => row.id === store.activeSubjectId && row.collected)));
@@ -111,12 +122,14 @@ onLoad(async (query) => {
 function scrollToEnd(): void {
   followOutput.value = true; newOutput.value = false;
   scrollTarget.value = '';
-  void nextTick(() => { scrollTarget.value = 'thread-end'; });
+  void nextTick(() => { if (followOutput.value) scrollTarget.value = 'thread-end'; });
 }
+let scrollSample = 0;
 function onThreadScroll(event: { detail: { scrollTop: number; scrollHeight: number } }): void {
+  const sample = ++scrollSample;
   const query = uni.createSelectorQuery().in(instance?.proxy);
   query.select('.thread-scroll').boundingClientRect((rect) => {
-    if (!rect || Array.isArray(rect) || rect.height === undefined) return;
+    if (sample !== scrollSample || !pageActive || !rect || Array.isArray(rect) || rect.height === undefined) return;
     followOutput.value = event.detail.scrollTop + rect.height >= event.detail.scrollHeight - 70;
     if (followOutput.value) newOutput.value = false;
   }).exec();
@@ -133,7 +146,7 @@ watch(draft, (value) => {
 }, { flush: 'sync' });
 async function onSend(): Promise<void> {
   const text = draft.value.trim();
-  if (!text || store.generating || store.editingSubject || store.confirmingSubject || resolvingPractice.value) return;
+  if (!text || store.generating || store.stopping || store.editingSubject || store.confirmingSubject || resolvingPractice.value) return;
   if (previewMeta.value?.recognition && previewMeta.value.recognition !== 'ready') return;
   focused.value = false;
   rememberChat();
@@ -317,6 +330,7 @@ function simulate(): void {
     <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="onThreadScroll">
       <view class="thread">
+        <LearningRoute v-if="!UI_MOCK && store.learningRoute && !lessonFocus && !exerciseFocus" :route="store.learningRoute" :disabled="store.generating || store.waitingJob || store.stopping || store.updatingRoute || store.editingSubject" @action="routeAction" @continue="continueRoute" />
         <view v-if="previewMeta" class="source-attachments">
           <view class="source-heading"><text>本次添加 · {{ previewMeta.attachments?.length }} 张图片</text><button v-if="previewMeta.recognition === 'ready'" @tap="previewAttachment(previewMeta.attachments ?? [], 0)">查看原图</button><button @tap="simulate">模拟异常</button></view>
           <AttachmentStrip v-if="previewMeta.recognition !== 'ready'" :images="previewMeta.attachments ?? []" readonly />
@@ -359,7 +373,7 @@ function simulate(): void {
       <button v-if="newOutput" class="new-output" @tap="scrollToEnd">查看新回复 ↓</button>
       <view class="composer">
         <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
-        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
+        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.stopping || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
       </view>
     </view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />

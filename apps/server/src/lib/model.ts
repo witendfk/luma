@@ -33,7 +33,7 @@ export type RespondDisposition = 'wait_user' | 'finish';
 
 export type AgentStep =
   | { kind: 'plan'; plan: import('zod').infer<typeof turnPlanSchema>; calls: ToolCall[]; usage?: TokenUsage }
-  | { kind: 'respond'; disposition: RespondDisposition; text: string; content?: TeachingReply; clarification?: import('../agent/readback').Clarification; refs: unknown[]; teaching?: import('zod').infer<typeof import('../agent/teaching-state').TeachingUpdate>; usage?: TokenUsage }
+  | { kind: 'respond'; disposition: RespondDisposition; text: string; content?: TeachingReply; clarification?: import('../agent/readback').Clarification; refs: unknown[]; teaching?: import('zod').infer<typeof import('../agent/teaching-state').TeachingUpdate>; learning?: import('../agent/learning-contracts').LearningUpdate; assistance?: 'none' | 'hint' | 'explanation' | 'solution'; usage?: TokenUsage }
   | { kind: 'tool_calls'; calls: ToolCall[]; usage?: TokenUsage }
   | { kind: 'issue'; code: string; retryable: boolean; message: string; usage?: TokenUsage };
 
@@ -168,7 +168,7 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
     const input = parsed.data;
     const text = teachingReplyText(input.content);
     if (streamed && text !== streamed) await reset();
-    return { kind: 'respond', disposition: input.disposition, text, content: input.content, clarification: input.clarification, refs: Array.isArray(input.refs) ? input.refs : [], teaching: input.teaching, usage };
+    return { kind: 'respond', disposition: input.disposition, text, content: input.content, clarification: input.clarification, refs: Array.isArray(input.refs) ? input.refs : [], teaching: input.teaching, learning: input.learning, assistance: input.assistance, usage };
   }
 
   const planning = calls.filter((c) => c.toolName === 'planTurn');
@@ -221,8 +221,10 @@ export async function generateJson<T>(opts: JsonOptions<T>): Promise<T> {
 
 async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
   const started = Date.now(); let usage: TokenUsage | undefined, error: string | undefined;
-  if (estimateTokens(opts.system + opts.prompt) + 512 + (opts.images?.length ?? 0) * 4096 > env().LONG_TASK_CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
-  if (opts.trace) await accountJobModel(opts.trace, opts.purpose);
+  const inputTokens = estimateTokens({ system: opts.system, prompt: opts.prompt }) + 512 + (opts.images?.length ?? 0) * 4096;
+  const outputTokens = env().MODEL_OUTPUT_TOKENS;
+  if (inputTokens + outputTokens > env().LONG_TASK_CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
+  const callId = opts.trace ? await accountJobModel(opts.trace, opts.purpose, { inputTokens, outputTokens }) : undefined;
   try {
     const result = await generateText({ model: getModel(), system: opts.system,
       ...(opts.images?.length ? { messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: opts.prompt }, ...opts.images.map((image) => ({ type: 'image' as const, image }))] }] } : { prompt: opts.prompt }), maxRetries: 0,
@@ -241,7 +243,7 @@ async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
     if (err instanceof ApiError) throw err;
     throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '模型调用失败，请检查网络或服务端模型配置后重试', 502, true);
   } finally {
-    if (opts.trace) await accountJobModel(opts.trace, opts.purpose, { durationMs: Date.now() - started, usage, error });
+    if (opts.trace && callId) await accountJobModel(opts.trace, opts.purpose, { callId, durationMs: Date.now() - started, usage, error });
   }
 }
 

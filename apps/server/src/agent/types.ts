@@ -19,6 +19,7 @@ export interface TaskFrameGoal {
 }
 
 export interface TaskFrame {
+  contentProfile?: import('./content-profile').ContentProfileRef;
   memoryCandidates?: Array<{kind: 'request' | 'difficulty' | 'attempt' | 'open_question' | 'constraint'; text: string; quote: string}>;
   conditionCorrection?: boolean;
   readback?: { reason: 'history_reference'; status: 'pending' | 'read' | 'clarified'; triggerMessageId: string;
@@ -47,6 +48,7 @@ export function taskFrameFrom(json: unknown): TaskFrame {
   if (!json || typeof json !== 'object') return base;
   const src = json as Partial<TaskFrame>;
   return {
+    contentProfile: src.contentProfile,
     memoryWrite: src.memoryWrite,
     conditionCorrection: src.conditionCorrection,
     memoryCandidates: src.memoryCandidates,

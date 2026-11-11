@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { tool, type ToolSet } from 'ai';
 import { TeachingUpdate } from './teaching-state';
 import { TeachingReply } from '@luma/shared';
+import { LearningAssistance, LearningUpdate } from './learning-contracts';
 
 /**
  * 业务工具定义（设计文档 §6）：收敛为 4 个。
@@ -72,7 +73,7 @@ export function findToolDefinition(name: string): ToolDefinition | undefined {
 }
 
 /** 原生工具集：只传名称、说明与参数 schema，无 execute（§4.10） */
-export function nativeToolSet(planning = false): ToolSet {
+export function nativeToolSet(planning = false, allowedTools?: string[]): ToolSet {
   if (planning) return { planTurn: tool({ description: '判断本轮教学目标。学生请求图文或概念关系/卡点需要图解时记录lesson，不要求图文关键词；自主图解用source=teaching_decision并填reason，学生请求用student_request。已有同范围适用讲义时填reuseArtifactId，指定段落改写不能复用旧版。仅明确要练习才记录practice；明确只要简短提示或暂不生成时服从。无需材料的短问答goals=[]。solutionRequested仅在主动索要完整答案时为true。memories摘取本轮明确讲法要求、卡点或尝试，quote必须为学生本轮逐字原话，不能把自主教学理由写成学生原话。', inputSchema: turnPlanSchema }) };
   const set: ToolSet = {
     respond: tool({
@@ -81,6 +82,7 @@ export function nativeToolSet(planning = false): ToolSet {
     }),
   };
   for (const def of toolDefinitions) {
+    if (allowedTools && !allowedTools.includes(def.name)) continue;
     set[def.name] = tool({ description: def.description, inputSchema: def.inputSchema });
   }
   return set;
@@ -92,11 +94,14 @@ export const respondSchema = z.object({
   content: TeachingReply.describe('有序教学内容块。paragraph为正文（可含行内公式），heading为步骤标题，formula为独立公式；text仅填内容，不填HTML或JSON字符串。'),
   refs: z.array(z.unknown()).optional(),
   teaching: TeachingUpdate.optional(),
+  learning: LearningUpdate.optional().describe('连续伴学时保存有来源的路线/短验证候选。只能引用学习数据中实际ID与版本；普通短问答不强制建路线。'),
+  assistance: LearningAssistance.optional().describe('本次针对待回答短验证提供的帮助：none/hint/explanation/solution。遗漏按explanation保守记录。'),
   clarification: z.object({ reason: z.enum(['history_ambiguous', 'subject_correction']), question: z.string().min(1).max(500) }).optional(),
 });
 
 /** Control metadata, not an extra business tool or a nested intent Agent. */
 export const turnPlanSchema = z.object({
+  contentProfileId: z.enum(['math', 'unconfigured']).optional().describe('根据当前真实学习目标选择内容配置，首期只有math；语言、文史或不明确范围用unconfigured，不能因默认产品学科套数学。'),
   memories: z.array(z.object({
     kind: z.enum(['request', 'difficulty', 'attempt', 'open_question', 'constraint']),
     text: z.string().trim().min(1).max(600),

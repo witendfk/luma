@@ -4,6 +4,7 @@ import type { ProgressRequest } from '@luma/shared';
 import { assertIdle, resolveSubject, requireRevision } from './subject-context';
 import { validateFocus } from './focus';
 import { conversationService } from './conversation.service';
+import { recordRouteReading } from './learning-route';
 
 /**
  * 学习对象版本与过程转写（FR-03 / 设计文档 §3.1）。
@@ -55,6 +56,7 @@ export const subjectService = {
           currentAttemptId: input.attemptId ?? null, currentExerciseId: input.exerciseId ?? null },
       });
       if (result.count !== 1) throw revisionConflict('学习位置已更新，请刷新后重试');
+      if (input.destination === 'reader') await recordRouteReading(tx, revision.id, `${subjectId}:${input.expectedVersion + 1}`);
       return tx.learningProgress.findUniqueOrThrow({ where: { subjectId } });
     });
   },

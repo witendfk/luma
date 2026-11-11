@@ -396,3 +396,77 @@ test('流式及排版故障的显示占位不泄漏完整或半截公式源码',
   }
   assert.match(JSON.stringify(pendingContentNodes('先想 $x$', true)), /公式暂未排版/);
 });
+
+test('停止期间禁止重复发送/取消，旧流和旧刷新不复活已停止回复', async () => {
+  let stream: any, finishCancel!: () => void, finishOld!: (value: any) => void;
+  let cancels = 0, reads = 0;
+  const stopped = { conversation: { id: 'c', title: '原对话' }, artifacts: [], materialTasks: [],
+    latestRun: { id: 'run', status: 'cancelled' } };
+  const sandbox = miniappSandbox({
+    '@/utils/sse': { openTurnStream: (opts: any) => { stream = opts; return { abort() {} }; } },
+    '@/api/conversations': {
+      cancelRun: () => { cancels++; return new Promise<void>((resolve) => { finishCancel = resolve; }); },
+      getConversation: () => ++reads === 1 ? new Promise((resolve) => { finishOld = resolve; }) : Promise.resolve(stopped),
+      listMessages: async () => ({ items: [{ id: 'partial', role: 'assistant', runId: 'run', status: 'incomplete', content: { blocks: [{ type: 'text', text: '已收到的内容' }] } }] }),
+    },
+  }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore(); chat.currentId = 'c';
+  await chat.send('问题'); stream.onEvent({ type: 'run.started', runId: 'run' });
+  const old = chat.refresh(false), stopping = chat.stop();
+  assert.equal(chat.stopping, true);
+  await chat.stop(); await chat.send('不应该发送');
+  assert.equal(cancels, 1);
+  stream.onEvent({ type: 'text.delta', runId: 'run', delta: '迟到内容' });
+  stream.onEvent({ type: 'run.waiting', runId: 'run', waiting: 'job', jobIds: ['j'] });
+  finishOld({ ...stopped, activeRun: { id: 'run', status: 'running' } }); await old;
+  assert.equal(chat.waitingJob, false); assert.equal(chat.currentRunId, null);
+  finishCancel(); await stopping;
+  assert.equal(chat.stopping, false); assert.equal(chat.generating, false);
+  assert.equal(chat.messages[0].text, '已收到的内容');
+  assert.doesNotMatch(chat.messages.map((m: any) => m.text).join(''), /迟到/);
+  chat.$dispose();
+});
+
+test('取消响应丢失先只读对账；切换会话后迟到取消不能刷新新会话', async () => {
+  let failCancel!: (e: Error) => void, reads = 0;
+  const sandbox = miniappSandbox({ '@/api/conversations': {
+    cancelRun: () => new Promise<void>((_, reject) => { failCancel = reject; }),
+    getConversation: async () => { reads++; return { conversation: { id: 'c', title: '原对话' }, artifacts: [], latestRun: { id: 'run', status: 'cancelled' } }; },
+    listMessages: async () => ({ items: [] }),
+  } }, { uni: storageMock(), Error });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore(); chat.currentId = 'c'; chat.currentRunId = 'run';
+  const stopping = chat.stop(); failCancel(new Error('连接断开'));
+  await assert.rejects(stopping, /连接断开/); assert.equal(reads, 1); assert.equal(chat.waitingJob, false);
+  chat.currentRunId = 'run'; const late = chat.stop();
+  chat.reset(); chat.currentId = 'new'; chat.title = '新会话';
+  failCancel(new Error('迟到取消')); await late;
+  assert.equal(reads, 1); assert.equal(chat.title, '新会话'); assert.equal(chat.stopping, false);
+  chat.$dispose();
+});
+
+test('伴学路线完整事件更新、暂停不触发模型，旧版本/旧对象状态不能覆盖当前页面', async () => {
+  let stream: any, calls = 0, controls = 0;
+  const route = { id: 'route', version: 1, goal: '理解变化率', status: 'active', subjectRevisionId: 'revision',
+    contentProfileId: 'math', contentProfileVersion: '1', createdAt: '2026-11-10T01:00:00.000Z', nodes: [] };
+  const sandbox = miniappSandbox({
+    '@/api/conversations': { updateLearningRoute: async (_id: string, _subject: string, input: any) => { controls++; assert.equal(input.expectedVersion, 2); return { ...route, version: 3, status: 'paused' }; } },
+    '@/utils/sse': { openTurnStream: (input: any) => { stream = input; calls++; return { abort() {} }; } },
+  }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.activeSubjectId = 'subject'; chat.subject = { id: 'revision', version: 1, confirmedAt: 'now' };
+  chat.learningRoute = route;
+  await chat.send('继续');
+  stream.onEvent({ type: 'route.updated', runId: 'run', route: { ...route, version: 2 } });
+  stream.onEvent({ type: 'route.updated', runId: 'run', route });
+  stream.onEvent({ type: 'route.updated', runId: 'run', route: { ...route, id: 'other', version: 9, subjectRevisionId: 'other-revision' } });
+  assert.equal(chat.learningRoute.version, 2);
+  stream.onEvent({ type: 'run.completed', runId: 'run' });
+  await chat.actOnRoute('pause');
+  assert.equal(chat.learningRoute.status, 'paused'); assert.equal(controls, 1); assert.equal(calls, 1);
+  chat.reset();
+  stream.onEvent({ type: 'route.updated', runId: 'run', route });
+  assert.equal(chat.learningRoute, null);
+});

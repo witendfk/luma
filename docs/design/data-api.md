@@ -37,6 +37,7 @@
 - 轮次与题目的作答记录唯一；草稿更新使用该组合定位。
 - 消息请求标识唯一，任务幂等标识唯一，避免重试重复新增。
 - 作答快照、图片关联和自评保留在原轮次，重做创建新轮次。
+- 练习追问按用户、会话、来源版本、轮次及焦点题投影：题干、本人草稿、暂不会、提示次数、自评、解析查看时间及轮次提交/完成时间。`assessmentSource=student_self_report`明确自评来源，不等于判分或掌握度；缺失记录保留缺失。看过解析不自动授予当前答案权限。作答中经授权加载解析时记录并保留首次暴露时间，本次上下文直接使用已保存记录；其他题作答与答案不加载。
 - 题组与单题发布后不修改题目和参考答案；需要修订时生成新材料版本。
 - 显示材料入口时区分未生成、生成中、已完成及失败，收藏不触发伪造的完成状态。
 
@@ -208,9 +209,9 @@
 - 确认理解本身不启动任务；生成失败不损坏讲义或对话，学生可跳过。缩略图、放大及从收藏详情回看复用现有容器，不另设后台菜单。
 
 
-## 8 伴学学习路线与验证目标契约（T02，目标契约）
+## 8 伴学学习路线与短验证（T02）
 
-本节定义 FR-13 的最小数据边界，供后续 T02 实施评审。当前数据库尚未接入这些表；不得把现有 `TeachingMemory`、`TaskFrame` 或 `LearningProgress` 临时拼接后宣称已实现。所有记录都必须沿用会话、账号、`subjectRevisionId` 和活动运行的归属校验。
+FR-13的最小存储为LearningRoute、LearningRouteNode、LearningCheck、LearningCheckEvaluation和LearningRouteEvent，独立于TeachingMemory/TaskFrame与页面LearningProgress。通过SubjectRevision关联会话及账号，不重复存储可矛盾的归属字段。respond.learning候选与完整教学回复在withActiveRun会话锁事务内一并校验提交；无效更新回滚，沿用有限协议修正，不增加独立评价模型调用。
 
 ### 8.1 学习路线
 
@@ -218,18 +219,20 @@
 
 | 实体/字段 | 约束 |
 | --- | --- |
-| `LearningRoute.id / accountId / conversationId / subjectRevisionId` | 稳定主键；会话、账号和题干版本必须一致，题干修订创建新路线或明确标记旧路线只读 |
+| `LearningRoute.id / subjectRevisionId` | 稳定主键；会话/账号由对象版本关联验证，题干修订后只取新版本路线，旧证据保留 |
 | `LearningRoute.goal` | 学生可理解的一句话目标；来源为学生请求或已确认范围，不由模型凭空扩展课程 |
 | `LearningRoute.status` | `active` / `paused` / `ended`；结束不表示所有节点通过 |
 | `LearningRoute.version / createdAt / updatedAt` | 条件更新与幂等；迟到任务不得覆盖新版本 |
 | `LearningRouteNode.id / routeId / position` | 同一路线内稳定顺序；依赖只用于推荐，不能作为权限绕过 |
-| `conceptRef / objective / prerequisites` | 可选通用概念引用、可观察目标和依赖；首期数学内容配置提供语义，不把年级写死在循环中 |
+| `key / objective / prerequisites` | 路线内稳定key、可观察目标和前置key；依赖必须是同路线更早节点，不能形成循环 |
 | `status` | `pending` / `learning` / `checked` / `needs_review` / `skipped` |
 | `passCriteria` | 版本化的最小验证条件；不得只存一个模型生成的百分比 |
-| `evidenceSummary` | 关联验证记录、学生原话和帮助级别的摘要；原文及正式题组通过引用读取 |
+| `checks / evaluations` | 节点关联短验证及追加评价，保存学生原话和帮助；材料/正式作答直接引用后续再接 |
 | `version / updatedAt` | 状态转移带期望版本；历史状态保留，不能无条件覆盖 |
 
 路线建议通常 3～5 个节点，但数量不是接口硬限制；简单目标可少于 3 个。学生跳过、暂停或调整目标时保存原因和来源，不删除旧路线证据。跨对象、旧题干版本和新练习不继承 `checked` 状态。
+
+路线固定contentProfileId/contentProfileVersion，通过sourceMessageId/sourceQuote/sourceRunId保留目标依据；profile表示内容规则、工具与评价依据，不是学科菜单。首期只注册math@1；其他内容为unconfigured@1。换例、变式可继续当前节点；目标变化用replaces引用旧路线及版本，旧证据不转为新目标已通过。材料/例题仍由当前对象与教学记忆提供，不冒充短验证直接作答来源。
 
 ### 8.2 教学验证
 
@@ -237,16 +240,21 @@
 
 | 字段 | 约束 |
 | --- | --- |
-| `id / nodeId / subjectRevisionId / conversationId` | 归属当前路线、对象版本和会话；不可跨题复用 |
-| `prompt / expectedEvidence` | 学生可读的验证任务与需要观察的证据；不把参考答案注入普通引导上下文 |
-| `attemptMessageId / answerSnapshot` | 学生原始回答或作答来源；保留提示、讲解、解析查看和照片引用 |
+| `id / nodeId / sourceRunId / issuedMessageId` | 通过节点关联路线与对象版本；验证随完整助手回复保存，后续学生回答才可评价 |
+| `taskKind / rubricVersion` | 描述验证方式及评价规则版本，可为判断、解释、比较、应用或作品任务；不把所有学习限定为唯一数值答案，首期仅实现所需数学任务 |
+| `prompt / criteria` | 任务须原样展示在回复中；复制节点预存的可观察条件及requiresIndependent，不存/注入参考答案 |
+| `LearningCheckEvaluation.attemptMessageId / answerSnapshot` | 当前本人学生原文，必须晚于验证发布，同回答对同check不重复累计；照片/正式作答直接引用后续再接 |
 | `evaluation` | `pass` / `needs_review` / `insufficient_evidence` / `uncertain`；由受控评价结果提出，程序校验完整性 |
 | `supportLevel` | `independent` / `hinted` / `explained` / `solution_seen` / `skipped` |
-| `criteriaVersion / evidenceRefs` | 通过条件版本、来源消息/材料/题目及必要原文引用；引用不等于数学证明 |
-| `createdAt` | 只追加；修正评价新增版本并关联旧记录，不删除原回答 |
+| `rubricVersion / criteriaResults` | profile与条件快照；逐项覆盖criterionId/met/evidenceType/学生逐字quote/简短反馈，自述、复述和不明确证据不得pass；引用不等于数学证明 |
+| `createdAt` | 再次回答追加评价，不删除原回答；已pass验证只读，节点再验证/回退另行收口 |
 
 只有 `pass` 且满足当前版本 `passCriteria` 的验证，才可提出节点转为 `checked`；学生自述、助手讲解、一次自评或看过解析后的复述不能单独触发。`uncertain` 与 `insufficient_evidence` 不应伪装成失败分数；允许学生继续、重试或跳过。误解记录仍写入 `TeachingMemory`，通过关联 `evidenceRefs` 与节点，不另建一套无来源画像。
 
 ### 8.3 事件与页面同步
 
-服务端发布 `route.updated`、`node.updated`、`check.recorded` 事件时只发送已校验的状态、版本和可读摘要；不把模型规划 JSON、内部评分理由或提示词发给小程序。SSE 中途可展示教学正文，节点更新等结构化事件须完整校验后发送。重复事件按 `routeId + version` 去重，页面重进以数据库版本为准。
+SSE统一发布route.updated完整可读快照，不另维护node.updated/check.recorded两套增量投影。事务提交后才发送节点状态与最新短验证提示/结论，不下发条件详情、参考答案或内部评价反馈。正文仍流式，结构化状态等待完整校验；前端按对象版本、routeId/version和路线创建顺序过滤迟到状态，重进从会话详情learningRoute恢复。
+
+PUT /api/conversations/:id/subjects/:subjectId/learning-route接收requestId、routeId、expectedVersion、action=pause/resume/skip及可选nodeId。本人当前对象、空闲运行和版本CAS在会话锁内核验；相同requestId同内容幂等、异内容冲突。跳过不写checked。操作不调用模型，“接着学”只预填输入。
+
+帮助按none/hint/explanation/solution单调升级；缺省保守记explanation，同对象验证未完成时进入阅读页也记讲解暴露。评价前还回读验证发布与学生回答之间的助手消息：中断或旧消息缺失帮助元数据时保守记讲解，避免停止后丢失已展示帮助。只允许当前节点最新验证参与推进，旧验证被替代后不可借其通过当前节点。评价保存回答发生前的帮助，当前回复的进一步帮助只影响后续回答。条件覆盖、引用及帮助校验不能证明模型语义评价正确，也不能证明学生未使用应用外帮助。

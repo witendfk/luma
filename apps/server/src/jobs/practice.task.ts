@@ -5,7 +5,8 @@ import { env, hasModelCredentials } from '../lib/env';
 import { ApiError, notImplemented } from '../lib/errors';
 import { parseReview } from './review';
 import { extractJson, generateJson } from '../lib/model';
-import { loadPrompt, loadTeachingTaskPrompt } from '../agent/prompts';
+import { loadTeachingReviewPrompt, loadTeachingTaskPrompt } from '../agent/prompts';
+import { requireMaterialProfile } from '../agent/content-profile';
 import { JobLeaseLostError, publishArtifact, touchJob, type JobLease } from './shared';
 
 /**
@@ -40,6 +41,7 @@ function parsePractice(raw: string): PracticeStructure {
 export async function practiceTask(lease: JobLease): Promise<void> {
   const job = await db.generationJob.findUniqueOrThrow({ where: { id: lease.jobId } });
   const payload = (job.payload ?? {}) as {
+    contentProfile?: unknown;
     subjectText?: string;
     tags?: string[];
     count?: number;
@@ -47,6 +49,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
     evidence?: unknown;
     practiceLesson?: unknown;
   };
+  const profile = requireMaterialProfile(payload.contentProfile);
 
   try {
     await touchJob(lease, '生成题目');
@@ -71,7 +74,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
-        system: await loadTeachingTaskPrompt('practice'),
+        system: await loadTeachingTaskPrompt('practice', profile),
         prompt: [
           `学习对象：\n${payload.subjectText ?? ''}`,
           `教学依据（版本固定的数据；错误尝试不当成结论）：${JSON.stringify(payload.evidence ?? null)}`,
@@ -90,7 +93,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice_review',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
-        system: await loadPrompt('review'),
+        system: await loadTeachingReviewPrompt(profile),
         prompt: [
           '独立复核以下题组：每题条件完整可解，题干、参考答案与解析一致，不超出学生已确认范围。',
           `学习对象：\n${payload.subjectText ?? ''}`,

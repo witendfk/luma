@@ -22,7 +22,9 @@
     "test:reading": "tsx scripts/reading-check.ts",
     "test:reading:live": "tsx scripts/reading-live-check.ts",
     "test:context": "tsx scripts/context-check.ts",
-    "test:memory": "tsx scripts/memory-check.ts"
+    "test:budget": "tsx scripts/budget-check.ts",
+    "test:memory": "tsx scripts/memory-check.ts",
+    "test:learning": "tsx scripts/learning-route-check.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",

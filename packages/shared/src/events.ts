@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ArtifactType, JobStatus, PublishStatus } from './enums';
 import { ErrorCode } from './errors';
 import { Diagram } from './content';
+import { LearningRouteSnapshot } from './learning';
 
 /**
  * 对话流式事件（设计文档 §10）。
@@ -99,6 +100,7 @@ export const RunCancelledEvent = z.object({
 });
 
 export const StreamEvent = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('route.updated'), runId: RunId, route: LearningRouteSnapshot }),
   RunStartedEvent,
   TextDeltaEvent,
   TextResetEvent,

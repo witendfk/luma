@@ -16,6 +16,8 @@ export const useConversationStore = defineStore('conversation', () => {
   const subjects = ref<LearningSubjectView[]>([]);
   const activeSubjectId = ref<string | null>(null);
   const progress = ref<ProgressView | null>(null);
+  const learningRoute = ref<import('@luma/shared').LearningRouteView | null>(null);
+  const updatingRoute = ref(false);
   const learnAll = ref(false);
   const switchingSubject = ref(false);
   const artifacts = ref<api.ConversationDetail['artifacts']>([]);
@@ -23,6 +25,7 @@ export const useConversationStore = defineStore('conversation', () => {
   const materialTasks = ref<MaterialTaskView[]>([]);
   const retryingJobId = ref<string | null>(null);
   const generating = ref(false);
+  const stopping = ref(false);
   const editingSubject = ref(false);
   const confirmingSubject = ref(false);
   const stage = ref('clarifying');
@@ -65,6 +68,7 @@ export const useConversationStore = defineStore('conversation', () => {
     archivedAt.value = null;
     messages.value = [];
     subject.value = null;
+    learningRoute.value = null; updatingRoute.value = false;
     subjects.value = []; activeSubjectId.value = null; progress.value = null; learnAll.value = false; switchingSubject.value = false;
     artifacts.value = [];
     lessonJob.value = null;
@@ -73,6 +77,7 @@ export const useConversationStore = defineStore('conversation', () => {
     confirmingSubject.value = false;
     stage.value = 'clarifying';
     waitingJob.value = false;
+    stopping.value = false;
     error.value = '';
   }
   onScopeDispose(onSessionCleared(reset));
@@ -91,6 +96,7 @@ export const useConversationStore = defineStore('conversation', () => {
     subject.value = detail.subject;
     subjects.value = detail.subjects ?? [];
     activeSubjectId.value = detail.conversation.activeSubjectId ?? detail.subject?.subjectId ?? null;
+    applyLearningRoute(detail.learningRoute ?? null);
     progress.value = detail.progress; learnAll.value = detail.conversation.learnAll ?? false;
     artifacts.value = detail.artifacts;
     lessonJob.value = detail.lessonJob ?? null;
@@ -149,7 +155,7 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId' | 'attemptId' | 'exerciseId' | 'practiceMode'>): Promise<void> {
-    if (generating.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
+    if (generating.value || updatingRoute.value || stopping.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
     const version = openVersion, session = sessionVersion();
     messageVersion += 1;
     generating.value = true;
@@ -175,6 +181,7 @@ export const useConversationStore = defineStore('conversation', () => {
           const last = messages.value[messages.value.length - 1];
           if (last?.role === 'user' && !last.runId) last.runId = event.runId;
         }
+        if (event.type === 'route.updated') applyLearningRoute(event.route);
         if (event.type === 'text.reset') {
           const last = messages.value[messages.value.length - 1];
           if (last?.role === 'assistant' && last.runId === event.runId && last.incomplete) messages.value.pop();
@@ -255,6 +262,7 @@ export const useConversationStore = defineStore('conversation', () => {
       waitingJob.value = false;
       currentRunId.value = null;
       subject.value = result.subject;
+      learningRoute.value = null;
       if (result.progress) progress.value = result.progress;
       subjects.value = subjects.value.map((row) => row.id === activeSubjectId.value ? { ...row, revision: result.subject, progress: result.progress ?? row.progress } : row);
       stage.value = 'clarifying';
@@ -290,6 +298,7 @@ export const useConversationStore = defineStore('conversation', () => {
       if (session !== sessionVersion() || currentId.value !== id || version !== openVersion) return;
       openVersion += 1; version = openVersion; messageVersion += 1; stopStream();
       subject.value = detail.subject; subjects.value = detail.subjects;
+      learningRoute.value = detail.learningRoute ?? null;
       activeSubjectId.value = detail.conversation.activeSubjectId ?? null; progress.value = detail.progress;
       learnAll.value = detail.conversation.learnAll ?? false; stage.value = detail.progress?.stage ?? 'clarifying';
       artifacts.value = detail.artifacts; messages.value = []; error.value = ''; currentRunId.value = null; retryRunId.value = null; lastTurn = null;
@@ -306,16 +315,27 @@ export const useConversationStore = defineStore('conversation', () => {
   }
 
   async function stop(): Promise<void> {
+    if (stopping.value) return;
+    const version = ++openVersion, session = sessionVersion();
+    stopping.value = true;
     const runId = currentRunId.value;
     stopStream();
     waitingJob.value = false;
     currentRunId.value = null;
-    if (runId) await api.cancelRun(runId);
-    await refresh();
+    try {
+      if (runId) await api.cancelRun(runId);
+      if (version === openVersion && session === sessionVersion()) await refresh();
+    } catch (err) {
+      // Cancellation may have succeeded before the response was lost. Reconcile; never auto-regenerate.
+      if (version === openVersion && session === sessionVersion()) {
+        await refresh().catch(() => {});
+        throw err;
+      }
+    } finally { if (version === openVersion && session === sessionVersion()) stopping.value = false; }
   }
 
   async function retryMaterial(jobId: string): Promise<void> {
-    if (retryingJobId.value || generating.value || waitingJob.value) return;
+    if (retryingJobId.value || generating.value || waitingJob.value || stopping.value) return;
     const id = currentId.value, version = openVersion, session = sessionVersion();
     retryingJobId.value = jobId;
     try {
@@ -326,6 +346,31 @@ export const useConversationStore = defineStore('conversation', () => {
     }
   }
 
-  return { retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
-    reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
+  function applyLearningRoute(next: import('@luma/shared').LearningRouteView | null): void {
+    if (next && next.subjectRevisionId !== subject.value?.id) return;
+    if (learningRoute.value && learningRoute.value.subjectRevisionId !== subject.value?.id) learningRoute.value = null;
+    if (!next && learningRoute.value?.subjectRevisionId === subject.value?.id) return;
+    if (next && learningRoute.value?.id === next.id && learningRoute.value.version > next.version) return;
+    if (next && learningRoute.value && learningRoute.value.id !== next.id &&
+      (learningRoute.value.createdAt > next.createdAt || (learningRoute.value.createdAt === next.createdAt && learningRoute.value.id > next.id))) return;
+    learningRoute.value = next;
+  }
+
+  async function actOnRoute(action: 'pause' | 'resume' | 'skip', nodeId?: string): Promise<void> {
+    const route = learningRoute.value, id = currentId.value, object = activeSubjectId.value;
+    if (!route || !id || !object || updatingRoute.value || generating.value || waitingJob.value || stopping.value || switchingSubject.value || editingSubject.value) return;
+    const version = openVersion, session = sessionVersion();
+    updatingRoute.value = true;
+    try {
+      const next = await api.updateLearningRoute(id, object, { requestId: `route_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        routeId: route.id, expectedVersion: route.version, action, nodeId });
+      if (version === openVersion && session === sessionVersion() && activeSubjectId.value === object) applyLearningRoute(next);
+    } catch (err) {
+      if (version === openVersion && session === sessionVersion() && activeSubjectId.value === object) await refresh(false).catch(() => {});
+      throw err;
+    } finally { if (version === openVersion && session === sessionVersion()) updatingRoute.value = false; }
+  }
+
+  return { learningRoute, updatingRoute, actOnRoute, retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+    stopping, reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });
