@@ -27,7 +27,7 @@ import { getLessonPractice } from '@/api/practice';
 import { useConversationStore } from '@/stores/conversation';
 
 const store = useConversationStore();
-async function routeAction(action: 'pause' | 'resume' | 'skip', nodeId?: string): Promise<void> {
+async function routeAction(action: 'pause' | 'resume' | 'skip' | 'revisit', nodeId?: string): Promise<void> {
   try { await store.actOnRoute(action, nodeId); }
   catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '进度暂未更新，请重试', icon: 'none' }); }
 }

@@ -40,6 +40,19 @@ export function graphicSvg(input: TeachingGraphic): string {
     content += label(cx + 17, labelY, pointLabel, '#8c744f');
     content += label(320, 454, g.a > 0 ? '沿曲线向下观察，哪里不能再低？' : '沿曲线向上观察，哪里不能再高？', '#7c8d6e', 'middle');
     if (g.revealValues) content += label(ox-12, cy+7, number(vy), '#9f8562', 'end') + label(cx, oy+28, number(vx), '#9f8562', 'middle');
+  } else if (g.kind === 'mapping') {
+    const outputs = [...new Set(g.pairs.map((p) => p.output))];
+    const row = (i: number, count: number) => count === 1 ? 242 : 116 + i * 252 / (count - 1);
+    content += label(152, 54, g.inputLabel, '#52694b', 'middle') + label(488, 54, g.outputLabel, '#52694b', 'middle');
+    content += '<rect x="82" y="78" width="140" height="330" rx="24" fill="#edf1e6"/><rect x="418" y="78" width="140" height="330" rx="24" fill="#f0ebe1"/>';
+    content += '<defs><marker id="mapping-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M1,1 L7,4 L1,7" fill="none" stroke="#829371" stroke-width="1.4"/></marker></defs>';
+    for (const [i, pair] of g.pairs.entries()) {
+      const y1 = row(i, g.pairs.length), y2 = row(outputs.indexOf(pair.output), outputs.length);
+      content += `<path d="M205,${y1} C280,${y1} 360,${y2} 432,${y2}" fill="none" stroke="#829371" stroke-width="2" marker-end="url(#mapping-arrow)"/>`;
+      content += label(145, y1 + 7, String(pair.input), '#52694b', 'middle');
+    }
+    for (const [i, output] of outputs.entries()) content += label(495, row(i, outputs.length) + 7, String(output), '#8c744f', 'middle');
+    content += label(320, 451, '沿箭头看对应关系，相同输出只列一次', '#7c8d6e', 'middle');
   } else {
     if (g.edges.some(([a,b]) => a >= g.points.length || b >= g.points.length || a === b)) throw new Error('图形连线引用无效');
     const xs = g.points.map((p) => p.x), ys = g.points.map((p) => p.y);
@@ -54,7 +67,7 @@ export function graphicSvg(input: TeachingGraphic): string {
 
 export async function renderGraphic(graphic: TeachingGraphic): Promise<Buffer> {
   const parsed = TeachingGraphic.parse(graphic);
-  const key = 'graphic-v2:' + JSON.stringify(parsed);
+  const key = 'graphic-v3:' + JSON.stringify(parsed);
   return cache.get(key, () => sharp(Buffer.from(graphicSvg(parsed)), { density: 144 }).png().toBuffer());
 }
 export async function presentDiagram(diagram: Diagram): Promise<Diagram> {

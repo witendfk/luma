@@ -17,7 +17,7 @@ import { resolveSubject, latestRevision } from './subject-context';
 import { validateFocus } from './focus';
 import { createConversationTitle } from '../lib/conversation-title';
 import { practiceSource } from './lesson-practice';
-import { ContentProfileRef, UNCONFIGURED_PROFILE } from '../agent/content-profile';
+import { ContentProfileRef } from '../agent/content-profile';
 
 /**
  * 运行服务（设计文档 §4.5 / §4.9 / §10）：
@@ -120,7 +120,7 @@ export const runService = {
       const taskFrame: TaskFrame = source ? { ...taskFrameFrom(source.taskFrame), goals: taskFrameFrom(source.taskFrame).goals.map(({ failure, startedJobId, ...goal }) => goal), historyCount: history.length } : {
         readback: input.artifactId || input.attemptId ? undefined : initialReadback(input.text ?? '', userMessage.id),
         planned: !subject?.confirmedAt || (Boolean(input.action) && previousProfile.success && previousProfile.data.id === 'math'),
-        contentProfile: !subject?.confirmedAt ? UNCONFIGURED_PROFILE : input.action && previousProfile.success ? previousProfile.data : undefined,
+        contentProfile: subject?.confirmedAt && input.action && previousProfile.success && previousProfile.data.id === 'math' ? previousProfile.data : undefined,
         solutionRequested: input.action === 'show_solution',
         historyCount: history.length,
         kind: input.action === 'show_solution' ? 'solution' : goals.length > 0 ? 'material' : 'chat',

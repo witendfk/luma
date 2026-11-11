@@ -34,6 +34,7 @@ import { prefixCacheKey, prepareContextMemory } from './context-memory';
 import { CompactionError } from './compaction';
 import { MATH_PROFILE, UNCONFIGURED_PROFILE } from './content-profile';
 import { LearningUpdateError, saveLearningUpdate } from '../services/learning-route';
+import { validateLearningIntent } from './learning-contracts';
 
 /**
  * 驱动器（设计文档 §4.12）：唯一的循环所有者。
@@ -238,7 +239,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       const step = await nextAgentStep({
         purpose: 'agent', system, messages: context.messages, tools, cacheKey: prefixCacheKey(conversation.userId, run.conversationId),
         abortSignal: AbortSignal.any([controller.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]),
-        mock: planning ? { kind: 'plan', plan: { contentProfileId: 'math', goals: [], solutionRequested: false, memories: [] }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { contentProfileId: 'math', goals: [], solutionRequested: false, memories: [] } }] } : mockStep(policy, taskFrame, subjectText),
+        mock: planning ? { kind: 'plan', plan: { contentProfileId: 'math', learningIntent: 'none', goals: [], solutionRequested: false, memories: [] }, calls: [{ toolCallId: `plan_${randomUUID()}`, toolName: 'planTurn', input: { contentProfileId: 'math', learningIntent: 'none', goals: [], solutionRequested: false, memories: [] } }] } : mockStep(policy, taskFrame, subjectText),
         onText: async (delta) => {
           controller.signal.throwIfAborted(); partialText += delta;
           if (emit) {
@@ -260,6 +261,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
       if (step.kind === 'plan') {
         if (!planning) { await failRun(runId, 'PROTOCOL', '本轮目标已记录，不能重复规划', false, emit, owner); return; }
         taskFrame.contentProfile = step.plan.contentProfileId === 'math' ? MATH_PROFILE : UNCONFIGURED_PROFILE;
+        taskFrame.learningIntent = step.plan.learningIntent;
         const goals = policy.subjectConfirmed && taskFrame.contentProfile.id === 'math' ? [...new Map([...step.plan.goals, ...taskFrame.goals].map((goal) => [goal.type, { ...goal, source: goal.source ?? 'student_request' as const }])).values()] : [];
         taskFrame.conditionCorrection ||= step.plan.conditionCorrection;
         taskFrame.memoryCandidates = step.plan.memories;
@@ -267,7 +269,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         taskFrame.solutionRequested = !taskFrame.conditionCorrection && policy.subjectConfirmed && step.plan.solutionRequested;
         taskFrame.kind = goals.length ? 'material' : taskFrame.solutionRequested ? 'solution' : 'chat';
         protocol.push(assistantToolCallsMessage(step.calls), toolResultsMessage([{ toolCallId: step.calls[0]!.toolCallId, toolName: 'planTurn',
-          value: { ok: true, contentProfile: taskFrame.contentProfile, goals: taskFrame.goals, solutionRequested: taskFrame.solutionRequested } }]));
+          value: { ok: true, contentProfile: taskFrame.contentProfile, learningIntent: taskFrame.learningIntent, goals: taskFrame.goals, solutionRequested: taskFrame.solutionRequested } }]));
         await withActiveRun(runId, owner, async (tx) => {
           if (run.subjectRevisionId && run.userMessageId && taskFrame.memoryCandidates?.length) {
             taskFrame.memoryWrite = await applyTeachingMemory(tx, {
@@ -276,7 +278,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
             });
           }
           await tx.toolExecution.create({ data: { runId, decisionId: `${runId}:d${counters.decisions}`, toolCallId: step.calls[0]!.toolCallId,
-            tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ contentProfile: taskFrame.contentProfile, goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
+            tool: 'planTurn', batchOrder: 0, status: 'succeeded', resultRef: asJson({ contentProfile: taskFrame.contentProfile, learningIntent: taskFrame.learningIntent, goals, solutionRequested: taskFrame.solutionRequested }), durationMs: Date.now() - started } });
           await tx.agentRun.update({ where: { id: runId }, data: { taskFrame: asJson(taskFrame), protocol: asJson(protocol) } });
         });
         continue;
@@ -285,7 +287,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
 
       if (step.kind === 'respond') {
         const requiresEvidence = taskFrame.conditionCorrection || taskFrame.readback?.status === 'pending';
-        const validation = requiresEvidence && step.learning ? { ok: false as const, message: '先回读/澄清或确认题干更正，不得同时保存学习路线或验证结果' } : validateReadback(taskFrame, step) ?? (requiresEvidence ? { ok: true as const } : await validateRespond(step.disposition, taskFrame));
+        const validation = requiresEvidence && step.learning ? { ok: false as const, message: '先回读/澄清或确认题干更正，不得同时保存学习路线或验证结果' } : validateReadback(taskFrame, step) ?? (requiresEvidence ? { ok: true as const } : validateLearningIntent(taskFrame, policy, step.learning) ?? await validateRespond(step.disposition, taskFrame));
         if (!validation.ok) {
           // finish 条件不满足：协议校正，有限次（§4.11）
           await resetPartial();

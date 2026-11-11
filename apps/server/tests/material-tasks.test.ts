@@ -11,7 +11,7 @@ const job = { id: 'j', type: 'lesson', runId: 'r', subjectRevisionId: 'v1', stat
 const artifact = { id: 'a', type: 'lesson', publishStatus: 'published', content: { lesson: { title: '斜率为什么表示变化快慢', sections: [{ heading: '横向一步与纵向变化', body: 'PRIVATE_BODY' }] } } };
 
 test('主动图解目标保留来源和依据，不因此授权练习或完整答案', () => {
-  const plan = { memories: [], goals: [{ type: 'lesson', source: 'teaching_decision', reason: '学生无法建立斜率与变化的关系', target: '用直线图说明斜率' }], solutionRequested: false };
+  const plan = { learningIntent: 'none', memories: [], goals: [{ type: 'lesson', source: 'teaching_decision', reason: '学生无法建立斜率与变化的关系', target: '用直线图说明斜率' }], solutionRequested: false };
   assert.equal(turnPlanSchema.parse(plan).goals[0]?.source, 'teaching_decision');
   assert.equal(turnPlanSchema.safeParse({ ...plan, goals: [{ type: 'lesson', source: 'teaching_decision' }] }).success, false);
   assert.equal(turnPlanSchema.safeParse({ ...plan, goals: [{ type: 'practice', source: 'teaching_decision', reason: '随便出题' }] }).success, false);

@@ -213,6 +213,8 @@
 
 FR-13的最小存储为LearningRoute、LearningRouteNode、LearningCheck、LearningCheckEvaluation和LearningRouteEvent，独立于TeachingMemory/TaskFrame与页面LearningProgress。通过SubjectRevision关联会话及账号，不重复存储可矛盾的归属字段。respond.learning候选与完整教学回复在withActiveRun会话锁事务内一并校验提交；无效更新回滚，沿用有限协议修正，不增加独立评价模型调用。
 
+planTurn新增必填`learningIntent: start | continue | none`，随TaskFrame、planTurn结果及运行恢复保存；旧运行缺失该字段不补造教学意图。start在已确认数学且非完整解析/章节/练习追问时要求最终respond.learning.create，遗漏走共享有限修正；continue/none不强迫每轮写进度。实际学习路线及短验证仍以本节的独立存储为准，不能用该枚举充当已保存路线。
+
 ### 8.1 学习路线
 
 `LearningRoute` 代表一个学习对象版本下围绕一个学生目标的短路线。`LearningRouteNode` 代表可观察的学习节点。路线只保存当前学习目标和推进证据，不保存长期人格画像、跨学科知识图谱或模型内部推理。
@@ -222,6 +224,7 @@ FR-13的最小存储为LearningRoute、LearningRouteNode、LearningCheck、Learn
 | `LearningRoute.id / subjectRevisionId` | 稳定主键；会话/账号由对象版本关联验证，题干修订后只取新版本路线，旧证据保留 |
 | `LearningRoute.goal` | 学生可理解的一句话目标；来源为学生请求或已确认范围，不由模型凭空扩展课程 |
 | `LearningRoute.status` | `active` / `paused` / `ended`；结束不表示所有节点通过 |
+| `LearningRoute.currentNodeId` | 显式记录当前节点；必须属于本路线，全部通过/跳过时可为空。回访固定焦点，不按第一个待巩固节点推测位置 |
 | `LearningRoute.version / createdAt / updatedAt` | 条件更新与幂等；迟到任务不得覆盖新版本 |
 | `LearningRouteNode.id / routeId / position` | 同一路线内稳定顺序；依赖只用于推荐，不能作为权限绕过 |
 | `key / objective / prerequisites` | 路线内稳定key、可观察目标和前置key；依赖必须是同路线更早节点，不能形成循环 |
@@ -247,14 +250,24 @@ FR-13的最小存储为LearningRoute、LearningRouteNode、LearningCheck、Learn
 | `evaluation` | `pass` / `needs_review` / `insufficient_evidence` / `uncertain`；由受控评价结果提出，程序校验完整性 |
 | `supportLevel` | `independent` / `hinted` / `explained` / `solution_seen` / `skipped` |
 | `rubricVersion / criteriaResults` | profile与条件快照；逐项覆盖criterionId/met/evidenceType/学生逐字quote/简短反馈，自述、复述和不明确证据不得pass；引用不等于数学证明 |
-| `createdAt` | 再次回答追加评价，不删除原回答；已pass验证只读，节点再验证/回退另行收口 |
+| `status / createdAt` | 验证active/superseded；回访或发布新验证使旧验证失效但保留原题、帮助及追加评价；已pass评价只读 |
 
 只有 `pass` 且满足当前版本 `passCriteria` 的验证，才可提出节点转为 `checked`；学生自述、助手讲解、一次自评或看过解析后的复述不能单独触发。`uncertain` 与 `insufficient_evidence` 不应伪装成失败分数；允许学生继续、重试或跳过。误解记录仍写入 `TeachingMemory`，通过关联 `evidenceRefs` 与节点，不另建一套无来源画像。
+
+`needs_review`须至少有一个`met=false`的条件，引用实际学生回答的非空逐字证据，且evidenceType不能为self_report/repetition/unclear；全部条件满足、仅自述、空引用或不明确时拒绝写入该结论，沿用有限协议修正。依据不足/不确定不把节点改成新失败，也不推进checked，原有待巩固状态保留。提示后答对可保存内容条件已满足但独立依据不足的评价，并用followupCheck换新任务；帮助级别和旧评价不清零，不能将其降回independent以凑通过。字段校验仍不能自动判断数学错误的真实性。
+
+`learning.update.check.evaluate`可携带`followupCheck: { nodeId, prompt, taskKind }`，在同一活动运行事务内保存旧任务评价、节点推进及下一任务。followupCheck不能脱离evaluate使用，也不能与暂停/结束并存；目标须是评价及显式节点操作后实际继续的节点。未通过时可在当前节点设置新任务，通过后可进入下一未完成节点；新题复制该节点原条件，须原样出现在当前完整回复中。后续任务非法则连同评价和正文一起回滚，仍使用共享有限修正；同运行重试不重复写评价或出题。新任务不能被本轮旧题答案评价。
+
+短验证应覆盖当前节点预存条件，并在prompt中给足必要规则、范围和作答要求；页面回访后不机械继承历史回复的下一题。任务不匹配或学生要求换例时，旧任务记依据不足，不把换题当答错，再通过followupCheck设置新任务。条件覆盖的数学语义仍由模型判断及真实教学抽验确认，不能以字段校验冒充语义证明。
 
 ### 8.3 事件与页面同步
 
 SSE统一发布route.updated完整可读快照，不另维护node.updated/check.recorded两套增量投影。事务提交后才发送节点状态与最新短验证提示/结论，不下发条件详情、参考答案或内部评价反馈。正文仍流式，结构化状态等待完整校验；前端按对象版本、routeId/version和路线创建顺序过滤迟到状态，重进从会话详情learningRoute恢复。
 
-PUT /api/conversations/:id/subjects/:subjectId/learning-route接收requestId、routeId、expectedVersion、action=pause/resume/skip及可选nodeId。本人当前对象、空闲运行和版本CAS在会话锁内核验；相同requestId同内容幂等、异内容冲突。跳过不写checked。操作不调用模型，“接着学”只预填输入。
+PUT /api/conversations/:id/subjects/:subjectId/learning-route接收requestId、routeId、expectedVersion、action=pause/resume/skip/revisit及可选nodeId。本人当前对象、空闲运行和版本CAS在会话锁内核验；相同requestId同内容幂等、异内容冲突。跳过不写checked，当前节点跳过后指向下一未完成项。revisit只针对已跳过/已通过节点：跳过转learning、已通过转needs_review，固定currentNodeId并将旧验证标为superseded。恢复不改变原焦点；没有当前节点时仍可暂停/恢复。操作不调用模型，“接着学”只预填输入。
 
 帮助按none/hint/explanation/solution单调升级；缺省保守记explanation，同对象验证未完成时进入阅读页也记讲解暴露。评价前还回读验证发布与学生回答之间的助手消息：中断或旧消息缺失帮助元数据时保守记讲解，避免停止后丢失已展示帮助。只允许当前节点最新验证参与推进，旧验证被替代后不可借其通过当前节点。评价保存回答发生前的帮助，当前回复的进一步帮助只影响后续回答。条件覆盖、引用及帮助校验不能证明模型语义评价正确，也不能证明学生未使用应用外帮助。
+
+回访也可由respond.learning.node.action=revisit提出，须studentQuote引用本轮真实请求并通过路线版本检查；允许同一回复revisit+issue，但不能用旧验证或回访前回答重新通过。新验证复制原节点条件，必须原样出现在回复中，精确同文旧题由程序拒绝；语义变式是否确为未示范任务仍须教学验收。currentNodeId决定当前评价与帮助归属，其他未完成节点保留；完成当前验证后再指向下一未完成项。迁移`20261111020000_learning_revisit`只增加焦点与验证生命周期并回填旧焦点，不删除旧证据。
+
+推进或跳过后，焦点与节点状态须一起更新：被选中的pending节点转learning，needs_review保留，已通过/跳过证据不被覆盖。旧版本若留下“当前焦点为pending”，下次有效模型更新在同一事务中纠正，不能在页面显示正在学却拒绝其验证。

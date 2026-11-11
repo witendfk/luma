@@ -356,7 +356,7 @@ export const useConversationStore = defineStore('conversation', () => {
     learningRoute.value = next;
   }
 
-  async function actOnRoute(action: 'pause' | 'resume' | 'skip', nodeId?: string): Promise<void> {
+  async function actOnRoute(action: 'pause' | 'resume' | 'skip' | 'revisit', nodeId?: string): Promise<void> {
     const route = learningRoute.value, id = currentId.value, object = activeSubjectId.value;
     if (!route || !id || !object || updatingRoute.value || generating.value || waitingJob.value || stopping.value || switchingSubject.value || editingSubject.value) return;
     const version = openVersion, session = sessionVersion();

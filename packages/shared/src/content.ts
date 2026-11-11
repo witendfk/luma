@@ -28,6 +28,14 @@ export const TeachingGraphic = z.discriminatedUnion('kind', [
     points: z.array(z.object({ x: coordinate, y: coordinate, label: z.string().min(1).max(24) })).min(2).max(8),
     edges: z.array(z.tuple([z.number().int().min(0).max(7), z.number().int().min(0).max(7)])).min(1).max(16),
   }),
+  z.object({ kind: z.literal('mapping'), caption: z.string().min(1).max(300),
+    inputLabel: z.string().trim().min(1).max(12).default('输入 x'),
+    outputLabel: z.string().trim().min(1).max(12).default('输出 y'),
+    pairs: z.array(z.object({ input: coordinate, output: coordinate }).strict()).min(2).max(8)
+      .superRefine((pairs, ctx) => {
+        if (new Set(pairs.map((p) => p.input)).size !== pairs.length) ctx.addIssue({ code: 'custom', message: '函数映射的输入不能重复；不同输入可以对应同一输出' });
+      }),
+  }),
 ]);
 export type TeachingGraphic = z.infer<typeof TeachingGraphic>;
 

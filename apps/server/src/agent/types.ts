@@ -19,6 +19,7 @@ export interface TaskFrameGoal {
 }
 
 export interface TaskFrame {
+  learningIntent?: 'start' | 'continue' | 'none';
   contentProfile?: import('./content-profile').ContentProfileRef;
   memoryCandidates?: Array<{kind: 'request' | 'difficulty' | 'attempt' | 'open_question' | 'constraint'; text: string; quote: string}>;
   conditionCorrection?: boolean;
@@ -48,6 +49,7 @@ export function taskFrameFrom(json: unknown): TaskFrame {
   if (!json || typeof json !== 'object') return base;
   const src = json as Partial<TaskFrame>;
   return {
+    learningIntent: src.learningIntent,
     contentProfile: src.contentProfile,
     memoryWrite: src.memoryWrite,
     conditionCorrection: src.conditionCorrection,

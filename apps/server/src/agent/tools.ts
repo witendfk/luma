@@ -102,6 +102,7 @@ export const respondSchema = z.object({
 /** Control metadata, not an extra business tool or a nested intent Agent. */
 export const turnPlanSchema = z.object({
   contentProfileId: z.enum(['math', 'unconfigured']).optional().describe('根据当前真实学习目标选择内容配置，首期只有math；语言、文史或不明确范围用unconfigured，不能因默认产品学科套数学。'),
+  learningIntent: z.enum(['start', 'continue', 'none']).describe('必须判断是否连续伴学：学生希望逐步/系统学会一个概念且当前没有路线时用start，最终respond必须带learning.create保存少量节点；已有同目标路线用continue；局部答疑、只要提示、直接练习、局部章节/练习追问或不支持领域用none。生成讲义不替代学习路线。'),
   memories: z.array(z.object({
     kind: z.enum(['request', 'difficulty', 'attempt', 'open_question', 'constraint']),
     text: z.string().trim().min(1).max(600),

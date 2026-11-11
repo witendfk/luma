@@ -536,6 +536,7 @@ model LearningRoute {
   goal                  String
   status                String               @default("active")
   version               Int                  @default(1)
+  currentNodeId         String?
   contentProfileId      String
   contentProfileVersion String
   sourceMessageId       String
@@ -579,6 +580,8 @@ model LearningCheck {
   rubricVersion   String
   criteria        Json
   supportLevel    String                    @default("independent")
+  /// active | superseded; old evidence is retained when a node is revisited.
+  status          String                    @default("active")
   createdAt       DateTime                  @default(now())
   node            LearningRouteNode         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
   evaluations     LearningCheckEvaluation[]

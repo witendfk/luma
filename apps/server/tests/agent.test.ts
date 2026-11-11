@@ -48,6 +48,22 @@ test('混用 respond 与业务工具时返回协议问题，不向学生泄漏�
   if (step.kind === 'issue') assert.equal(step.code, 'PROTOCOL_MIXED');
 });
 
+test('评价和后续短验证经SDK完整保留，流式正文不泄漏验证元数据', async () => {
+  const prompt = '规则为y=x+1，只允许输入0和2，请写出定义域和值域并说明对应过程。';
+  const learning = { action: 'update', routeId: 'route', expectedVersion: 2,
+    check: { action: 'evaluate', checkId: 'old-check', evaluation: 'pass', criteriaResults: [
+      { criterionId: 'reason', evidenceType: 'reasoning', met: true, quote: '输入的集合', feedback: '能区分角色' },
+    ] }, followupCheck: { nodeId: 'next-node', prompt, taskKind: 'application' } };
+  let visible = '';
+  const model = modelFor([{ toolName: 'respond', input: { disposition: 'wait_user', content: [{ type: 'paragraph', text: prompt }], learning } }], 1);
+  const step = await nextAgentStep({ model, system: 'test', messages: [{ role: 'user', content: '我的判断是输入的集合。' }],
+    tools: nativeToolSet(), purpose: 'test', onText: async (delta) => { visible += delta; } });
+  assert.equal(step.kind, 'respond');
+  if (step.kind === 'respond') assert.deepEqual(step.learning, learning);
+  assert.equal(visible, prompt);
+  assert.equal(model.doStreamCalls.length, 1);
+});
+
 test('复核只接受真实布尔值，字符串 false 或缺字段均拒绝', () => {
   assert.equal(parseReview('{"pass":false,"issues":["条件不符"]}').pass, false);
   assert.equal(parseReview('{"pass":true,"issues":[]}').pass, true);
@@ -109,7 +125,7 @@ test('后续出现混用调用时撤回未完成正文，不作为完整回复',
 });
 
 test('目标记录是单步控制调用，允许组合目标且不夹带教学', async () => {
-  const step = await nextAgentStep({ model: modelFor([{ toolName: 'planTurn', input: { goals: [{ type: 'lesson' }, { type: 'practice', count: 2 }], solutionRequested: false, memories: [] } }], 2),
+  const step = await nextAgentStep({ model: modelFor([{ toolName: 'planTurn', input: { learningIntent: 'none', goals: [{ type: 'lesson' }, { type: 'practice', count: 2 }], solutionRequested: false, memories: [] } }], 2),
     system: 'test', messages: [{ role: 'user', content: '讲解后出两道题' }], tools: nativeToolSet(true), purpose: 'test' });
   assert.equal(step.kind, 'plan'); if (step.kind === 'plan') assert.deepEqual(step.plan.goals.map((g) => g.type), ['lesson', 'practice']);
 });
@@ -138,7 +154,7 @@ test('新模型回复只接受内容块，旧text字段和未知块类型被拒�
 
 test('规划同步返回带原话的记忆候选，不遗漏字段也不将内部记录转成学生正文', async () => {
   const memories = [{ kind: 'request', text: '只用数轴讲解', quote: '请只用数轴举例。' }];
-  const step = await nextAgentStep({ model: modelFor([{ toolName: 'planTurn', input: { memories, goals: [], solutionRequested: false } }], 1),
+  const step = await nextAgentStep({ model: modelFor([{ toolName: 'planTurn', input: { learningIntent: 'none', memories, goals: [], solutionRequested: false } }], 1),
     system: 'test', messages: [{ role: 'user', content: memories[0]!.quote }], tools: nativeToolSet(true), purpose: 'test', onText: async () => { assert.fail('规划记录不属于可见正文'); } });
   assert.equal(step.kind, 'plan');
   if (step.kind === 'plan') assert.deepEqual(step.plan.memories, memories);

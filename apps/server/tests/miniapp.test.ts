@@ -449,7 +449,7 @@ test('取消响应丢失先只读对账；切换会话后迟到取消不能刷�
 test('伴学路线完整事件更新、暂停不触发模型，旧版本/旧对象状态不能覆盖当前页面', async () => {
   let stream: any, calls = 0, controls = 0;
   const route = { id: 'route', version: 1, goal: '理解变化率', status: 'active', subjectRevisionId: 'revision',
-    contentProfileId: 'math', contentProfileVersion: '1', createdAt: '2026-11-10T01:00:00.000Z', nodes: [] };
+    contentProfileId: 'math', contentProfileVersion: '1', createdAt: '2026-11-10T01:00:00.000Z', currentNodeId: null, nodes: [] };
   const sandbox = miniappSandbox({
     '@/api/conversations': { updateLearningRoute: async (_id: string, _subject: string, input: any) => { controls++; assert.equal(input.expectedVersion, 2); return { ...route, version: 3, status: 'paused' }; } },
     '@/utils/sse': { openTurnStream: (input: any) => { stream = input; calls++; return { abort() {} }; } },
@@ -469,4 +469,27 @@ test('伴学路线完整事件更新、暂停不触发模型，旧版本/旧对�
   chat.reset();
   stream.onEvent({ type: 'route.updated', runId: 'run', route });
   assert.equal(chat.learningRoute, null);
+});
+
+test('跳过节点回访保留明确焦点，控制操作不发送教学请求且生成中不可重复回访', async () => {
+  let controls = 0;
+  const route = { id: 'route', version: 4, goal: '理解变化关系', status: 'active', subjectRevisionId: 'r',
+    contentProfileId: 'math', contentProfileVersion: '1', createdAt: '2026-11-11T01:00:00.000Z', currentNodeId: null,
+    nodes: [{ id: 'n', status: 'skipped' }] };
+  const sandbox = miniappSandbox({
+    '@/api/conversations': { updateLearningRoute: async (_id: string, _subject: string, input: any) => {
+      controls++; assert.equal(input.action, 'revisit'); assert.equal(input.nodeId, 'n'); assert.equal(input.expectedVersion, 4);
+      return { ...route, version: 5, currentNodeId: 'n', nodes: [{ id: 'n', status: 'learning' }] };
+    } },
+    '@/utils/sse': { openTurnStream: () => { throw new Error('回访不应调用模型'); } },
+  }, { uni: storageMock() });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore();
+  chat.currentId = 'c'; chat.activeSubjectId = 's'; chat.subject = { id: 'r', version: 1, confirmedAt: 'now' }; chat.learningRoute = route;
+  chat.generating = true;
+  await chat.actOnRoute('revisit', 'n'); assert.equal(controls, 0);
+  chat.generating = false;
+  await chat.actOnRoute('revisit', 'n');
+  assert.equal(controls, 1); assert.equal(chat.learningRoute.currentNodeId, 'n'); assert.equal(chat.learningRoute.version, 5);
+  assert.equal(chat.updatingRoute, false); chat.$dispose();
 });

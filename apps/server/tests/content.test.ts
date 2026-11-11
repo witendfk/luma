@@ -1,13 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderContent } from '../src/lib/content-render';
-import { Diagram, Lesson } from '@luma/shared';
+import { Diagram, Lesson, TeachingGraphic } from '@luma/shared';
 import sharp from 'sharp';
 import { graphicSvg, presentDiagram, renderGraphic } from '../src/lib/teaching-graphic';
 import { parseLesson } from '../src/jobs/lesson.task';
 import { applyLessonRepair } from '../src/jobs/lesson-revision';
 
 const parabola = { kind: 'quadratic' as const, a: 1, b: -4, c: 7, bounds: { xMin: -1, xMax: 5, yMin: -1, yMax: 12 }, caption: '观察抛物线最低点', revealValues: false };
+test('有限输入映射显示每条对应关系，相同输出去重，允许多对一但拒绝重复输入', async () => {
+  const mapping = TeachingGraphic.parse({ kind: 'mapping', caption: '允许的输入与实际输出',
+    inputLabel: '输入 <x>', pairs: [-2, -1, 0, 1, 2].map((input) => ({ input, output: input * input })) });
+  const svg = graphicSvg(mapping);
+  assert.equal((svg.match(/marker-end="url\(#mapping-arrow\)"/g) ?? []).length, 5);
+  assert.equal((svg.match(/>4<\/text>/g) ?? []).length, 1);
+  assert.match(svg, /输入 &lt;x&gt;/);
+  assert.doesNotMatch(svg, /最低点|对称轴|沿曲线/);
+  const data = await renderGraphic(mapping);
+  assert.equal((await sharp(data).metadata()).format, 'png');
+  for (const pairs of [[{ input: 1, output: 1 }, { input: 1, output: 2 }], [{ input: 0, output: Infinity }, { input: 1, output: 1 }]]) {
+    assert.equal(TeachingGraphic.safeParse({ ...mapping, pairs }).success, false);
+  }
+  assert.equal(TeachingGraphic.safeParse({ ...mapping, pairs: [{ input: 1, output: 1 }] }).success, false);
+  assert.equal(TeachingGraphic.safeParse({ ...mapping, pairs: Array.from({ length: 9 }, (_, input) => ({ input, output: 0 })) }).success, false);
+});
 test('实际函数图可显示与放大，提示模式不提前标注最小值', async () => {
   const svg = graphicSvg(parabola);
   assert.match(svg, /最低点/);

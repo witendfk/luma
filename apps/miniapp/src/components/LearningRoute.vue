@@ -3,11 +3,11 @@ import { computed, ref, watch } from 'vue';
 import type { LearningRouteView } from '@luma/shared';
 import LumaIcon from './LumaIcon.vue';
 const props = defineProps<{ route: LearningRouteView; disabled?: boolean }>();
-const emit = defineEmits<{ (e: 'action', action: 'pause' | 'resume' | 'skip', nodeId?: string): void; (e: 'continue', objective: string): void }>();
+const emit = defineEmits<{ (e: 'action', action: 'pause' | 'resume' | 'skip' | 'revisit', nodeId?: string): void; (e: 'continue', objective: string): void }>();
 const expanded = ref(false);
-const current = computed(() => props.route.nodes.find((n) => ['learning', 'needs_review'].includes(n.status)) ?? props.route.nodes.find((n) => n.status === 'pending'));
+const current = computed(() => props.route.nodes.find((n) => n.id === props.route.currentNodeId));
 const checked = computed(() => props.route.nodes.filter((n) => n.status === 'checked').length);
-const labels = { pending: '待学习', learning: '正在学', checked: '通过验证', needs_review: '再巩固', skipped: '已跳过' };
+const labels = { pending: '待学习', learning: '未完成', checked: '通过验证', needs_review: '待巩固', skipped: '已跳过' };
 watch(() => props.route.id, () => { expanded.value = false; });
 </script>
 <template>
@@ -17,9 +17,14 @@ watch(() => props.route.id, () => { expanded.value = false; });
       <LumaIcon :name="expanded ? 'chevron-up' : 'chevron-down'" :size="14" />
     </button>
     <view v-if="expanded" class="route-details">
-      <view v-for="node in route.nodes" :key="node.id" class="route-node" :class="{ current: node.id === current?.id }"><text class="node-number">{{ String(node.position + 1).padStart(2, '0') }}</text><text class="node-objective">{{ node.objective }}</text><text class="node-status">{{ labels[node.status] }}</text></view>
+      <view v-for="node in route.nodes" :key="node.id" class="route-node" :class="{ current: node.id === current?.id }">
+        <text class="node-number">{{ String(node.position + 1).padStart(2, '0') }}</text><text class="node-objective">{{ node.objective }}</text>
+        <view class="node-state"><text class="node-status">{{ route.status === 'active' && node.id === current?.id ? (node.status === 'needs_review' ? '正在巩固' : '正在学') : labels[node.status] }}</text>
+          <button v-if="route.status === 'active' && ['checked', 'skipped'].includes(node.status)" class="node-revisit" :class="{ 'revisit-disabled': disabled }" :disabled="disabled" :aria-label="`${node.status === 'checked' ? '再巩固' : '回来学'}：${node.objective}`" @tap="emit('action', 'revisit', node.id)">{{ node.status === 'checked' ? '再巩固' : '回来学' }}</button>
+        </view>
+      </view>
       <text v-if="current?.check && !current.check.evaluation && route.status === 'active'" class="route-note">短验证留在对话中，按自己的思路回答即可。</text>
-      <view v-if="route.status !== 'ended' && current" class="route-actions" :class="{ disabled }">
+      <view v-if="route.status !== 'ended'" class="route-actions" :class="{ disabled }">
         <button class="route-action" :disabled="disabled" @tap="emit('action', route.status === 'paused' ? 'resume' : 'pause')">{{ route.status === 'paused' ? '恢复学习' : '暂停' }}</button>
         <button class="route-action" v-if="current && route.status === 'active'" :disabled="disabled" @tap="emit('action', 'skip', current.id)">先跳过这一步</button>
         <button class="route-action" v-if="current && route.status === 'active'" :disabled="disabled" @tap="emit('continue', current.objective)">接着学</button>
@@ -30,8 +35,8 @@ watch(() => props.route.id, () => { expanded.value = false; });
 </template>
 <style scoped>
 .learning-route { border-bottom:1rpx solid #e3e8dc; margin-bottom:26rpx; }
-.route-toggle,.route-action { background:transparent; border:0; border-radius:0; margin:0; padding:0; line-height:1.6; font-weight:400; }
-.route-toggle::after,.route-action::after { border:0; }
+.route-toggle,.route-action,.node-revisit { background:transparent; border:0; border-radius:0; margin:0; padding:0; line-height:1.6; font-weight:400; }
+.route-toggle::after,.route-action::after,.node-revisit::after { border:0; }
 .route-toggle { display:flex; align-items:center; gap:24rpx; width:100%; text-align:left; padding:10rpx 0 22rpx; }
 .route-copy { flex:1; min-width:0; }
 .route-caption { display:block; font-size:20rpx; color:#98a18c; }
@@ -42,6 +47,9 @@ watch(() => props.route.id, () => { expanded.value = false; });
 .node-objective { flex:1; min-width:0; font-size:24rpx; line-height:1.7; overflow-wrap:anywhere; }
 .current .node-objective { color:#4f6946; }
 .node-status { flex-shrink:0; font-size:19rpx; }
+.node-state { flex-shrink:0; display:flex; flex-direction:column; align-items:flex-end; }
+.node-revisit { font-size:21rpx; color:#66825b; min-height:62rpx; display:flex; align-items:center; }
+.revisit-disabled { opacity:.4; }
 .route-actions { display:flex; flex-wrap:wrap; gap:28rpx; margin-top:12rpx; }
 .route-action { font-size:23rpx; min-height:68rpx; color:#66825b; }
 .disabled .route-action { opacity:.4; }

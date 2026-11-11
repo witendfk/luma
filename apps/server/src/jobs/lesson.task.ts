@@ -80,6 +80,7 @@ export async function lessonTask(lease: JobLease): Promise<void> {
           ].join('\n'),
           'graphic 支持二次函数：{"kind":"quadratic","a":实际二次项系数,"b":实际一次项系数,"c":实际常数,"bounds":{"xMin":负数,"xMax":正数,"yMin":负数,"yMax":正数},"xLabel":"x","yLabel":"y","caption":"读图提示","revealValues":false}；xLabel/yLabel为1至12字符纯文本，必须与正文变量一致；例如 y=t² 使用 xLabel="t"，y=a² 使用 xLabel="a"。不设置时默认x/y。a/b/c为相对所标横轴变量的多项式系数。范围必须包含坐标轴和顶点，留足空白让曲线形状清楚。仅提示阶段 revealValues=false，不能在正文或图注泄露未授权的原题最终答案；概念示例的定义及零点可正常解释。',
           '几何题可用 graphic={"kind":"geometry","caption":"图的含义","points":[{"x":0,"y":0,"label":"A"},…],"edges":[[0,1],…]}。points必须2至8项，每项label为1至24个字符且不能为空；edges只能引用已有点的下标。坐标仅供示意，说明非按比例时应标明。必须依照当前题目实际条件选择图形，不要套用无关抛物线。',
+          '有限输入、定义域/值域或多个输入对应同一输出时，优先用graphic={"kind":"mapping","inputLabel":"输入 x","outputLabel":"输出 y","pairs":[{"input":-1,"output":1},{"input":1,"output":1}],"caption":"本例的允许输入及实际输出"}。pairs为2至8个真实对应关系，输入不能重复，输出可重复；图会按输出去重并画每条箭头。必须列全正文选择的有限输入及正确输出，不把完整连续曲线冒充这些离散点。数字必须遵守当前答案权限；用独立概念示例时明确范围。',
         ].filter(Boolean).join('\n'), parse: (raw) => parseLesson(JSON.stringify(source ? applyLessonPatch(source, raw) : extractJson(raw))) });
     }
     for (let repair = 0; repair <= 1; repair++) {
