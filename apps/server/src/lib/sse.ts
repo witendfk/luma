@@ -2,43 +2,47 @@ import type { StreamEvent } from '@luma/shared';
 
 export type EventEmitter = (event: StreamEvent) => void;
 
-/**
- * text/event-stream 响应（设计文档 §10）。
- * - X-Accel-Buffering: no 关闭反向代理缓冲，保证首段 5 秒内到达；
- * - 微信端用 wx.request enableChunked + onChunkReceived 分块接收，
- *   小程序侧负责跨块 UTF-8 解码与半条事件拼接。
- * produce 约定：自行保证终止事件（run.completed / run.waiting / run.failed / run.cancelled），
- * 本函数不代发兜底事件，避免伪造状态。
+/** Heartbeats keep the transport alive; comments never imply teaching progress.
+ * Only the producer emits persisted run outcomes. Closing a reader aborts its
+ * producer, so an abandoned stream cannot keep spending model budget.
  */
 export function sseResponse(
   produce: (emit: EventEmitter, signal: AbortSignal) => Promise<void>,
   signal: AbortSignal,
+  heartbeatMs = 10_000,
 ): Response {
   const encoder = new TextEncoder();
+  const connection = new AbortController();
+  const combined = AbortSignal.any([signal, connection.signal]);
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      const emit: EventEmitter = (event) => {
+      const write = (text: string) => {
         if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-        } catch {
-          closed = true;
-        }
+        try { controller.enqueue(encoder.encode(text)); }
+        catch { connection.abort(); closed = true; }
       };
-      try {
-        await produce(emit, signal);
-      } catch (err) {
-        console.error('[sse] 流式产出异常中断', err);
-      } finally {
+      const heartbeat = setInterval(() => write(': heartbeat\n\n'), heartbeatMs);
+      const close = () => {
+        if (closed) return;
         closed = true;
-        try {
-          controller.close();
-        } catch {
-          // 流已被客户端断开
-        }
+        try { controller.close(); } catch { /* Reader already disconnected. */ }
+      };
+      const onAbort = () => { clearInterval(heartbeat); close(); };
+      combined.addEventListener('abort', onAbort, { once: true });
+      try {
+        combined.throwIfAborted();
+        await produce((event) => write(`data: ${JSON.stringify(event)}\n\n`), combined);
+      } catch {
+        // Do not log upstream errors/headers or invent a terminal business event.
+        if (!combined.aborted) console.error('[sse] 流式产出中断；客户端需回查运行状态');
+      } finally {
+        clearInterval(heartbeat);
+        combined.removeEventListener('abort', onAbort);
+        close();
       }
     },
+    cancel() { connection.abort(new Error('客户端已停止接收')); },
   });
 
   return new Response(stream, {

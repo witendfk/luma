@@ -138,6 +138,18 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
     usage = undefined; // 流中途失败用量未知，保留 unknown（§4.14）
   }
 
+  // A syntactically complete call can still come from an incomplete generation.
+  // Check the provider's finish marker before returning any executable candidate.
+  let finishReason: string;
+  try { finishReason = await result.finishReason; }
+  catch { return issue(ErrorCode.MODEL_UNAVAILABLE, '模型未完整结束，请重试', usage); }
+  if (finishReason === 'length') return issue('MODEL_TRUNCATED', '本次回复达到输出上限，未提交完整结果；请缩小问题范围后重试', usage);
+  if (finishReason === 'content-filter') {
+    await reset();
+    return { kind: 'issue', code: 'MODEL_REFUSED', retryable: false, message: '模型未能处理本次请求，请调整问题后继续', usage };
+  }
+  if (!['stop', 'tool-calls'].includes(finishReason)) return issue(ErrorCode.MODEL_UNAVAILABLE, '模型未完整结束，请重试', usage);
+
   let calls: ToolCall[];
   try {
     const raw = await result.toolCalls;
@@ -182,6 +194,8 @@ export async function nextAgentStep(opts: NextStepOptions): Promise<AgentStep> {
 
 /** 任务内部一次性生成（讲义正文/复核/出题，§8.4）：与主 Agent 循环分开计数的模型请求 */
 interface JsonOptions<T> {
+  /** Server-side injection for isolated adapter checks; never supplied by the client. */
+  model?: LanguageModel;
   system: string;
   prompt: string;
   purpose: string;
@@ -226,11 +240,20 @@ async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
   if (inputTokens + outputTokens > env().LONG_TASK_CONTEXT_INPUT_TOKENS) throw new ApiError(ErrorCode.INVALID_FORMAT, '生成材料超出上下文预算，请缩小范围', 400);
   const callId = opts.trace ? await accountJobModel(opts.trace, opts.purpose, { inputTokens, outputTokens }) : undefined;
   try {
-    const result = await generateText({ model: getModel(), system: opts.system,
+    const result = await generateText({ model: opts.model ?? getModel(), system: opts.system,
       ...(opts.images?.length ? { messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: opts.prompt }, ...opts.images.map((image) => ({ type: 'image' as const, image }))] }] } : { prompt: opts.prompt }), maxRetries: 0,
       providerOptions: { openai: { store: false } }, maxOutputTokens: env().MODEL_OUTPUT_TOKENS,
       abortSignal: AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(env().JOB_TOTAL_MS), AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
     usage = modelUsage(result.usage);
+    // Never publish even valid-looking JSON when the provider reports truncation.
+    if (result.finishReason === 'length') {
+      error = 'MODEL_TRUNCATED';
+      throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '材料生成达到输出上限，草稿未发布；请缩小范围后重试', 502, true);
+    }
+    if (result.finishReason !== 'stop') {
+      error = 'MODEL_INCOMPLETE';
+      throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '材料未完整生成，未发布；请调整范围后重试', 502, true);
+    }
     try { return opts.parse(result.text); }
     catch (parseError) {
       const issues = parseError instanceof ZodError ? parseError.issues.slice(0, 8).map((issue) => `${issue.path.join('.')}:${issue.code}`)
@@ -252,17 +275,26 @@ export function modelUsage(raw: { inputTokens?: number; outputTokens?: number; t
     ...(raw.cachedInputTokens === undefined ? {} : { cachedInputTokens: raw.cachedInputTokens }) };
 }
 
+/** A rejected completion can still carry billable usage. */
+export class IncompleteSummaryError extends ApiError {
+  constructor(readonly usage: TokenUsage) {
+    super(ErrorCode.MODEL_UNAVAILABLE, '长对话摘要未完整生成，原对话及已有摘要保留，可重试', 502, true);
+  }
+}
+
 /** Compression is a visible, accounted model request, not an invisible SDK retry. */
-export async function summarizeContext(opts: { system: string; prompt: string; maxOutputTokens: number; abortSignal: AbortSignal; cacheKey: string }) {
+export async function summarizeContext(opts: { model?: LanguageModel; system: string; prompt: string; maxOutputTokens: number; abortSignal: AbortSignal; cacheKey: string }) {
   if (estimateTokens(opts.system + opts.prompt) + opts.maxOutputTokens + 512 > env().CONTEXT_INPUT_TOKENS) {
     throw new ApiError(ErrorCode.INVALID_FORMAT, '摘要请求超过上下文窗口，旧消息未被删除', 400);
   }
   try {
-    const result = await generateText({ model: getModel(), system: opts.system, prompt: opts.prompt,
+    const result = await generateText({ model: opts.model ?? getModel(), system: opts.system, prompt: opts.prompt,
       maxRetries: 0, maxOutputTokens: opts.maxOutputTokens, abortSignal: opts.abortSignal,
       providerOptions: { openai: { store: false, promptCacheKey: opts.cacheKey } } });
+    if (result.finishReason !== 'stop') throw new IncompleteSummaryError(modelUsage(result.usage));
     return { raw: result.text, usage: modelUsage(result.usage) };
-  } catch {
+  } catch (error) {
+    if (error instanceof IncompleteSummaryError) throw error;
     throw new ApiError(ErrorCode.MODEL_UNAVAILABLE, '长对话摘要生成失败，原对话已保留，可重试', 502, true);
   }
 }

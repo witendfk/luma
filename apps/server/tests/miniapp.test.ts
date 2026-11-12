@@ -147,7 +147,7 @@ test('确认保留教学/练习意图，重复点击不重复请求；切换账�
   chat.$dispose();
 });
 
-function streamFixture() {
+function streamFixture(globals: Record<string, unknown> = {}) {
   const storage = storageMock();
   let request: any, chunk: any, headers: any, aborts = 0;
   const callbacks: string[] = [];
@@ -162,6 +162,7 @@ function streamFixture() {
         abort() { aborts += 1; request.fail({ errMsg: 'abort' }); },
       };
     } },
+    ...globals,
   });
   const tokens = sandbox.load('@/utils/token');
   tokens.setToken('account-A');
@@ -492,4 +493,84 @@ test('跳过节点回访保留明确焦点，控制操作不发送教学请求�
   await chat.actOnRoute('revisit', 'n');
   assert.equal(controls, 1); assert.equal(chat.learningRoute.currentNodeId, 'n'); assert.equal(chat.learningRoute.version, 5);
   assert.equal(chat.updatingRoute, false); chat.$dispose();
+});
+
+
+test('注释心跳重置静默计时；真正静默只结束一次，终态后不受迟到断线影响', () => {
+  const timers = new Map<number, () => void>(); let next = 0;
+  const f = streamFixture({ setTimeout: (fn: () => void) => { timers.set(++next, fn); return next; }, clearTimeout: (id: number) => timers.delete(id) });
+  const first = next;
+  f.headers(200); f.send(': heartbeat\n\n');
+  assert.equal(timers.has(first), false); assert.equal(f.events.length, 0);
+  timers.get(next)!();
+  assert.equal(f.callbacks.length, 1); assert.match(f.callbacks[0], /核对已保存/);
+  assert.equal(f.aborts, 1); assert.equal(timers.size, 0);
+  f.finish(200); assert.equal(f.callbacks.length, 1);
+  const completed = streamFixture();
+  completed.send('data: {"type":"run.completed","runId":"r"}\n\n');
+  assert.deepEqual(completed.callbacks, ['done']);
+  completed.finish(500); assert.deepEqual(completed.callbacks, ['done']);
+});
+
+function reconnectFixture() {
+  let requests = 0, reads = 0, disconnected = false;
+  let resolveDetail: ((value: any) => void) | undefined;
+  const streams: any[] = [];
+  const snapshot = () => ({ conversation: { id: 'c', title: '已有对话', activeSubjectId: 's' }, subjects: [], artifacts: [],
+    activeRun: null, latestRun: { id: 'r', status: 'completed' } });
+  const timers = new Map<number, () => void>(); let timerId = 0;
+  const sandbox = miniappSandbox({
+    '@/api/conversations': {
+      getConversation: async () => { reads++; if (disconnected) throw new Error('offline'); return resolveDetail === undefined ? snapshot() : new Promise((resolve) => { resolveDetail = resolve; }); },
+      listMessages: async () => ({ items: [{ id: 'saved', runId: 'r', role: 'assistant', status: 'complete', content: { blocks: [{ type: 'text', text: '服务端已保存的完整回复' }] } }] }),
+      getRun: async () => ({ status: 'running' }),
+    },
+    '@/utils/sse': { openTurnStream: (opts: any) => { requests++; streams.push(opts); return { abort() {} }; } },
+  }, { uni: storageMock(),
+    setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id: number) => timers.delete(id) });
+  const pinia = sandbox.require('pinia'); pinia.setActivePinia(pinia.createPinia());
+  const chat = sandbox.load('@/stores/conversation').useConversationStore(); chat.currentId = 'c';
+  return { chat, streams, timers, snapshot, get requests() { return requests; }, get reads() { return reads; },
+    offline: () => { disconnected = true; }, online: () => { disconnected = false; },
+    delay: () => { resolveDetail = () => {}; }, resolve: (value: any) => resolveDetail!(value) };
+}
+
+async function flushReconnection(chat: any) {
+  for (let i = 0; i < 20 && chat.reconnecting; i++) await Promise.resolve();
+}
+
+test('断流后只读回查完整回复，不重新请求模型；回查失败保留内容并禁止重复发送', async () => {
+  const f = reconnectFixture();
+  await f.chat.send('原问题');
+  f.streams[0].onEvent({ type: 'run.started', runId: 'r' });
+  f.streams[0].onEvent({ type: 'text.delta', runId: 'r', delta: '已收到的部分' });
+  f.offline(); f.streams[0].onError('断流');
+  await flushReconnection(f.chat);
+  assert.equal(f.chat.needsReconnect, true); assert.equal(f.chat.messages.at(-1).text, '已收到的部分');
+  await f.chat.send('不能重复发送'); assert.equal(f.requests, 1);
+  f.online(); await f.chat.reconnect();
+  assert.equal(f.chat.needsReconnect, false); assert.equal(f.chat.error, '');
+  assert.equal(f.chat.messages.length, 1); assert.equal(f.chat.messages[0].id, 'saved');
+  assert.equal(f.chat.messages[0].incomplete, false); assert.equal(f.requests, 1);
+  f.chat.$dispose();
+});
+
+test('对账发现仍在运行则只轮询，旧轮次迟到事件不能污染新轮次或新会话', async () => {
+  const f = reconnectFixture();
+  await f.chat.send('第一问');
+  f.streams[0].onEvent({ type: 'run.completed', runId: 'r' });
+  await f.chat.send('第二问');
+  f.streams[0].onError('旧连接失败');
+  f.streams[0].onDone();
+  assert.equal(f.chat.generating, true); assert.equal(f.reads, 0);
+  f.delay(); f.streams[1].onError('断流');
+  f.resolve({ ...f.snapshot(), activeRun: { id: 'r2', status: 'running' } });
+  await flushReconnection(f.chat);
+  assert.equal(f.chat.waitingJob, true); assert.equal(f.timers.size, 1);
+  await f.chat.send('阻止新的生成'); assert.equal(f.requests, 2);
+  f.delay(); const reconnecting = f.chat.reconnect();
+  f.chat.reset(); f.chat.currentId = 'other'; f.chat.title = '新会话';
+  f.resolve(f.snapshot()); await reconnecting;
+  assert.equal(f.chat.title, '新会话'); assert.equal(f.chat.messages.length, 0);
+  f.chat.$dispose();
 });

@@ -36,9 +36,11 @@ export interface RunCounters {
   calls: Array<{ purpose: string; model: string; attempt: number; durationMs: number; inputTokens: number | null; outputTokens: number | null; cachedInputTokens?: number | null; error?: string }>;
 
   tokens: { input: number; output: number; cachedInput?: number };
-  /** 无进展检测：相同工具+相同参数的失败连续出现即停止 */
+  /** 连续相同失败；成功但没有新信息的检测另存progress。 */
   lastFailureKey: string | null;
   sameFailureCount: number;
+  /** Hashes only; no duplicate tool payloads in the checkpoint. */
+  progress?: { seen: string[]; repeated: number; lastBatchId: string };
 }
 
 export function initialCounters(): RunCounters {

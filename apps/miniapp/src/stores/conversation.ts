@@ -26,6 +26,8 @@ export const useConversationStore = defineStore('conversation', () => {
   const retryingJobId = ref<string | null>(null);
   const generating = ref(false);
   const stopping = ref(false);
+  const reconnecting = ref(false);
+  const needsReconnect = ref(false);
   const editingSubject = ref(false);
   const confirmingSubject = ref(false);
   const stage = ref('clarifying');
@@ -36,6 +38,7 @@ export const useConversationStore = defineStore('conversation', () => {
   const currentRunId = ref<string | null>(null);
   let streamHandle: TurnStreamHandle | null = null;
   let openVersion = 0;
+  let turnVersion = 0;
   let messageVersion = 0;
   let subjectVersion = 0;
   let polling: ReturnType<typeof setTimeout> | undefined;
@@ -51,6 +54,7 @@ export const useConversationStore = defineStore('conversation', () => {
     streamHandle = null;
     clearTimeout(polling);
     generating.value = false;
+    reconnecting.value = false;
   }
 
   function setStream(handle: TurnStreamHandle): void {
@@ -78,6 +82,7 @@ export const useConversationStore = defineStore('conversation', () => {
     stage.value = 'clarifying';
     waitingJob.value = false;
     stopping.value = false;
+    reconnecting.value = false; needsReconnect.value = false;
     error.value = '';
   }
   onScopeDispose(onSessionCleared(reset));
@@ -87,9 +92,9 @@ export const useConversationStore = defineStore('conversation', () => {
     if (!id) return;
     const version = openVersion, session = sessionVersion(), revision = messageVersion, subjectSnapshot = subjectVersion;
     const detail = await api.getConversation(id);
-    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion) return;
+    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion || revision !== messageVersion) return;
     const history = includeMessages ? await api.listMessages(id, undefined, detail.conversation.activeSubjectId ?? undefined) : null;
-    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion) return;
+    if (version !== openVersion || session !== sessionVersion() || id !== currentId.value || subjectSnapshot !== subjectVersion || revision !== messageVersion) return;
     title.value = detail.conversation.title;
     archivedAt.value = detail.conversation.archivedAt;
     if (detail.conversation.id === id) useHistoryStore().applySummary(detail.conversation);
@@ -115,12 +120,17 @@ export const useConversationStore = defineStore('conversation', () => {
       if (failed) error.value = detail.latestRun.error?.message ?? (detail.latestRun.status === 'cancelled' ? '本次回复已停止' : '生成失败，请重试');
       else error.value = '';
     }
+    needsReconnect.value = false;
+    const local = messages.value;
     if (history && revision === messageVersion) messages.value = history.items.map((message) => ({
       id: message.id, runId: message.runId, role: message.role, incomplete: message.status === 'incomplete',
       reply: (message.content as { reply?: TeachingReply }).reply,
       text: ((message.content as { blocks?: Array<{ type: string; text?: string }> }).blocks ?? [])
         .filter((block) => block.type === 'text').map((block) => block.text ?? '').join('\n'),
-    }));
+    })).map((message) => {
+      const partial = !generating.value && message.incomplete && local.find((m) => m.incomplete && m.runId === message.runId && m.role === message.role);
+      return partial && partial.text.length > message.text.length && partial.text.startsWith(message.text) ? { ...message, text: partial.text } : message;
+    });
   }
 
   async function open(id: string): Promise<void> {
@@ -145,37 +155,58 @@ export const useConversationStore = defineStore('conversation', () => {
           return;
         }
         waitingJob.value = false;
-        currentRunId.value = null;
         if (run.status === 'failed') error.value = run.error?.message ?? '生成失败，请重试';
         await refresh();
       } catch (err) {
-        if (openVersion === version && sessionVersion() === session) error.value = err instanceof Error ? err.message : '状态获取失败';
+        if (openVersion === version && sessionVersion() === session && currentRunId.value === runId) {
+          needsReconnect.value = true;
+          error.value = '连接中断，已保留当前内容；请重新连接核对结果';
+        }
       }
     }, 1500);
   }
 
+  async function reconnect(): Promise<void> {
+    if (reconnecting.value || stopping.value || !currentId.value) return;
+    const version = openVersion, session = sessionVersion(), turn = turnVersion;
+    reconnecting.value = true;
+    needsReconnect.value = true;
+    generating.value = false;
+    try {
+      // Read persisted state only. Never resend the turn or start another model call.
+      await refresh();
+      if (version === openVersion && session === sessionVersion() && turn === turnVersion) needsReconnect.value = false;
+    } catch {
+      if (version === openVersion && session === sessionVersion() && turn === turnVersion) {
+        error.value = '暂时无法核对回复状态，已有内容保留；请重新连接';
+      }
+    } finally {
+      if (version === openVersion && session === sessionVersion() && turn === turnVersion) reconnecting.value = false;
+    }
+  }
+
   async function send(text: string, action?: TurnRequest['action'], subjectType: 'question' | 'knowledge' = 'question', intent?: api.LearningIntent, retryInput?: Partial<TurnRequest>, focus?: Pick<TurnRequest, 'artifactId' | 'artifactVersion' | 'sectionId' | 'attemptId' | 'exerciseId' | 'practiceMode'>): Promise<void> {
-    if (generating.value || updatingRoute.value || stopping.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
-    const version = openVersion, session = sessionVersion();
+    if (generating.value || waitingJob.value || reconnecting.value || needsReconnect.value || updatingRoute.value || stopping.value || editingSubject.value || switchingSubject.value || (!text.trim() && !action && !retryInput?.retryOfRunId)) return;
+    const version = openVersion, session = sessionVersion(), turn = ++turnVersion;
     messageVersion += 1;
     generating.value = true;
     error.value = '';
     try {
       if (!currentId.value) {
         const created = await api.createConversation({ initialText: text, subjectType, intent });
-        if (version !== openVersion || session !== sessionVersion()) return;
+        if (version !== openVersion || session !== sessionVersion() || turn !== turnVersion) return;
         currentId.value = created.id;
         title.value = created.title;
         archivedAt.value = created.archivedAt;
         await refresh(false);
-        if (version !== openVersion || session !== sessionVersion()) return;
+        if (version !== openVersion || session !== sessionVersion() || turn !== turnVersion) return;
       }
 
       clearTimeout(polling);
       waitingJob.value = false;
       if (!retryInput) appendLocalMessage({ role: 'user', text });
       const handleEvent = (event: StreamEvent) => {
-        if (version !== openVersion || session !== sessionVersion()) return;
+        if (version !== openVersion || session !== sessionVersion() || turn !== turnVersion) return;
         if (event.type === 'run.started') {
           currentRunId.value = event.runId;
           const last = messages.value[messages.value.length - 1];
@@ -212,18 +243,19 @@ export const useConversationStore = defineStore('conversation', () => {
         body: lastTurn,
         onEvent: handleEvent,
         onDone: () => {
-          if (version !== openVersion || session !== sessionVersion()) return;
+          if (version !== openVersion || session !== sessionVersion() || turn !== turnVersion) return;
           generating.value = false;
-          void refresh().catch((err) => { if (version === openVersion && session === sessionVersion()) error.value = err.message; });
+          void refresh().catch((err) => { if (version === openVersion && session === sessionVersion() && turn === turnVersion) error.value = err.message; });
         },
         onError: (message) => {
-          if (version !== openVersion || session !== sessionVersion()) return;
+          if (version !== openVersion || session !== sessionVersion() || turn !== turnVersion) return;
           generating.value = false;
           error.value = message;
+          void reconnect();
         },
       }));
     } catch (err) {
-      if (version === openVersion && session === sessionVersion()) {
+      if (version === openVersion && session === sessionVersion() && turn === turnVersion) {
         generating.value = false;
         error.value = err instanceof Error ? err.message : '发送失败';
       }
@@ -371,6 +403,6 @@ export const useConversationStore = defineStore('conversation', () => {
     } finally { if (version === openVersion && session === sessionVersion()) updatingRoute.value = false; }
   }
 
-  return { learningRoute, updatingRoute, actOnRoute, retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+  return { reconnect, reconnecting, needsReconnect, learningRoute, updatingRoute, actOnRoute, retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
     stopping, reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });

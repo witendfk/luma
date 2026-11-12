@@ -35,6 +35,7 @@ import { CompactionError } from './compaction';
 import { MATH_PROFILE, UNCONFIGURED_PROFILE } from './content-profile';
 import { LearningUpdateError, saveLearningUpdate } from '../services/learning-route';
 import { validateLearningIntent } from './learning-contracts';
+import { observeToolProgress } from './progress';
 
 /**
  * 驱动器（设计文档 §4.12）：唯一的循环所有者。
@@ -172,6 +173,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         }
 
         // 全部结果就绪：按 toolCallId 补回结果，才允许下一次决策（§4.13）
+        const noProgress = observeToolProgress(counters, batch.decisionId, batch.items, outcome.results);
         protocol.push(toolResultsMessage(outcome.results));
         observeReadback(taskFrame, outcome.results);
         mergeGoalCompletions(taskFrame, outcome.results);
@@ -196,6 +198,10 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
             counters: asJson(counters),
           },
         }));
+        if (noProgress) {
+          await failRun(runId, 'NO_PROGRESS', '多次工具调用没有获得新信息，已停止自动尝试；请补充信息后继续', false, emit, owner);
+          return;
+        }
         for (const r of outcome.results) {
           const value = r.value as { ok?: boolean };
           emit?.({ type: 'tool.finished', runId, toolExecutionId: r.toolCallId, ok: value?.ok !== false });
@@ -283,7 +289,7 @@ export async function drive(runId: string, emit?: EventEmitter, signal?: AbortSi
         });
         continue;
       }
-      if (planning) { await resetPartial(); await failRun(runId, 'PROTOCOL', '目标决策未完成，请重试', true, emit, owner); return; }
+      if (planning && step.kind !== 'issue') { await resetPartial(); await failRun(runId, 'PROTOCOL', '目标决策未完成，请重试', true, emit, owner); return; }
 
       if (step.kind === 'respond') {
         const requiresEvidence = taskFrame.conditionCorrection || taskFrame.readback?.status === 'pending';

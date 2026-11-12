@@ -6,7 +6,7 @@ import { clearToken, getToken } from './token';
  * 一轮对话的流式接收（设计文档 §10）。
  * 微信端通过 wx.request 的 enableChunked + onChunkReceived 接收 text/event-stream，
  * 需处理跨块的 UTF-8 多字节字符与半条事件。
- * TODO(第一周真机验证)：首段到达、停止生成、断线恢复（设计文档 §5）。
+ * 注释心跳只维护连接；静默或断流交给store只读对账，不重发生成请求。
  */
 
 /** 增量 UTF-8 解码：不完整的字节序列留待下一块拼接 */
@@ -106,6 +106,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
   let status: number | undefined;
   let errorText = '';
   let task: { abort(): void } | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const token = getToken();
   const decoder = new Utf8StreamDecoder();
   const frames = new SseFrameBuffer();
@@ -118,6 +119,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
     if (aborted || settled) return false;
     if (token !== getToken()) {
       aborted = true;
+      clearTimeout(idleTimer);
       task?.abort();
       return false;
     }
@@ -127,9 +129,22 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
   function fail(message: string, unauthenticated = false): void {
     if (!active()) return;
     settled = true;
+    clearTimeout(idleTimer);
     task?.abort();
     if (unauthenticated && token === getToken()) clearToken();
     opts.onError(message);
+  }
+
+  function watchConnection(): void {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => fail('连接长时间无响应，正在核对已保存结果'), 45_000);
+  }
+
+  function complete(): void {
+    if (!active()) return;
+    settled = true;
+    clearTimeout(idleTimer);
+    opts.onDone();
   }
 
   function feed(text: string): void {
@@ -137,6 +152,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
       if (!active() || terminal) return;
       terminal = ['run.completed', 'run.failed', 'run.cancelled', 'run.waiting'].includes(event.type);
       opts.onEvent(event);
+      if (terminal) complete();
     });
   }
 
@@ -170,15 +186,14 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
       fail('服务响应格式异常，请重试');
       return;
     }
-    if (!active()) return;
-    settled = true;
-    opts.onDone();
+    complete();
   }
 
   const handle: TurnStreamHandle = {
     abort() {
       if (aborted || settled) return;
       aborted = true;
+      clearTimeout(idleTimer);
       task?.abort();
     },
   };
@@ -190,6 +205,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
     data: opts.body,
     header,
     enableChunked: true,
+    timeout: 300_000,
     responseType: 'arraybuffer',
     success: finish,
     fail: (err: { errMsg?: string }) => {
@@ -198,9 +214,11 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
   } as Record<string, unknown>) as unknown as ChunkedTask;
 
   task = chunkedTask;
-  chunkedTask.onHeadersReceived?.((res) => { status = res.statusCode; });
+  watchConnection();
+  chunkedTask.onHeadersReceived?.((res) => { status = res.statusCode; if (active()) watchConnection(); });
   chunkedTask.onChunkReceived((res) => {
     if (!active()) return;
+    watchConnection();
     receivedChunk = true;
     try {
       const text = typeof res.data === 'string' ? res.data : decoder.decode(new Uint8Array(res.data));
@@ -222,6 +240,7 @@ export function openTurnStream(opts: TurnStreamOptions): TurnStreamHandle {
     url: `${API_BASE}/api/conversations/${opts.conversationId}/turns`,
     method: 'POST',
     data: opts.body as Record<string, unknown>,
+    timeout: 300_000,
     header,
     success: finish,
     fail: (err) => fail(err.errMsg ?? '连接中断'),

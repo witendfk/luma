@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { db } from '../lib/db';
 import { env } from '../lib/env';
-import { extractJson, summarizeContext, type ModelMessage, type ToolSet, type TokenUsage } from '../lib/model';
+import { extractJson, summarizeContext, IncompleteSummaryError, type ModelMessage, type ToolSet, type TokenUsage } from '../lib/model';
 import { compactHistory, CompactionError, protectedHistoryStart, summaryMessage, summaryScope, SummaryBody, type RetiredSource, type SummaryCheckpoint } from './compaction';
 import { historyPages } from './history';
 import { fixedContextTokens } from './context';
@@ -77,7 +77,9 @@ export async function prepareContextMemory(input: {
           abortSignal: AbortSignal.any([input.signal, AbortSignal.timeout(env().MODEL_REQUEST_MS)]) });
         usage = generated.usage;
         return extractJson(generated.raw);
-      } catch { error = 'CONTEXT_SUMMARY_FAILED'; throw new CompactionError('长对话摘要生成失败，原文和已有摘要均已保留，可重试'); }
+      } catch (failure) {
+        if (failure instanceof IncompleteSummaryError) usage = failure.usage;
+        error = 'CONTEXT_SUMMARY_FAILED'; throw new CompactionError('长对话摘要生成失败，原文和已有摘要均已保留，可重试'); }
       finally {
         settleModelRequest(input.counters, callId, usage);
         input.counters.calls.push({ purpose: 'context_summary', model: env().LUMA_MOCK_AGENT ? 'mock' : env().LUMA_MODEL_ID,

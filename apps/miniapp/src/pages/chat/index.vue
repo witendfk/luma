@@ -74,7 +74,7 @@ const followOutput = ref(true), newOutput = ref(false);
 const instance = getCurrentInstance();
 const isKnowledge = computed(() => store.subject?.type === 'knowledge');
 const status = computed(() => !store.subject?.confirmedAt ? (isKnowledge.value ? '先核对学习范围' : '先确认题目内容') : '围绕当前问题，继续学习');
-const ready = computed(() => Boolean(store.subject?.confirmedAt) && !store.generating && !store.waitingJob && !store.confirmingSubject && !store.editingSubject);
+const ready = computed(() => !store.reconnecting && !store.needsReconnect && Boolean(store.subject?.confirmedAt) && !store.generating && !store.waitingJob && !store.confirmingSubject && !store.editingSubject);
 const lesson = computed(() => store.artifacts.find((item) => item.subjectRevisionId === store.subject?.id && item.type === 'lesson' && item.publishStatus === 'published'));
 const cardsByMessage = computed(() => materialTaskAnchors(store.messages, store.materialTasks));
 const targetTask = computed(() => store.materialTasks.find((task) => task.jobId === targetJobId.value));
@@ -330,7 +330,7 @@ function simulate(): void {
     <view v-if="store.archivedAt" class="archive-notice"><LumaIcon name="archive" :size="14" /><text>这段对话已归档，继续提问会恢复到最近学习。</text></view>
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="onThreadScroll">
       <view class="thread">
-        <LearningRoute v-if="!UI_MOCK && store.learningRoute && !lessonFocus && !exerciseFocus" :route="store.learningRoute" :disabled="store.generating || store.waitingJob || store.stopping || store.updatingRoute || store.editingSubject" @action="routeAction" @continue="continueRoute" />
+        <LearningRoute v-if="!UI_MOCK && store.learningRoute && !lessonFocus && !exerciseFocus" :route="store.learningRoute" :disabled="store.reconnecting || store.needsReconnect || store.generating || store.waitingJob || store.stopping || store.updatingRoute || store.editingSubject" @action="routeAction" @continue="continueRoute" />
         <view v-if="previewMeta" class="source-attachments">
           <view class="source-heading"><text>本次添加 · {{ previewMeta.attachments?.length }} 张图片</text><button v-if="previewMeta.recognition === 'ready'" @tap="previewAttachment(previewMeta.attachments ?? [], 0)">查看原图</button><button @tap="simulate">模拟异常</button></view>
           <AttachmentStrip v-if="previewMeta.recognition !== 'ready'" :images="previewMeta.attachments ?? []" readonly />
@@ -361,9 +361,10 @@ function simulate(): void {
           <text class="check-note">{{ store.subject.version > 1 ? '后续讲解与练习将依据修改后的内容。' : isKnowledge ? '确认要学习的内容，不清楚的范围可以先补充。' : '请检查题干、公式和已知条件。' }}</text>
           <view class="confirmation-actions"><button class="edit-action" :disabled="busy || store.generating || store.editingSubject" @tap="edit">{{ isKnowledge ? '补充内容' : '修改题目' }}</button><button class="confirm-action" :disabled="busy || store.generating || store.editingSubject" @tap="onConfirm">{{ busy ? '正在确认…' : confirmLabel }}</button></view>
         </view>
-        <view v-if="store.generating && !streaming" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
-        <view v-if="store.waitingJob && !currentTaskPending" class="progress-state"><view class="pulse" /><text>Luma 正在整理回复…</text></view>
-        <view v-if="store.error" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text><button v-if="store.retryRunId && !store.generating && !store.waitingJob" class="retry-link" @tap="store.retry">重新生成这次回复</button></view>
+        <view v-if="store.generating && !streaming && !store.reconnecting" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
+        <view v-if="store.waitingJob && !currentTaskPending && !store.reconnecting" class="progress-state"><view class="pulse" /><text>Luma 正在整理回复…</text></view>
+        <view v-if="store.reconnecting" class="progress-state"><view class="pulse" /><text>正在重新连接，核对已保存的回复…</text></view>
+        <view v-if="store.error && !store.reconnecting" class="error"><text>{{ store.error }}</text><text class="error-caption">已完成的对话仍会保留。</text><button v-if="store.needsReconnect" class="retry-link" @tap="store.reconnect">重新连接</button><button v-else-if="store.retryRunId && !store.generating && !store.waitingJob" class="retry-link" @tap="store.retry">重新生成这次回复</button></view>
         <button v-if="store.generating || (store.waitingJob && !currentTaskPending)" class="stop" @tap="onStop">停止本次生成</button>
         <view v-if="previewMeta?.recognition === 'ready' && ready && nextTopic" class="next-topic"><text>{{ previewMeta.learnAll ? '逐项学习已安排，按自己的节奏继续' : '当前内容先学到这里，也可以继续追问' }}</text><button :disabled="store.generating" @tap="selectTopic(nextTopic.id)">看看下一{{ unit }}<LumaIcon name="arrow-diagonal" :size="13" /></button></view>
         <view id="thread-end" class="thread-end" />
@@ -373,7 +374,7 @@ function simulate(): void {
       <button v-if="newOutput" class="new-output" @tap="scrollToEnd">查看新回复 ↓</button>
       <view class="composer">
         <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
-        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.generating || store.stopping || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
+        <view class="composer-bar"><button class="upload" @tap="upload"><LumaIcon name="plus" :size="14" /><text>上传过程</text></button><button class="send" :disabled="!draft.trim() || store.reconnecting || store.needsReconnect || store.waitingJob || store.generating || store.stopping || store.editingSubject || store.confirmingSubject" aria-label="发送消息" @tap="onSend"><LumaIcon name="arrow-up" white :size="21" /></button></view>
       </view>
     </view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />
