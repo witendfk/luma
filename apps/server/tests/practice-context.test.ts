@@ -90,6 +90,7 @@ test('真实SDK输入装配包含追问题目和自评，规则明确自评不�
   const revision = { id: 'r', subjectId: 's', version: 1, content: { text: '来源题目' }, tags: [], subquestions: [], activeSubquestionIndex: 0 };
   replaceMethod(t, db.subjectRevision, 'findUnique', async () => revision);
   replaceMethod(t, db.subjectRevision, 'findFirst', async () => revision);
+  replaceMethod(t, db.processTranscript, 'findMany', async () => []);
   replaceMethod(t, db.teachingMemory, 'findMany', async () => []);
   replaceMethod(t, db.toolExecution, 'findMany', async () => []);
   replaceMethod(t, db.artifact, 'findMany', async () => []);

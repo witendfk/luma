@@ -24,7 +24,9 @@
     "test:context": "tsx scripts/context-check.ts",
     "test:budget": "tsx scripts/budget-check.ts",
     "test:memory": "tsx scripts/memory-check.ts",
-    "test:learning": "tsx scripts/learning-route-check.ts"
+    "test:learning": "tsx scripts/learning-route-check.ts",
+    "test:uploads": "tsx scripts/uploads-check.ts",
+    "test:uploads:api": "tsx scripts/uploads-http-check.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.0",

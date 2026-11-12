@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { studyPreview } from '@/utils/study-content';
 import AttachmentStrip from '@/components/AttachmentStrip.vue';
 import { chooseAttachments, MAX_IMAGES, type LocalAttachment } from '@/utils/attachments';
 import { createAttachmentPreview, previewRoot } from '@/mocks/workspace';
@@ -15,6 +16,8 @@ import { useConversationStore } from '@/stores/conversation';
 import { getToken, onSessionCleared } from '@/utils/token';
 import { UI_MOCK } from '@/config';
 import { previewContinuation } from '@/utils/continuation';
+import { createConversation } from '@/api/conversations';
+import { uploadAttachments, startRecognition } from '@/api/uploads';
 
 const auth = useAuthStore();
 const history = useHistoryStore();
@@ -22,6 +25,8 @@ const conversation = useConversationStore();
 const draft = ref('');
 const attachments = ref<LocalAttachment[]>([]);
 const choosing = ref(false), invalidImage = ref(false);
+const uploadStatus = ref('');
+let uploadEpoch = 0, uploadConversationId: string | null = null;
 let sentUploadId: string | null = null;
 const menuOpen = ref(false);
 const accountOpen = ref(false);
@@ -51,7 +56,7 @@ watch([menuOpen, accountOpen], ([menu, account]) => {
   else uni.showTabBar({ animation: false, fail: () => undefined });
 });
 watch(draft, (text) => { if (sentUploadId && previewRoot(sentUploadId)?.text !== text.trim()) sentUploadId = null; try { uni.setStorageSync(draftKey, text); } catch { /* 页面内仍保留输入 */ } });
-onScopeDispose(onSessionCleared(() => { draft.value = ''; menuOpen.value = false; sentDraft = null; attachments.value = []; sentUploadId = null; choosing.value = false; }));
+onScopeDispose(onSessionCleared(() => { uploadEpoch += 1; uploadConversationId = null; uploadStatus.value = ''; navigating.value = false; draft.value = ''; menuOpen.value = false; sentDraft = null; attachments.value = []; sentUploadId = null; choosing.value = false; }));
 onShow(() => {
   navigating.value = false;
   if (!getToken()) { uni.reLaunch({ url: '/pages/login/index' }); return; }
@@ -71,6 +76,7 @@ onLoad(() => uni.$on('luma:new-chat', newChat));
 onUnload(() => uni.$off('luma:new-chat', newChat));
 
 function newChat(): void {
+  uploadEpoch += 1; uploadConversationId = null; uploadStatus.value = ''; navigating.value = false;
   menuOpen.value = false;
   draft.value = '';
   sentDraft = null; sentUploadId = null; attachments.value = []; invalidImage.value = false;
@@ -98,7 +104,7 @@ async function upload(index?: number, question = false): Promise<void> {
     sentUploadId = null;
   } finally { choosing.value = false; }
 }
-function send(): void {
+async function send(): Promise<void> {
   const text = draft.value.trim();
   if ((!text && !attachments.value.length) || navigating.value || choosing.value || invalidImage.value) return;
   if (!getToken()) { uni.reLaunch({ url: '/pages/login/index' }); return; }
@@ -106,7 +112,30 @@ function send(): void {
   focused.value = false;
   sentDraft = text;
   if (attachments.value.length) {
-    if (!UI_MOCK) { navigating.value = false; uni.showToast({ title: '图片识别尚未接通，请先输入题目或知识点', icon: 'none' }); return; }
+    if (!UI_MOCK) {
+      const epoch = uploadEpoch, session = getToken(), images = [...attachments.value], intent = scenario.value;
+      const current = () => epoch === uploadEpoch && session === getToken();
+      try {
+        uploadStatus.value = '正在上传图片…';
+        if (!uploadConversationId) {
+          const created = await createConversation({ title: text ? text.slice(0, 30) : '图片学习', intent });
+          if (!current()) return;
+          uploadConversationId = created.id;
+        }
+        const id = uploadConversationId;
+        const attachmentIds = await uploadAttachments(images, intent === 'knowledge' ? 'knowledge_material' : 'question_origin', { conversationId: id },
+          (done, total) => { if (current()) uploadStatus.value = `已上传 ${done}/${total} 张`; });
+        if (!current()) return;
+        await startRecognition(id, { requestId: `photo_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, attachmentIds, intent, text });
+        if (!current()) return;
+        uni.navigateTo({ url: `/pages/chat/index?id=${encodeURIComponent(id)}`, success: () => {
+          if (current()) { attachments.value = []; draft.value = ''; sentDraft = null; uploadConversationId = null; }
+        }, fail: () => { navigating.value = false; uni.showToast({ title: '打开失败，图片已保存，可再次发送进入', icon: 'none' }); } });
+      } catch (error) {
+        if (current()) { navigating.value = false; uni.showToast({ title: error instanceof Error ? error.message : '上传失败，图片和文字已保留', icon: 'none' }); }
+      } finally { if (current()) uploadStatus.value = ''; }
+      return;
+    }
     try {
       const id = sentUploadId ?? createAttachmentPreview(attachments.value, text, scenario.value);
       sentUploadId = id;
@@ -148,7 +177,7 @@ function openConversation(id: string): void {
           <button class="send" :disabled="(!draft.trim() && !attachments.length) || navigating || choosing || invalidImage" aria-label="发送问题" @tap="send"><LumaIcon name="arrow-up" white :size="21" /></button>
         </view>
       </view>
-      <text v-if="attachments.length" class="attachment-note">{{ attachments.length }}/3 张图片 · 可以包含多道题</text>
+      <text v-if="attachments.length" class="attachment-note">{{ uploadStatus || `${attachments.length}/3 张图片 · 可以包含多道题` }}</text>
       <view class="quick-entries">
         <button class="quick-entry" @tap="upload(undefined, true)"><LumaIcon name="photo" :size="20" /><text>拍题求助</text></button>
         <button class="quick-entry" :class="{ selected: scenario === 'knowledge' }" @tap="chooseScenario('knowledge')"><LumaIcon name="book" :size="20" /><text>讲知识点</text></button>
@@ -157,7 +186,7 @@ function openConversation(id: string): void {
       <view class="guidance"><view class="soft-dot" /><text>先给提示，陪你一步步想明白</text></view>
       <view v-if="history.latest" class="continue-card">
         <view class="continue-icon"><LumaIcon name="arrow-diagonal" :size="20" /></view>
-        <view class="continue-copy"><text class="continue-label">{{ continuation?.label ?? '继续上次的学习' }}</text><view class="continue-title">{{ history.latest.title }}</view></view>
+        <view class="continue-copy"><text class="continue-label">{{ continuation?.label ?? '继续上次的学习' }}</text><view class="continue-title">{{ studyPreview(history.latest.title) }}</view></view>
         <button class="continue-action" @tap="continueLearning">继续学习</button>
       </view>
       <view v-if="history.error" class="history-error"><text>学习记录暂时未能加载</text><button :disabled="history.loading" @tap="history.load()">重试</button></view>

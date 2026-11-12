@@ -4,6 +4,7 @@ import { resolveSubject } from './subject-context';
 import { validateFocus } from './focus';
 import { createConversationTitle, restoreLegacyTitle } from '../lib/conversation-title';
 import { projectMaterialTasks } from './material-tasks';
+import { recognitionView } from './recognition.service';
 
 /** 会话与消息（FR-02 / FR-10 / 设计文档 §10）：真实实现 */
 
@@ -137,7 +138,9 @@ export const conversationService = {
         select: { id: true, userMessageId: true, subjectRevisionId: true, taskFrame: true } }) : [];
       const materialTasks = projectMaterialTasks(jobs, artifacts, runs, active?.revision?.id);
       const learningRoute = await learningRouteView(tx, active?.revision?.id);
+      const recognitionJob = await tx.generationJob.findFirst({ where: { conversationId, type: 'recognition', subjectRevisionId: null }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
       return { conversation, subjects, subject: active?.revision ?? null, progress: active?.progress ?? null,
+        recognition: recognitionJob ? recognitionView(recognitionJob) : null,
         learningRoute,
         artifacts: artifacts.map(({ content: _content, ...row }) => ({ ...row, subjectId: active!.id })), activeRun, latestRun, lessonJob, materialTasks };
     }, { isolationLevel: 'RepeatableRead' });

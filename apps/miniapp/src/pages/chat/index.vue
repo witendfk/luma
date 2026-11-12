@@ -6,12 +6,15 @@ import TopicNavigator from '@/components/TopicNavigator.vue';
 import ProcessSheet from '@/components/ProcessSheet.vue';
 import { previewRoot, selectPreviewTopic, recognizeAttachments, setRecognition, saveTopicDraft, planPreviewTopics, rememberPreviewLocation, type PreviewRecord } from '@/mocks/workspace';
 import { previewAttachment } from '@/utils/attachments';
+import { actOnRecognition, previewRemoteAttachments } from '@/api/uploads';
 import { sessionVersion } from '@/utils/token';
 import PreviewNotice from '@/components/PreviewNotice.vue';
 import { computed, getCurrentInstance, nextTick, ref, watch } from 'vue';
 import { onLoad, onShow, onHide, onUnload } from '@dcloudio/uni-app';
 import { materialTaskAnchors, type MaterialTaskView, type TurnRequest } from '@luma/shared';
 import MessageBubble from '@/components/MessageBubble.vue';
+import StudyText from '@/components/StudyText.vue';
+import { studyPreview } from '@/utils/study-content';
 import MaterialTaskCard from '@/components/MaterialTaskCard.vue';
 import LearningRoute from '@/components/LearningRoute.vue';
 import LearningHeader from '@/components/LearningHeader.vue';
@@ -38,12 +41,35 @@ function continueRoute(objective: string): void {
   scrollToEnd();
 }
 const notebook = useNotebookPreviewStore();
-onShow(() => { pageActive = true; if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh().catch(() => { /* Keep current content; explicit reload remains available. */ }); });
+onShow(() => { pageActive = true; scheduleRealRecognition(); if (UI_MOCK) { notebook.refresh(); syncPreview(); beginRecognition(); } else if (store.currentId && !store.generating) void store.refresh().catch(() => { /* Keep current content; explicit reload remains available. */ }); });
 const isSaved = computed(() => UI_MOCK ? notebook.records.some((row) => row.id === (activeTopic.value?.id ?? store.currentId) && row.collected) : (saved.value || store.subjects.some((row) => row.id === store.activeSubjectId && row.collected)));
 const previewStudy = ref(false);
 const previewMeta = ref<PreviewRecord | null>(null);
 const activeTopic = computed(() => previewMeta.value?.topics?.find((topic) => topic.id === previewMeta.value?.activeTopicId));
 const switchingTopic = ref(false);
+const recognitionBusy = ref(false), recognitionError = ref('');
+let realRecognitionTimer: ReturnType<typeof setTimeout> | undefined;
+const pendingRecognition = computed(() => !!store.recognition && store.recognition.status !== 'succeeded');
+const sourceIds = computed(() => Array.isArray(store.subject?.content.attachmentIds) ? store.subject!.content.attachmentIds as string[] : store.recognition?.attachmentIds ?? []);
+const uncertainties = computed(() => Array.isArray(store.subject?.content.uncertainties) ? store.subject!.content.uncertainties as string[] : []);
+function scheduleRealRecognition(): void {
+  clearTimeout(realRecognitionTimer);
+  if (!pageActive || UI_MOCK || !store.currentId || !['queued', 'running'].includes(store.recognition?.status ?? '')) return;
+  const id = store.currentId, session = sessionVersion();
+  realRecognitionTimer = setTimeout(async () => {
+    try { await store.refresh(); if (id === store.currentId && session === sessionVersion()) { recognitionError.value = ''; scheduleRealRecognition(); } }
+    catch { if (id === store.currentId && session === sessionVersion()) recognitionError.value = '连接中断，图片已保留，请重新连接'; }
+  }, 1500);
+}
+watch(() => store.recognition?.id + ':' + store.recognition?.status, scheduleRealRecognition);
+async function realRecognitionAction(action: 'cancel' | 'retry'): Promise<void> {
+  const id = store.currentId, job = store.recognition, session = sessionVersion();
+  if (!id || !job || recognitionBusy.value) return;
+  recognitionBusy.value = true;
+  try { await actOnRecognition(id, job.id, action); if (id !== store.currentId || session !== sessionVersion()) return; await store.refresh(); recognitionError.value = ''; scheduleRealRecognition(); }
+  catch (error) { if (id === store.currentId && session === sessionVersion()) recognitionError.value = error instanceof Error ? error.message : '操作失败，请重试'; }
+  finally { if (id === store.currentId && session === sessionVersion()) recognitionBusy.value = false; }
+}
 let pageActive = true, recognitionTimer: ReturnType<typeof setTimeout> | undefined;
 const topicNavigation = computed(() => previewMeta.value ?? (store.subjects.length > 1 ? {
   intent: store.subject?.content.intent ?? store.subject?.type, activeTopicId: store.activeSubjectId ?? undefined, learnAll: store.learnAll,
@@ -90,8 +116,8 @@ const streaming = computed(() => store.generating && store.messages.some((m) => 
 const subquestions = computed(() => store.subject?.subquestions ?? []);
 const activePart = computed(() => subquestions.value[store.subject?.activeSubquestionIndex ?? 0]);
 const confirmLabel = computed(() => store.subject?.content.intent === 'practice' ? '确认范围，开始练习' : isKnowledge.value ? '确认范围，开始讲解' : '题目无误，继续');
-onHide(() => { if (!UI_MOCK) void store.saveDraft(draft.value).catch(() => { store.error = '草稿暂未保存，请重试'; }); pageActive = false; clearTimeout(recognitionTimer); });
-onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); if (!previewStudy.value) store.stopStream(); });
+onHide(() => { if (!UI_MOCK) void store.saveDraft(draft.value).catch(() => { store.error = '草稿暂未保存，请重试'; }); pageActive = false; clearTimeout(recognitionTimer); clearTimeout(realRecognitionTimer); });
+onUnload(() => { pageActive = false; clearTimeout(recognitionTimer); clearTimeout(realRecognitionTimer); if (!previewStudy.value) store.stopStream(); });
 onLoad(async (query) => {
   try {
     if (query?.id) {
@@ -237,7 +263,6 @@ async function retryTask(task: MaterialTaskView): Promise<void> {
 }
 function rememberChat(): void { if (UI_MOCK && store.currentId) { try { rememberPreviewLocation(activeTopic.value?.id ?? store.currentId, 'chat'); } catch { /* 不阻断学习。 */ } } }
 function upload(): void {
-  if (!UI_MOCK) { uni.showToast({ title: '解题过程图片识别尚未接通，请先输入文字', icon: 'none' }); return; }
   if (!store.subject?.confirmedAt) { uni.showToast({ title: '请先核对当前题目', icon: 'none' }); return; }
   if (store.generating || switchingTopic.value) return;
   focused.value = false; processOpen.value = true;
@@ -331,6 +356,18 @@ function simulate(): void {
     <scroll-view class="thread-scroll" scroll-y :scroll-into-view="scrollTarget" :scroll-with-animation="false" @scroll="onThreadScroll">
       <view class="thread">
         <LearningRoute v-if="!UI_MOCK && store.learningRoute && !lessonFocus && !exerciseFocus" :route="store.learningRoute" :disabled="store.reconnecting || store.needsReconnect || store.generating || store.waitingJob || store.stopping || store.updatingRoute || store.editingSubject" @action="routeAction" @continue="continueRoute" />
+        <view v-if="!UI_MOCK && sourceIds.length" class="source-attachments">
+          <view class="source-heading"><text>已添加 {{ sourceIds.length }} 张图片</text><button @tap="previewRemoteAttachments(sourceIds)">查看原图</button></view>
+          <text v-if="store.recognition?.text" class="source-prompt">{{ store.recognition.text }}</text>
+        </view>
+        <view v-if="!UI_MOCK && pendingRecognition" class="recognition-state">
+          <view v-if="['queued', 'running'].includes(store.recognition?.status ?? '')" class="pulse" />
+          <text>{{ ['queued', 'running'].includes(store.recognition?.status ?? '') ? '正在读取图片里的内容…' : store.recognition?.status === 'cancelled' ? '已暂停读取' : '这次未能读清图片' }}</text>
+          <text class="check-note">{{ recognitionError || store.recognition?.error?.message || '多道题会分别列出，核对后再开始学习。' }}</text>
+          <button v-if="recognitionError" @tap="store.refresh().then(scheduleRealRecognition)">重新连接</button>
+          <button v-else-if="['queued', 'running'].includes(store.recognition?.status ?? '')" :disabled="recognitionBusy" @tap="realRecognitionAction('cancel')">取消本次读取</button>
+          <button v-else-if="store.recognition?.status !== 'superseded'" :disabled="recognitionBusy" @tap="realRecognitionAction('retry')">重新读取</button>
+        </view>
         <view v-if="previewMeta" class="source-attachments">
           <view class="source-heading"><text>本次添加 · {{ previewMeta.attachments?.length }} 张图片</text><button v-if="previewMeta.recognition === 'ready'" @tap="previewAttachment(previewMeta.attachments ?? [], 0)">查看原图</button><button @tap="simulate">模拟异常</button></view>
           <AttachmentStrip v-if="previewMeta.recognition !== 'ready'" :images="previewMeta.attachments ?? []" readonly />
@@ -344,10 +381,10 @@ function simulate(): void {
           <button v-if="previewMeta.recognition === 'reading'" @tap="recognitionAction('cancel')">取消本次读取</button><button v-else @tap="recognitionAction('retry')">重新读取</button>
         </view>
         <view v-if="store.subject?.confirmedAt" class="subject-summary">
-          <button class="summary-toggle" :aria-label="summaryOpen ? '收起已确认内容' : '展开已确认内容'" @tap="summaryOpen = !summaryOpen"><view><text class="summary-label">{{ isKnowledge ? '学习范围已确认' : '题目已确认' }}<text v-if="activePart"> · 第 {{ (store.subject.activeSubquestionIndex ?? 0) + 1 }} 问</text></text><view v-if="!summaryOpen" class="summary-preview">{{ store.subject.content.text }}</view></view><LumaIcon :name="summaryOpen ? 'chevron-up' : 'chevron-down'" :size="14" /></button>
-          <view v-if="summaryOpen" class="summary-details"><text class="subject-text" selectable>{{ store.subject.content.text }}</text><text v-if="activePart" class="check-note">当前小问：{{ activePart }}</text><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
+          <button class="summary-toggle" :aria-label="summaryOpen ? '收起已确认内容' : '展开已确认内容'" @tap="summaryOpen = !summaryOpen"><view><text class="summary-label">{{ isKnowledge ? '学习范围已确认' : '题目已确认' }}<text v-if="activePart"> · 第 {{ (store.subject.activeSubquestionIndex ?? 0) + 1 }} 问</text></text><view v-if="!summaryOpen" class="summary-preview">{{ studyPreview(store.subject.content.text ?? "") }}</view></view><LumaIcon :name="summaryOpen ? 'chevron-up' : 'chevron-down'" :size="14" /></button>
+          <view v-if="summaryOpen" class="summary-details"><view class="subject-text"><StudyText :text="store.subject.content.text ?? ''" /></view><view v-if="activePart" class="check-note"><StudyText :text="`当前小问：${activePart}`" /></view><button class="edit-action" :disabled="store.generating || store.confirmingSubject" @tap="edit">{{ isKnowledge ? '修改学习范围' : '修改题目' }}</button></view>
         </view>
-        <view v-if="!store.messages.length && !store.subject && !previewMeta" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
+        <view v-if="!store.messages.length && !store.subject && !previewMeta && !store.recognition" class="empty"><text class="empty-symbol">✳</text><text>从你卡住的那一步，开始。</text><text class="empty-caption">写下题目或知识点，我陪你一起想。</text></view>
         <view v-for="msg in store.messages" :key="msg.id">
           <MessageBubble :role="msg.role" :text="msg.text" :reply="msg.reply" :incomplete="msg.incomplete" :streaming="store.generating && msg.runId === store.currentRunId" />
           <view v-for="task in cardsByMessage[msg.id] || []" :id="`material-${task.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`" :key="task.id"><MaterialTaskCard :task="task" :busy="store.generating || store.waitingJob" :retrying="task.jobId === store.retryingJobId" :can-stop="!task.historical && store.waitingJob" @open="openTask(task)" @retry="retryTask(task)" @stop="onStop" /></view>
@@ -355,11 +392,11 @@ function simulate(): void {
         <view v-if="unanchoredTarget" :id="`material-${unanchoredTarget.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`"><MaterialTaskCard :task="unanchoredTarget" :busy="store.generating || store.waitingJob" :retrying="unanchoredTarget.jobId === store.retryingJobId" @open="openTask(unanchoredTarget)" @retry="retryTask(unanchoredTarget)" /></view>
         <view v-if="store.subject && !store.subject.confirmedAt" class="confirmation">
           <view class="card-heading"><text>{{ isKnowledge ? '核对学习范围' : '确认题目内容' }}</text><text class="revision">{{ store.subject.version > 1 ? '已修改 · 待确认' : '待确认' }}</text></view>
-          <text class="subject-text" selectable>{{ store.subject.content.text }}</text>
+          <view class="subject-text"><StudyText :text="store.subject.content.text ?? ''" /></view>
 
-          <view v-if="subquestions.length" class="part-options"><text class="check-note">这次先学哪一问？</text><button v-for="(part, index) in subquestions" :key="index" :class="{ selected: (store.subject.activeSubquestionIndex ?? 0) === index }" :disabled="store.editingSubject || store.generating || busy" @tap="choosePart(index)"><text class="part-index">{{ (store.subject.activeSubquestionIndex ?? 0) === index ? '●' : '○' }}</text><text>第 {{ index + 1 }} 问 · {{ part }}</text></button></view>
+          <view v-if="subquestions.length > 1" class="part-options"><text class="check-note">这次先学哪一问？</text><button v-for="(part, index) in subquestions" :key="index" :class="{ selected: (store.subject.activeSubquestionIndex ?? 0) === index }" :disabled="store.editingSubject || store.generating || busy" @tap="choosePart(index)"><text class="part-index">{{ (store.subject.activeSubquestionIndex ?? 0) === index ? '●' : '○' }}</text><view class="part-copy"><StudyText :text="part" /></view></button></view>
           <text class="check-note">{{ store.subject.version > 1 ? '后续讲解与练习将依据修改后的内容。' : isKnowledge ? '确认要学习的内容，不清楚的范围可以先补充。' : '请检查题干、公式和已知条件。' }}</text>
-          <view class="confirmation-actions"><button class="edit-action" :disabled="busy || store.generating || store.editingSubject" @tap="edit">{{ isKnowledge ? '补充内容' : '修改题目' }}</button><button class="confirm-action" :disabled="busy || store.generating || store.editingSubject" @tap="onConfirm">{{ busy ? '正在确认…' : confirmLabel }}</button></view>
+          <text v-for="(item, index) in uncertainties" :key="index" class="check-note">待核对：{{ item }}</text><view class="confirmation-actions"><button class="edit-action" :disabled="busy || store.generating || store.editingSubject" @tap="edit">{{ isKnowledge ? '补充内容' : '修改题目' }}</button><button class="confirm-action" :disabled="busy || store.generating || store.editingSubject" @tap="onConfirm">{{ busy ? '正在确认…' : confirmLabel }}</button></view>
         </view>
         <view v-if="store.generating && !streaming && !store.reconnecting" class="progress-state"><view class="pulse" /><text>Luma 正在整理思路…</text></view>
         <view v-if="store.waitingJob && !currentTaskPending && !store.reconnecting" class="progress-state"><view class="pulse" /><text>Luma 正在整理回复…</text></view>
@@ -370,7 +407,7 @@ function simulate(): void {
         <view id="thread-end" class="thread-end" />
       </view>
     </scroll-view>
-    <view v-if="!previewMeta || previewMeta.recognition === 'ready'" class="input-dock">
+    <view v-if="(!previewMeta || previewMeta.recognition === 'ready') && !pendingRecognition" class="input-dock">
       <button v-if="newOutput" class="new-output" @tap="scrollToEnd">查看新回复 ↓</button>
       <view class="composer">
         <textarea v-model="draft" class="input" :maxlength="2000" :focus="focused" placeholder="写下你的思路，或继续追问…" placeholder-style="color:#a0ad92;font-size:14px" :show-confirm-bar="false" :adjust-position="false" :disabled="menuOpen || accountOpen || editorOpen" @blur="focused = false" @keyboardheightchange="keyboardHeight = editorOpen ? 0 : $event.detail.height" />
@@ -379,7 +416,7 @@ function simulate(): void {
     </view>
     <AccountPanel :open="accountOpen" @close="accountOpen = false" />
     <SubjectEditor :open="editorOpen" :subject="store.subject" :saving="store.editingSubject" :error="editorError" @close="editorOpen = false" @save="saveSubject" />
-    <ProcessSheet v-if="UI_MOCK && store.currentId" :key="`${activeTopic?.id ?? store.currentId}:${store.subject?.version}`" :open="processOpen" :scope="activeTopic?.id ?? store.currentId" :revision="store.subject?.version ?? 1" @close="processOpen = false" @confirm="confirmProcess" />
+    <ProcessSheet v-if="store.currentId && store.subject" :conversation-id="store.currentId" :subject-revision-id="store.subject.id" :key="`${activeTopic?.id ?? store.currentId}:${store.subject?.version}`" :open="processOpen" :scope="activeTopic?.id ?? store.currentId" :revision="store.subject?.version ?? 1" @close="processOpen = false" @confirm="confirmProcess" />
     <LearningDrawer :open="menuOpen" @close="menuOpen = false" @new="newChat" @select="openConversation" @account="accountOpen = true" />
   </view>
 </template>
@@ -419,7 +456,7 @@ function simulate(): void {
 .chat-page .part-options button { display:flex; align-items:flex-start; gap:12rpx; width:100%; text-align:left; padding:14rpx 0; font-size:22rpx; color:#97a18d; }
 .part-options button.selected { color:#4f6652; }
 .part-index { flex-shrink:0; }
-.part-options button text:last-child { min-width:0; overflow-wrap:anywhere; }
+.part-copy { flex:1; min-width:0; overflow-wrap:anywhere; }
 .focus-note { padding:20rpx 32rpx; border-bottom:1rpx solid #e1e7d8; background:#f0f3e9; font-size:23rpx; color:#6b805f; flex-shrink:0; }
 .focus-note>view { display:flex; gap:32rpx; }
 .focus-note button { font-size:22rpx; color:#78916a; min-height:64rpx; }

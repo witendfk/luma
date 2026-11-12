@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import LumaIcon from './LumaIcon.vue';
+import { studyPreview } from '@/utils/study-content';
 withDefaults(defineProps<{ title?: string }>(), { title: '开始学习' });
 defineEmits<{ (e: 'menu'): void; (e: 'new'): void }>();
 </script>
 <template>
   <view class="learning-header">
     <button class="header-button" aria-label="打开学习菜单" @tap="$emit('menu')"><LumaIcon name="menu" :size="21" /></button>
-    <text class="header-title">{{ title }}</text>
+    <text class="header-title">{{ studyPreview(title) }}</text>
     <button class="header-button" aria-label="新建对话" @tap="$emit('new')"><LumaIcon name="compose" :size="20" /></button>
   </view>
 </template>

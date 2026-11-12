@@ -99,6 +99,7 @@ export interface ConversationSummary {
   id: string; title: string; lastActiveAt: string; archivedAt: string | null;
 }
 export interface ConversationDetail {
+  recognition?: import('./uploads').RecognitionView | null;
   learningRoute?: import('./learning').LearningRouteView | null;
   conversation: ConversationSummary & { activeSubjectId?: string | null; learnAll?: boolean };
   subjects: LearningSubjectView[];

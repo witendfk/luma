@@ -10,8 +10,8 @@ export function userTextMessage(text: string, imageAttachmentIds: string[] = [])
   const content: Array<{ type: 'text'; text: string } | { type: 'image'; image: string }> = [];
   if (text) content.push({ type: 'text', text });
   for (const id of imageAttachmentIds) {
-    // 图片以附件标识进入协议；恢复时按需重签访问地址（§4.13）
-    content.push({ type: 'image', image: `attachment:${id}` });
+    // Private references are data, never fake URLs that the provider would fetch.
+    content.push({ type: 'text', text: `学生图片附件：${id}。通过 recognizeMaterial 读取已保存的转写，不猜测图片内容。` });
   }
   if (content.length === 0) content.push({ type: 'text', text: '（学生上传了图片）' });
   return { role: 'user', content };

@@ -13,6 +13,7 @@ export const useConversationStore = defineStore('conversation', () => {
   const archivedAt = ref<string | null>(null);
   const messages = ref<Array<{ id: string; role: 'user' | 'assistant'; text: string; reply?: TeachingReply; runId?: string | null; incomplete?: boolean }>>([]);
   const subject = ref<api.SubjectView | null>(null);
+  const recognition = ref<import('@luma/shared').RecognitionView | null>(null);
   const subjects = ref<LearningSubjectView[]>([]);
   const activeSubjectId = ref<string | null>(null);
   const progress = ref<ProgressView | null>(null);
@@ -72,6 +73,7 @@ export const useConversationStore = defineStore('conversation', () => {
     archivedAt.value = null;
     messages.value = [];
     subject.value = null;
+    recognition.value = null;
     learningRoute.value = null; updatingRoute.value = false;
     subjects.value = []; activeSubjectId.value = null; progress.value = null; learnAll.value = false; switchingSubject.value = false;
     artifacts.value = [];
@@ -99,6 +101,7 @@ export const useConversationStore = defineStore('conversation', () => {
     archivedAt.value = detail.conversation.archivedAt;
     if (detail.conversation.id === id) useHistoryStore().applySummary(detail.conversation);
     subject.value = detail.subject;
+    recognition.value = detail.recognition ?? null;
     subjects.value = detail.subjects ?? [];
     activeSubjectId.value = detail.conversation.activeSubjectId ?? detail.subject?.subjectId ?? null;
     applyLearningRoute(detail.learningRoute ?? null);
@@ -403,6 +406,6 @@ export const useConversationStore = defineStore('conversation', () => {
     } finally { if (version === openVersion && session === sessionVersion()) updatingRoute.value = false; }
   }
 
-  return { reconnect, reconnecting, needsReconnect, learningRoute, updatingRoute, actOnRoute, retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
+  return { recognition, reconnect, reconnecting, needsReconnect, learningRoute, updatingRoute, actOnRoute, retry, retryMaterial, retryingJobId, materialTasks, retryRunId, lessonJob, subjects, activeSubjectId, progress, learnAll, switchingSubject, saveDraft, switchSubject, currentId, currentRunId, title, archivedAt, messages, subject, artifacts, generating, editingSubject, confirmingSubject, stage, waitingJob, error,
     stopping, reset, open, refresh, send, confirm, editSubject, stop, appendLocalMessage, setStream, stopStream, applySummary };
 });

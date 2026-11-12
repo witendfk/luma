@@ -194,7 +194,11 @@
 
 引用不符或能力未接入返回明确错误，不能默默退回旧12条截断或无证据摘要；实际检查见verification。
 
-## 6 上传识别（目标契约，B03 开工约束）
+## 6 上传识别
+
+开发环境使用服务端`.luma/uploads`私有目录，原图与方向校正后的视觉PNG分开保存，不挂静态目录；仅服务端凭附件ID与本人归属读取。生产环境拒绝启用该适配器，COS另行实现/配置。`POST /uploads`签发pending票据；`POST /uploads/:id/file`接收鉴权multipart；`POST /uploads/:id/complete`验证并幂等置ready；`GET /attachments/:id`鉴权返回原图且private/no-store。请求体按实际流限制大小，校验真实格式/解码/像素、拒绝动画。
+
+`POST /conversations/:id/recognitions`创建识别GenerationJob，GET读取状态，`PUT /conversations/:id/recognitions/:jobId`显式取消/重试。相同附件/输入/版本去重，worker使用同一GPT视觉与预算机制；不自动付费重试。独立题分别建立待确认对象，小问留在同一对象；解题过程保存待确认转写，只有确认步骤进入教学上下文。来源修订或取消后拒绝迟到发布。当前接受题目、知识材料、解题过程；正式练习作答照片绑定题目/轮次的协议接线后续完成。
 
 上传请求声明 purpose（题目、课堂材料、解题过程、练习作答）及对应会话/对象/轮次引用；全部验证本人归属。签发受限私有对象键，附件先为 pending；complete 按附件 ID 幂等验证真实格式、可解码性及不超过 8 MB 后变为 ready，失败不可引用。临时本机路径不作为正式来源。
 

@@ -5,6 +5,7 @@ import { ApiError, toApiError } from '../lib/errors';
 import { resumeRunsForJob, scanWaitingRuns, failExpiredRuns } from './scheduler';
 import { lessonTask } from './lesson.task';
 import { practiceTask } from './practice.task';
+import { recognitionTask } from './recognition.task';
 import { failJob, JobLeaseLostError, type JobLease } from './shared';
 
 /**
@@ -65,6 +66,7 @@ async function executeJob(lease: JobLease): Promise<void> {
   try {
     if (job.type === 'lesson') await lessonTask(lease);
     else if (job.type === 'exercise_set') await practiceTask(lease);
+    else if (job.type === 'recognition') await recognitionTask(lease);
     else await failJob(lease, 'INTERNAL', `未知任务类型：${job.type}`, false);
   } catch (err) {
     if (err instanceof JobLeaseLostError) return;

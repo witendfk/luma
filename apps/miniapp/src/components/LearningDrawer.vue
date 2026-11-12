@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { studyPreview } from '@/utils/study-content';
 import { computed, ref, watch } from 'vue';
 import { useHistoryStore } from '@/stores/history';
 import { useAuthStore } from '@/stores/auth';
@@ -100,7 +101,7 @@ async function update(id: string, patch: { title?: string; archived?: boolean })
               <view class="history-date">{{ group.label }}</view>
               <view v-for="item in group.items" :key="item.id" class="history-row">
                 <button class="drawer-button history-item" :disabled="actionItem === item.id" @tap="emit('select', item.id)">
-                  <view class="history-title">{{ item.title }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
+                  <view class="history-title">{{ studyPreview(item.title) }}</view><text class="history-time">{{ activityTime(item.lastActiveAt) }}</text>
                 </button>
                 <button class="drawer-button history-more" :disabled="Boolean(actionItem)" :aria-label="`管理对话：${item.title}`" @tap="manage(item.id)"><LumaIcon name="more" :size="17" /></button>
               </view>

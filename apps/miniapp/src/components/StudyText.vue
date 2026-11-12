@@ -22,11 +22,11 @@ onScopeDispose(onSessionCleared(() => { revision++; blocks.value = []; failed.va
 onScopeDispose(() => { revision++; });
 const nodes = computed(() => pendingContentNodes(props.text, failed.value));
 </script>
-<template><view class="study-text"><template v-if="blocks.length"><template v-for="(block, index) in blocks" :key="index"><rich-text v-if="block.kind === 'text'" :nodes="block.nodes" :selectable="true" /><scroll-view v-else class="display-formula" scroll-x><image :src="block.src" :style="{ width: block.width + 'px', height: block.height + 'px' }" :aria-label="block.fallback" /></scroll-view></template></template><rich-text v-else :nodes="nodes" :selectable="true" /><button v-if="failed && !streaming" class="typeset-retry" @tap="typeset">公式排版暂不可用 · 重试</button></view></template>
+<template><view class="study-text"><template v-if="blocks.length"><template v-for="(block, index) in blocks" :key="index"><rich-text v-if="block.kind === 'text'" :nodes="block.nodes" :selectable="true" /><scroll-view v-else class="display-formula" scroll-x><image class="formula-image" :src="block.src" :style="{ width: block.width + 'px', height: block.height + 'px' }" :aria-label="block.fallback" /></scroll-view></template></template><rich-text v-else :nodes="nodes" :selectable="true" /><button v-if="failed && !streaming" class="typeset-retry" @tap="typeset">公式排版暂不可用 · 重试</button></view></template>
 <style scoped>
-.study-text { font-size:inherit; line-height:inherit; color:inherit; }
+.study-text { display:block; font-size:inherit; line-height:inherit; color:inherit; }
 .display-formula { width:100%; margin:20rpx 0; white-space:nowrap; }
-.display-formula image { display:inline-block; vertical-align:middle; }
+.formula-image { display:inline-block; vertical-align:middle; }
 .typeset-retry { display:inline-block; margin:8rpx 0; padding:0; border:0; background:transparent; color:#718364; font-size:23rpx; line-height:1.8; }
 .typeset-retry::after { border:0; }
 </style>

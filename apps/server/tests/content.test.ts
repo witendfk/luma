@@ -137,3 +137,16 @@ test('公式排版失败给明确状态，不把LaTeX源码冒充可读公式', 
   assert.match(JSON.stringify(blocks), /公式暂时无法排版/);
   assert.doesNotMatch(JSON.stringify(blocks), /badcommand/);
 });
+
+test('选图识别的题干和小问排版保留条件，标题预览不展示公式定界符', async () => {
+  const { miniappSandbox } = await import('./helpers/miniapp');
+  const { studyPreview } = miniappSandbox().load('@/utils/study-content');
+  const question = '1. 已知等差数列 $a_1=3$，公差 $d=2$。\n（1）求 $a_5$；（2）写出通项公式。';
+  assert.equal(studyPreview(question), '1. 已知等差数列 a₁=3，公差 d=2。 （1）求 a₅；（2）写出通项公式。');
+  assert.equal(studyPreview('求 $\\frac{1}{2}$'), '求 〔公式〕');
+  const nodes = (await renderContent(question))[0]!.nodes!;
+  const children = nodes.flatMap((node) => node.children ?? []);
+  assert.equal(children.filter((node) => node.name === 'img').length, 3);
+  assert.match(children.filter((node) => node.type === 'text').map((node) => node.text).join(''), /已知等差数列.*公差.*通项公式/s);
+  assert.doesNotMatch(JSON.stringify(nodes), /\$/);
+});

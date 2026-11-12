@@ -72,6 +72,11 @@ export const runService = {
       }
       if (subject) await validateFocus(tx, userId, conversationId, subject.id, input);
       else if (input.artifactId || input.attemptId || input.exerciseId || input.sectionId) throw invalidFormat('请先提供学习内容');
+      if (input.imageAttachmentIds?.length) {
+        const available = (subject?.content as { attachmentIds?: string[] } | null)?.attachmentIds ?? [];
+        const owned = await tx.attachment.count({ where: { id: { in: input.imageAttachmentIds }, userId, status: 'ready' } });
+        if (owned !== new Set(input.imageAttachmentIds).size || input.imageAttachmentIds.some((id) => !available.includes(id))) throw invalidFormat('请先从图片上传入口识别并核对当前题目');
+      }
       if (input.practiceMode) {
         if (input.action !== 'generate_practice' || !input.artifactId || !input.artifactVersion || input.sectionId || input.attemptId || input.exerciseId) throw invalidFormat('配套练习入口需要完整讲义来源');
         await practiceSource(tx, userId, input.artifactId, input.artifactVersion);

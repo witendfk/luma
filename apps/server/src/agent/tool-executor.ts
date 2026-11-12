@@ -134,13 +134,19 @@ async function executeOne(
     if (toolName === 'readLearningContext') {
       outcome = { kind: 'result', value: await readLearningContext(ctx, parsed.data as ReadContextInput) };
     } else if (toolName === 'recognizeMaterial') {
-      // 上传链路（第二周接入）：返回可恢复错误供模型向学生说明
-      outcome = {
-        kind: 'error',
-        code: 'NOT_AVAILABLE',
-        retryable: false,
-        message: '图片上传链路尚未接入，无法读取图片；请学生用文字描述题目',
-      };
+      const input = parsed.data as { attachmentId: string; materialType: string };
+      const attachment = await db.attachment.findFirst({ where: { id: input.attachmentId, userId: ctx.userId, status: 'ready' } });
+      const scope = attachment?.scope as { conversationId?: string; subjectRevisionId?: string } | null;
+      const revision = ctx.policy.subjectRevisionId ? await db.subjectRevision.findUnique({ where: { id: ctx.policy.subjectRevisionId } }) : null;
+      const source = revision?.content as { attachmentIds?: string[]; uncertainties?: string[] } | null;
+      if (!attachment || scope?.conversationId !== ctx.conversationId || (input.materialType === 'process' ? scope.subjectRevisionId !== revision?.id : !source?.attachmentIds?.includes(attachment.id))) {
+        outcome = { kind: 'error', code: 'FORBIDDEN', retryable: false, message: '图片不属于当前题目，请从上传入口添加并核对' };
+      } else if (input.materialType === 'process') {
+        const process = await db.processTranscript.findFirst({ where: { attachmentId: attachment.id, subjectRevisionId: revision!.id }, orderBy: { createdAt: 'desc' } });
+        outcome = { kind: 'result', value: { ok: true, status: process?.status ?? 'pending', steps: process?.status === 'confirmed' ? process.confirmedSteps : process?.steps,
+          note: '仅confirmed步骤可作纠错依据；未确认转写只能邀请核对' } };
+      } else outcome = { kind: 'result', value: { ok: true, content: revision!.content, subquestions: revision!.subquestions,
+        confirmed: Boolean(revision!.confirmedAt), note: '此为GPT已保存转写；未核对前只澄清、不解题' } };
     } else if (toolName === 'createLesson' || toolName === 'createPractice') {
       outcome = await createMaterialJob(ctx, toolName, parsed.data as Record<string, unknown>);
     } else {

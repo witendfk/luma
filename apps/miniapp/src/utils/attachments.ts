@@ -1,9 +1,9 @@
 import { UI_MOCK } from '@/config';
-export interface LocalAttachment { id: string; path: string; name: string; sample?: boolean }
+export interface LocalAttachment { id: string; path: string; name: string; size?: number; sample?: boolean; remote?: { id: string; scopeKey: string } }
 export const MAX_IMAGES = 3;
 const makeId = () => `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-/** 只选择本机图片；本轮没有上传请求或视觉识别。 */
+/** 选图本身不上传；学生发送或明确读取过程后再上传。 */
 export async function chooseAttachments(count = MAX_IMAGES): Promise<LocalAttachment[] | null> {
   const options = ['拍照', '从相册选择', ...(UI_MOCK ? ['使用多题示例'] : [])];
   const action = await new Promise<number | null>((resolve) => uni.showActionSheet({ itemList: options, success: (res) => resolve(res.tapIndex), fail: () => resolve(null) }));
@@ -16,7 +16,7 @@ export async function chooseAttachments(count = MAX_IMAGES): Promise<LocalAttach
       if (files.some((file) => file.size > 8 * 1024 * 1024)) {
         uni.showToast({ title: '单张图片不能超过 8 MB，请重新选择', icon: 'none' }); resolve(null); return;
       }
-      resolve(files.map((file, index) => ({ id: makeId(), path: file.path, name: `图片 ${index + 1}` })));
+      resolve(files.map((file, index) => ({ id: makeId(), path: file.path, size: file.size, name: `图片 ${index + 1}` })));
     },
     fail: (err) => {
       if (!/cancel/i.test(err.errMsg)) uni.showToast({ title: '未能选择图片，请重试或检查相机、相册权限', icon: 'none' });

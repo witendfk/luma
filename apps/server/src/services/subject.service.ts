@@ -5,6 +5,9 @@ import { assertIdle, resolveSubject, requireRevision } from './subject-context';
 import { validateFocus } from './focus';
 import { conversationService } from './conversation.service';
 import { recordRouteReading } from './learning-route';
+import { z } from 'zod';
+import { Prisma } from '@prisma/client';
+import { isDeepStrictEqual } from 'node:util';
 
 /**
  * 学习对象版本与过程转写（FR-03 / 设计文档 §3.1）。
@@ -113,6 +116,7 @@ export const subjectService = {
           activeSubquestionIndex: subquestions.length ? selected ?? 0 : null,
           // 新版本必须重新确认（FR-03：确认前不按未核实条件生成解答）
           confirmedAt: null,
+          originAttachmentId: latest.originAttachmentId,
         },
       });
       await tx.agentRun.updateMany({ where: { conversationId, subjectId: object.id, status: { in: ['running', 'waiting_job'] } }, data: { status: 'cancelled', finishedAt: new Date() } });
@@ -135,16 +139,24 @@ export const subjectService = {
     userId: string,
     conversationId: string,
     transcriptId: string,
-    _input: { confirmedSteps?: unknown },
+    input: { confirmedSteps?: unknown },
   ) {
     await conversationService.getOwned(userId, conversationId);
-    const transcript = await db.processTranscript.findFirst({
-      where: { id: transcriptId, conversationId },
+    const steps = z.array(z.string().trim().min(1).max(2000)).min(1).max(30).parse(input.confirmedSteps);
+    return db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Conversation" WHERE id = ${conversationId} FOR UPDATE`;
+      const transcript = await tx.processTranscript.findFirst({ where: { id: transcriptId, conversationId } });
+      if (!transcript) throw invalidFormat('过程转写不存在');
+      const revision = await tx.subjectRevision.findUniqueOrThrow({ where: { id: transcript.subjectRevisionId } });
+      const latest = await requireRevision(tx, revision.subjectId);
+      if (latest.id !== revision.id || !latest.confirmedAt) throw revisionConflict('题目已修改，请重新上传并核对过程');
+      await assertIdle(tx, conversationId);
+      if (transcript.status === 'confirmed') {
+        if (!isDeepStrictEqual(transcript.confirmedSteps, steps)) throw revisionConflict('已确认的步骤不能覆盖，请重新上传过程');
+        return { transcript };
+      }
+      return { transcript: await tx.processTranscript.update({ where: { id: transcript.id },
+        data: { confirmedSteps: steps as Prisma.InputJsonValue, status: 'confirmed' } }) };
     });
-    if (!transcript) {
-      // 解题过程转写依赖上传链路（第二周接入）
-      throw invalidFormat('过程转写功能尚未接入');
-    }
-    return { transcript };
   },
 };

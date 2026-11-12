@@ -391,11 +391,18 @@ model Attachment {
   purpose          AttachmentPurpose
   format           String
   size             Int
+  /// Existing attachments remain ready; new uploads explicitly start pending.
+  status           String            @default("ready")
+  storageProvider  String            @default("legacy")
+  uploadExpiresAt  DateTime?
+  scope            Json?
   createdAt        DateTime          @default(now())
 
   user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   subjectRevisions SubjectRevision[]   @relation("SubjectOrigin")
   transcripts      ProcessTranscript[]
+
+  @@index([userId, status])
 }
 
 /// 一次 Agent 运行（设计文档 §4.3 / §4.11 / §9.1）：任务记录、协议快照、分项计数与租约
