@@ -5,7 +5,7 @@ import { invalidFormat, notFound, revisionConflict } from '../lib/errors';
 /**
  * 练习闭环（FR-06/07/08 / 设计文档 §3.3）：真实实现。
  * intro→doing 由 start 完成；submit 进入 review 并投影参考解析；complete 校验自评齐全进入 summary。
- * 普通开始复用最近轮次；完成轮次只读。显式重做命令另行接入。
+ * 普通开始复用最近轮次；显式重做创建空白轮次，完成轮次只读。
  */
 
 type LoadedAttempt = Prisma.PracticeAttemptGetPayload<{
@@ -68,8 +68,33 @@ export const practiceService = {
   async history(userId: string, artifactId: string) {
     const artifact = await db.artifact.findFirst({ where: { id: artifactId, type: 'exercise_set', conversation: { userId } } });
     if (!artifact) throw notFound('题组');
-    return db.practiceAttempt.findMany({ where: { userId, artifactId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, artifactId: true, stage: true, currentExerciseId: true, createdAt: true, submittedAt: true, completedAt: true } });
+    const rows = await db.practiceAttempt.findMany({ where: { userId, artifactId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, artifactId: true, stage: true, currentExerciseId: true, createdAt: true, submittedAt: true, completedAt: true, exerciseIds: true } });
+    return rows.map(({ exerciseIds, ...row }) => ({ ...row, exerciseCount: (exerciseIds as string[]).length }));
+  },
+  /** 来源+请求号持久化：响应丢失后重试返回同一轮；不同请求不得从旧轮并发重建。 */
+  async redo(userId: string, sourceId: string, input: { mode: 'all' | 'needs_practice'; requestId: string }) {
+    return db.$transaction(async (tx) => {
+      const source = await loadAttempt(userId, sourceId, tx);
+      await tx.$queryRaw`SELECT id FROM "Artifact" WHERE id = ${source.artifactId} FOR UPDATE`;
+      const prior = await tx.practiceAttempt.findUnique({ where: { userId_redoRequestId: { userId, redoRequestId: input.requestId } } });
+      if (prior) {
+        if (prior.redoOfAttemptId !== sourceId || prior.redoMode !== input.mode) throw revisionConflict('重做请求与原操作不一致，请重新打开练习');
+        const loaded = await loadAttempt(userId, prior.id, tx);
+        return buildView(loaded, ['review', 'summary'].includes(loaded.stage));
+      }
+      const latest = await tx.practiceAttempt.findFirst({ where: { userId, artifactId: source.artifactId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (source.stage !== 'summary' || latest?.id !== sourceId) throw revisionConflict('请先完成当前轮次；如已在其他设备重做，请重新打开练习');
+      if (source.artifact.publishStatus !== 'published') throw invalidFormat('这份练习尚未发布');
+      const selectedIds = new Set(source.exerciseIds as string[]);
+      const needs = new Set(source.answers.filter((a) => a.selfEval === 'partial' || a.selfEval === 'stuck').map((a) => a.exerciseId));
+      const selected = source.artifact.exercises.filter((ex) => input.mode === 'all' || (selectedIds.has(ex.id) && needs.has(ex.id)));
+      if (!selected.length) throw invalidFormat('本轮没有需要巩固的题目，可选择全部重做');
+      const created = await tx.practiceAttempt.create({ data: { artifactId: source.artifactId, userId,
+        exerciseIds: selected.map((ex) => ex.id), stage: 'doing', currentExerciseId: selected[0]!.id,
+        redoOfAttemptId: sourceId, redoMode: input.mode, redoRequestId: input.requestId } });
+      return buildView(await loadAttempt(userId, created.id, tx), false);
+    });
   },
   /** 普通开始是ensure操作：并发点击、重进与网络重试均复用最近轮次。 */
   async start(userId: string, input: { artifactId: string; exerciseIds?: string[] }) {
@@ -134,6 +159,15 @@ export const practiceService = {
       if (input.selfEval !== undefined && attempt.stage !== 'review') throw invalidFormat('提交后才能保存自评');
       const selectedIds = attempt.exerciseIds as string[];
       if (!selectedIds.includes(exerciseId)) throw invalidFormat('该题不在本轮练习范围内');
+      if (input.photoIds !== undefined) {
+        if (input.photoIds.length > 3 || new Set(input.photoIds).size !== input.photoIds.length) throw invalidFormat('每题最多3张不同的作答照片');
+        const photos = await tx.attachment.findMany({ where: { id: { in: input.photoIds }, userId, status: 'ready', purpose: 'answer_photo' } });
+        if (photos.length !== input.photoIds.length || photos.some((photo) => {
+          const scope = photo.scope as { conversationId?: string; subjectRevisionId?: string; attemptId?: string; exerciseId?: string } | null;
+          return scope?.conversationId !== attempt.artifact.conversationId || scope?.subjectRevisionId !== attempt.artifact.subjectRevisionId
+            || scope?.attemptId !== attemptId || scope?.exerciseId !== exerciseId;
+        })) throw invalidFormat('照片未上传完成或不属于本轮当前题目');
+      }
 
       const existing = await tx.practiceAnswer.findUnique({
         where: { attemptId_exerciseId: { attemptId, exerciseId } },

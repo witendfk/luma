@@ -1,4 +1,4 @@
-import type { SelfEval, LessonPracticeView } from '@luma/shared';
+import type { SelfEval, LessonPracticeView, PracticeRedoMode } from '@luma/shared';
 import { request } from '@/utils/request';
 
 /** 练习闭环接口（FR-06/07/08）；答案侧信息只在 submit 后由服务端投影返回 */
@@ -41,6 +41,10 @@ export function completeAttempt(attemptId: string): Promise<unknown> {
 
 export function listAttempts(artifactId: string): Promise<AttemptHistoryItem[]> {
   return request({ method: 'GET', path: `/api/artifacts/${artifactId}/attempts` });
+}
+
+export function redoAttempt(id: string, mode: PracticeRedoMode, requestId: string): Promise<AttemptView> {
+  return request({ method: 'POST', path: `/api/practice-attempts/${id}/redo`, data: { mode, requestId } });
 }
 
 export function savePosition(attemptId: string, exerciseId: string): Promise<{ currentExerciseId: string }> {

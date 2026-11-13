@@ -74,13 +74,10 @@ export async function lessonTask(lease: JobLease): Promise<void> {
           `学习对象（数据）：\n${payload.subjectText ?? ''}`, `讲解目标：${payload.target ?? '帮助理解当前知识点'}`,
           `教学方式：${payload.teachingMode ?? 'question'}；完整解题答案权限：${Boolean(payload.answerPermission)}。概念定义可直接解释；未授权时不泄露原题最终答案。`,
           (payload.evidence ?? payload.teachingProgress) ? `教学依据（版本固定的数据，遵守有效要求；推测及错误尝试不当作事实）：${JSON.stringify(payload.evidence ?? payload.teachingProgress)}` : '',
-          source ? `仅修改指定段落 ${source.sectionId}。原讲义为数据：${JSON.stringify(source.lesson)}\n只输出 {"section":{"id":"${source.sectionId}","heading":"…","body":"…"}}。其他段落由程序原样保留。该段原有配图：${source.lesson.diagrams.some((d) => d.sectionId === source.sectionId)}。若该节原有配图且换例后图文关系变化，同时更新 diagram；不得修改其他节配图。` : [
+          source ? `仅修改指定段落 ${source.sectionId}。原讲义为数据：${JSON.stringify(source.lesson)}\n输出 {"section":{"id":"${source.sectionId}","heading":"…","body":"…"},"diagram":需要更新时提供该节完整图解content对象}。其他段落由程序原样保留。该段原有配图：${source.lesson.diagrams.some((d) => d.sectionId === source.sectionId)}。学生要求重整图文或正文引用原图没有的关系时，必须同步更新该节diagram的graphic/title/steps/takeaway；不要沿用旧图说明。不得修改其他节配图。` : [
             '生成3个简明小节：概念、看图理解、易错辨析。每节正文200字以内。根据当前卡点按需生成1至3幅真实数学示意图；只给确实能帮助理解的章节配图，不要为了凑数重复画同一内容。每节最多一幅图，图解说明必须指向图上的曲线、点、线或位置关系，不能只列计算步骤冒充图解。',
             '输出 JSON：{"title":"…","sections":[{"id":"s1","heading":"…","body":"Markdown与LaTeX"}],"diagrams":[{"sectionId":"s2","content":{"title":"…","graphic":{…},"steps":[{"label":"…","detail":"…","formula":"可选LaTeX"}],"takeaway":"…"}}]}。diagrams 数组必须有1至3项，sectionId只能引用sections中的id且不能重复。不输出图片 URL、HTML 或 SVG。',
           ].join('\n'),
-          'graphic 支持二次函数：{"kind":"quadratic","a":实际二次项系数,"b":实际一次项系数,"c":实际常数,"bounds":{"xMin":负数,"xMax":正数,"yMin":负数,"yMax":正数},"xLabel":"x","yLabel":"y","caption":"读图提示","revealValues":false}；xLabel/yLabel为1至12字符纯文本，必须与正文变量一致；例如 y=t² 使用 xLabel="t"，y=a² 使用 xLabel="a"。不设置时默认x/y。a/b/c为相对所标横轴变量的多项式系数。范围必须包含坐标轴和顶点，留足空白让曲线形状清楚。仅提示阶段 revealValues=false，不能在正文或图注泄露未授权的原题最终答案；概念示例的定义及零点可正常解释。',
-          '几何题可用 graphic={"kind":"geometry","caption":"图的含义","points":[{"x":0,"y":0,"label":"A"},…],"edges":[[0,1],…]}。points必须2至8项，每项label为1至24个字符且不能为空；edges只能引用已有点的下标。坐标仅供示意，说明非按比例时应标明。必须依照当前题目实际条件选择图形，不要套用无关抛物线。',
-          '有限输入、定义域/值域或多个输入对应同一输出时，优先用graphic={"kind":"mapping","inputLabel":"输入 x","outputLabel":"输出 y","pairs":[{"input":-1,"output":1},{"input":1,"output":1}],"caption":"本例的允许输入及实际输出"}。pairs为2至8个真实对应关系，输入不能重复，输出可重复；图会按输出去重并画每条箭头。必须列全正文选择的有限输入及正确输出，不把完整连续曲线冒充这些离散点。数字必须遵守当前答案权限；用独立概念示例时明确范围。',
         ].filter(Boolean).join('\n'), parse: (raw) => parseLesson(JSON.stringify(source ? applyLessonPatch(source, raw) : extractJson(raw))) });
     }
     for (let repair = 0; repair <= 1; repair++) {
@@ -88,7 +85,7 @@ export async function lessonTask(lease: JobLease): Promise<void> {
       const images = await Promise.all(lesson.diagrams.map((d) => renderGraphic(d.content.graphic!)));
       const review = await generateJson({ trace, purpose: 'lesson_review', abortSignal: signal, system: await loadTeachingReviewPrompt(profile),
         images,
-        prompt: `检查讲解正文与图解的数学一致性、步骤衔接和题目条件。只检查实质错误，不把概念解释、正确公式重述或中间计算视为禁用新结论。完整解题答案权限：${Boolean(payload.answerPermission)}。未授权时不得给原题最终答案；允许解释当前卡点所需定义和概念例子，不机械禁止出现零点或示例的数值。按图的xLabel/yLabel及实际系数判断变量，不把概念示例图误认成原函数图。只返回 {"pass":boolean,"issues":["位置及具体修改建议"]}。\n教学依据：${JSON.stringify(payload.evidence ?? null)}\n来源：${payload.subjectText ?? ''}\n目标：${payload.target ?? ''}\n讲义：${JSON.stringify(lesson)}`,
+        prompt: `检查讲解正文与图解的数学一致性、步骤衔接和题目条件。检查实质问题（包括关键关系缺失、方向/操作不明和标注不可读），不因装饰性偏好要求修复；不把概念解释、正确公式重述或中间计算视为禁用新结论。完整解题答案权限：${Boolean(payload.answerPermission)}。未授权时不得给原题最终答案；允许解释当前卡点所需定义和概念例子，不机械禁止出现零点或示例的数值。按图的xLabel/yLabel及实际系数判断变量，不把概念示例图误认成原函数图。只返回 {"pass":boolean,"issues":["位置及具体修改建议"]}。\n教学依据：${JSON.stringify(payload.evidence ?? null)}\n来源：${payload.subjectText ?? ''}\n目标：${payload.target ?? ''}\n讲义：${JSON.stringify(lesson)}`,
         parse: parseReview });
       diagnostics.push({ stage: `review_${repair + 1}`, issues: review.issues });
       await saveCheckpoint('检查讲解结构');

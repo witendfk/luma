@@ -256,7 +256,8 @@ async function generateJsonAttempt<T>(opts: JsonOptions<T>): Promise<T> {
     }
     try { return opts.parse(result.text); }
     catch (parseError) {
-      const issues = parseError instanceof ZodError ? parseError.issues.slice(0, 8).map((issue) => `${issue.path.join('.')}:${issue.code}`)
+      // Preserve bounded schema explanations: "custom" alone gives the repair model no actionable constraint.
+      const issues = parseError instanceof ZodError ? parseError.issues.slice(0, 8).map((issue) => `${issue.path.join('.')}:${issue.code}:${issue.message.slice(0, 200)}`)
         : [parseError instanceof SyntaxError ? 'invalid_json' : 'invalid_material_structure'];
       error = `MODEL_OUTPUT:${issues.join(',')}`;
       throw new ModelOutputError(issues, result.text);

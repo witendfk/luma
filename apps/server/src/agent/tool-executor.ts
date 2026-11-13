@@ -294,6 +294,7 @@ export async function readLearningContext(ctx: Pick<BatchExecutionContext, 'user
         answers: focusedAnswers.map((a) => ({
           exerciseId: a.exerciseId,
           textDraft: a.textDraft,
+          ...(a.photoIds?.length ? { photoIds: a.photoIds } : {}),
           markedUnknown: a.markedUnknown,
           hintsUsed: a.hintsUsed,
           selfEval: a.selfEval,

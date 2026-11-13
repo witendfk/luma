@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue';
 import LumaIcon from './LumaIcon.vue';
 import { previewAttachment, type LocalAttachment } from '@/utils/attachments';
-const props = defineProps<{ images: LocalAttachment[]; readonly?: boolean }>();
+const props = defineProps<{ images: LocalAttachment[]; readonly?: boolean; replaceable?: boolean }>();
 const emit = defineEmits<{ (e: 'replace', index: number): void; (e: 'remove', index: number): void; (e: 'invalid', value: boolean): void }>();
 const failed = ref<string[]>([]);
 watch(() => props.images.map((image) => image.id).join(','), () => { failed.value = failed.value.filter((id) => props.images.some((image) => image.id === id)); emit('invalid', failed.value.length > 0); });
@@ -12,7 +12,7 @@ function error(id: string): void { if (!failed.value.includes(id)) failed.value.
   <view v-if="images.length" class="attachments">
     <view v-for="(image, index) in images" :key="image.id" class="attachment">
       <button class="thumbnail" :aria-label="`预览${image.name}`" @tap="previewAttachment(images, index)"><image class="thumbnail-image" v-if="!failed.includes(image.id)" :src="image.path" mode="aspectFill" @error="error(image.id)" /><view v-else class="expired"><LumaIcon name="photo" :size="19" /><text>图片失效</text></view><text class="image-index">{{ index + 1 }}</text></button>
-      <view v-if="!readonly" class="image-actions"><button class="image-action" :aria-label="`更换第${index + 1}张图片`" @tap="emit('replace', index)">更换</button><button class="image-action" :aria-label="`移除第${index + 1}张图片`" @tap="emit('remove', index)"><LumaIcon name="close" :size="12" /></button></view>
+      <view v-if="!readonly" class="image-actions"><button v-if="replaceable !== false" class="image-action" :aria-label="`更换第${index + 1}张图片`" @tap="emit('replace', index)">更换</button><button class="image-action" :aria-label="`移除第${index + 1}张图片`" @tap="emit('remove', index)"><LumaIcon name="close" :size="12" /></button></view>
     </view>
   </view>
 </template>

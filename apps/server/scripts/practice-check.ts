@@ -58,6 +58,19 @@ async function main() {
     await practice.saveAnswer(user.id, a.id, first!.id, input);
     await practice.saveAnswer(user.id, a.id, first!.id, input);
     await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { ...input, textDraft: '过期覆盖' }));
+    const scope = { conversationId: convo.id, subjectRevisionId: detail.subject!.id, attemptId: a.id, exerciseId: first!.id };
+    const photo = await db.attachment.create({ data: { userId: user.id, objectKey: `isolated-${randomUUID()}`, format: 'png', size: 10,
+      purpose: 'answer_photo', status: 'ready', scope } });
+    await practice.saveAnswer(user.id, a.id, first!.id, { photoIds: [photo.id], draftVersion: 2 });
+    await practice.saveAnswer(user.id, a.id, first!.id, { photoIds: [photo.id], draftVersion: 2 });
+    assert.deepEqual((await practice.get(user.id, a.id)).exercises[0]!.myAnswer!.photoIds, [photo.id]);
+    await assert.rejects(practice.saveAnswer(user.id, a.id, second!.id, { photoIds: [photo.id], draftVersion: 1 }), /当前题目/);
+    await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { photoIds: [photo.id, photo.id], draftVersion: 3 }), /不同/);
+    for (const patch of [{ status: 'pending' as const }, { purpose: 'process_photo' as const }, { scope: { ...scope, attemptId: 'other-round' } }, { scope: { ...scope, conversationId: 'other-conversation' } }]) {
+      await db.attachment.update({ where: { id: photo.id }, data: patch });
+      await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { photoIds: [photo.id], draftVersion: 3 }), /当前题目/);
+      await db.attachment.update({ where: { id: photo.id }, data: { status: 'ready', purpose: 'answer_photo', scope } });
+    }
     await practice.position(user.id, a.id, second!.id);
     const resumed = await practice.get(user.id, a.id);
     assert.equal(resumed.currentExerciseId, second!.id);
@@ -69,7 +82,7 @@ async function main() {
     assert.equal((await practice.submit(user.id, a.id)).submittedAt?.toISOString(), review.submittedAt?.toISOString());
     await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { textDraft: '提交后改动', draftVersion: 2 }));
     await assert.rejects(practice.complete(user.id, a.id));
-    await practice.saveAnswer(user.id, a.id, first!.id, { selfEval: 'independent', draftVersion: 2 });
+    await practice.saveAnswer(user.id, a.id, first!.id, { selfEval: 'independent', draftVersion: 3 });
     await practice.saveAnswer(user.id, a.id, second!.id, { selfEval: 'stuck', draftVersion: 2 });
     await practice.complete(user.id, a.id);
     const finished = await practice.get(user.id, a.id);
@@ -79,6 +92,34 @@ async function main() {
     assert.equal((await practice.get(user.id, a.id)).currentExerciseId, second!.id);
     await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { selfEval: 'stuck', draftVersion: 3 }));
     assert.equal((await practice.start(user.id, { artifactId: artifact.id })).id, a.id);
+    assert.deepEqual((await practice.get(user.id, a.id)).exercises[0]!.myAnswer!.photoIds, [photo.id]);
+    await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { photoIds: [], draftVersion: 4 }), /只读/);
+    const redoRequest = { mode: 'needs_practice' as const, requestId: randomUUID() };
+    await assert.rejects(practice.redo('not-owner', a.id, redoRequest));
+    const [redo1, redo2] = await Promise.all([practice.redo(user.id, a.id, redoRequest), practice.redo(user.id, a.id, redoRequest)]);
+    assert.equal(redo1.id, redo2.id, '同一请求并发只建一轮');
+    assert.deepEqual(redo1.exercises.map((ex) => ex.id), [second!.id]);
+    assert.ok(redo1.answersHidden && redo1.exercises.every((ex) => ex.myAnswer === null && !('answer' in ex)));
+    await assert.rejects(practice.redo(user.id, a.id, { ...redoRequest, mode: 'all' }), /不一致/);
+    await assert.rejects(practice.redo(user.id, a.id, { ...redoRequest, requestId: randomUUID() }), /当前轮次/);
+    await assert.rejects(practice.redo(user.id, redo1.id, { mode: 'all', requestId: randomUUID() }), /当前轮次/);
+    assert.deepEqual((await practice.get(user.id, a.id)).exercises[0]!.myAnswer!.photoIds, [photo.id]);
+    assert.equal((await practice.get(user.id, a.id)).exercises[1]!.myAnswer!.selfEval, 'stuck');
+    assert.equal((await practice.start(user.id, { artifactId: artifact.id })).id, redo1.id);
+    await practice.submit(user.id, redo1.id);
+    await practice.saveAnswer(user.id, redo1.id, second!.id, { selfEval: 'independent', draftVersion: 1 });
+    await practice.complete(user.id, redo1.id);
+    await assert.rejects(practice.redo(user.id, redo1.id, { mode: 'needs_practice', requestId: randomUUID() }), /没有需要巩固/);
+    const concurrent = await Promise.allSettled([1, 2].map(() => practice.redo(user.id, redo1.id, { mode: 'all', requestId: randomUUID() })));
+    assert.equal(concurrent.filter((res) => res.status === 'fulfilled').length, 1, '不同并发请求只有一轮成功');
+    const finalHistory = await practice.history(user.id, artifact.id);
+    assert.equal(finalHistory.length, 3);
+    assert.deepEqual(finalHistory.map((item) => item.exerciseCount), [2, 1, 2], '部分重做后全部重做恢复完整题组');
+    const allRedo = await practice.get(user.id, finalHistory[0]!.id);
+    assert.ok(allRedo.exercises.every((ex) => ex.myAnswer === null && !('answer' in ex)));
+    assert.equal((await practice.redo(user.id, a.id, redoRequest)).id, redo1.id, '旧请求迟到重试不再建轮');
+    await assert.rejects(practice.saveAnswer(user.id, a.id, first!.id, { textDraft: '改旧轮', draftVersion: 10 }), /只读/);
+    console.log('PASS redo/history: ownership, request idempotency, concurrent serialization, subset/all scope, blank hidden answers, old photos/self-evaluation retained, history readonly; no model calls');
     console.log('PASS practice: concurrent start/resume, ownership, answer hiding, draft retry/conflict, position, submit/complete idempotency, self-evaluation, completed round readonly');
   } finally {
     await db.user.delete({ where: { id: user.id } });

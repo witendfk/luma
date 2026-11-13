@@ -18,6 +18,7 @@ export function teachingReplyText(blocks: TeachingReply): string {
 }
 
 const coordinate = z.number().finite().min(-10000).max(10000);
+const chainNumber = coordinate.refine((n) => String(n).length <= 12, '操作链数值过长，请选择可清晰标注的数值');
 const bounds = z.object({ xMin: coordinate, xMax: coordinate, yMin: coordinate, yMax: coordinate })
   .refine((b) => b.xMax - b.xMin >= .1 && b.yMax - b.yMin >= .1, '绘图范围无效');
 export const TeachingGraphic = z.discriminatedUnion('kind', [
@@ -36,7 +37,33 @@ export const TeachingGraphic = z.discriminatedUnion('kind', [
         if (new Set(pairs.map((p) => p.input)).size !== pairs.length) ctx.addIssue({ code: 'custom', message: '函数映射的输入不能重复；不同输入可以对应同一输出' });
       }),
   }),
-]);
+  z.object({ kind: z.literal('operation_chain'), caption: z.string().trim().min(1).max(300),
+    nodes: z.array(z.object({
+      label: z.string().trim().min(1).max(12).refine((s) => !/[\\${}\r\n]/.test(s), '节点使用简短纯文本或Unicode下标，不写LaTeX'),
+      value: chainNumber.optional(),
+    }).strict()).min(2).max(8),
+    operations: z.array(z.object({ operator: z.enum(['add', 'subtract', 'multiply', 'divide']), operand: chainNumber }).strict()).min(1).max(7),
+  }).strict(),
+]).superRefine((g, ctx) => {
+  if (g.kind !== 'operation_chain') return;
+  if (g.operations.length !== g.nodes.length - 1) ctx.addIssue({ code: 'custom', path: ['operations'], message: '相邻节点之间恰好一次操作，操作数必须等于节点数减一' });
+  if (new Set(g.nodes.map((n) => n.label)).size !== g.nodes.length) ctx.addIssue({ code: 'custom', path: ['nodes'], message: '节点标签不能重复，须能逐项引用' });
+  let expected = g.nodes[0]?.value;
+  for (const [i, op] of g.operations.entries()) {
+    if (op.operator === 'divide' && op.operand === 0) {
+      ctx.addIssue({ code: 'custom', path: ['operations', i, 'operand'], message: '不能除以零' }); expected = undefined; continue;
+    }
+    if (expected !== undefined) {
+      expected = op.operator === 'add' ? expected + op.operand : op.operator === 'subtract' ? expected - op.operand : op.operator === 'multiply' ? expected * op.operand : expected / op.operand;
+      if (!Number.isFinite(expected)) { ctx.addIssue({ code: 'custom', path: ['operations', i], message: '操作结果必须为有限数值' }); expected = undefined; }
+    }
+    const shown = g.nodes[i + 1]?.value;
+    if (expected !== undefined && shown !== undefined && Math.abs(expected - shown) > 1e-9 * Math.max(1, Math.abs(expected), Math.abs(shown))) {
+      ctx.addIssue({ code: 'custom', path: ['nodes', i + 1, 'value'], message: '节点数值与前序操作结果不一致' });
+    }
+    if (expected === undefined) expected = shown;
+  }
+});
 export type TeachingGraphic = z.infer<typeof TeachingGraphic>;
 
 export const Diagram = z.object({

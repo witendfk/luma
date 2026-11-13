@@ -25,7 +25,7 @@ async function main() {
     const bytes = await sharp({ create: { width: 24, height: 24, channels: 3, background: 'white' } }).png().toBuffer();
     const ticket = await api('/api/uploads', { purpose: 'question_origin', format: 'png', sizeBytes: bytes.length, scope: { conversationId: conversation.id } });
     keys.push(ticket.objectKey, ticket.objectKey.replace('.original', '.vision.png'));
-    const form = new FormData(); form.append('file', new Blob([bytes], { type: 'image/png' }), 'photo.png');
+    const form = new FormData(); form.append('file', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), 'photo.png');
     const uploaded = await fetch(base + ticket.url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
     assert.equal(uploaded.status, 200); assert.equal((await uploaded.json()).ok, true);
     const ready = await api(`/api/uploads/${ticket.uploadId}/complete`, { objectKey: ticket.objectKey });

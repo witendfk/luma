@@ -6,7 +6,7 @@ import { contentProfileRules, MATH_PROFILE, requireMaterialProfile, type Content
  * 提示词独立维护于代码仓库，运行记录保存所用版本（设计文档 §5.1）。
  * 结构：system.md 公共规则 + 各任务规则文件；每轮按任务装配。
  */
-export const PROMPT_VERSION = '0.7.6';
+export const PROMPT_VERSION = '0.7.9';
 
 const PROMPT_DIR = path.join(process.cwd(), 'src', 'agent', 'prompts');
 const TUTOR_SKILL_PATH = path.join(process.cwd(), 'src', 'agent', 'skills', 'luma-tutor', 'SKILL.md');
@@ -47,9 +47,9 @@ export async function loadTeachingTaskPrompt(name: 'lesson' | 'lesson-revision' 
   const task = name === 'practice' ? 'practice' : 'lesson';
   const ref = requireMaterialProfile(profile);
   const [policy, prompt, rules] = await Promise.all([loadTutoringPolicy(task), loadPrompt(name), contentProfileRules(ref)]);
-  return [rules, policy, prompt].join('\n\n');
+  return [rules, policy, prompt, task === 'lesson' ? await loadPrompt('graphics') : ''].filter(Boolean).join('\n\n');
 }
 
-export async function loadTeachingReviewPrompt(profile: ContentProfileRef) {
-  return [await contentProfileRules(requireMaterialProfile(profile)), await loadPrompt('review')].join('\n\n');
+export async function loadTeachingReviewPrompt(profile: ContentProfileRef, task: 'lesson' | 'practice' = 'lesson') {
+  return [await contentProfileRules(requireMaterialProfile(profile)), await loadPrompt('review'), task === 'lesson' ? await loadPrompt('graphics') : ''].filter(Boolean).join('\n\n');
 }

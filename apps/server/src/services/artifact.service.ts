@@ -49,7 +49,7 @@ export const artifactService = {
     if (artifact.type === 'exercise_set') {
       const activeAttempt = await db.practiceAttempt.findFirst({
         where: { artifactId: artifact.id, userId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       const includeAnswers =
         Boolean(activeAttempt) && ['review', 'summary'].includes(activeAttempt!.stage);

@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 const SaveAnswerBody = z.object({
   textDraft: z.string().max(8000).optional(),
-  photoIds: z.array(z.string()).max(4).optional(),
+  photoIds: z.array(z.string().min(1)).max(3).optional(),
   markedUnknown: z.boolean().optional(),
   hintsUsed: z.number().int().min(0).optional(),
   solutionViewedAt: z.string().datetime().optional(),

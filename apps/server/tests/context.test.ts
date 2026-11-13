@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { budgetContext, ContextBudgetError, estimateTokens } from '../src/agent/context';
+import { budgetContext, ContextBudgetError, estimateTokens, messageTokens } from '../src/agent/context';
 import { historyPages, historyMatches } from '../src/agent/history';
 import { partialRespondText } from '../src/agent/respond-stream';
 import { assistantToolCallsMessage, toolResultsMessage } from '../src/agent/protocol';
@@ -21,6 +21,13 @@ test('最终预算检查不会静默删除历史，保留当前条件与工具�
 test('关键事实本身超出预算时拒绝，不静默截断', () => {
   assert.throws(() => budgetContext({ system: 'rules', facts: { role: 'user', content: '关键条件'.repeat(1000) },
     protocol: [{ role: 'user', content: '请给提示' }], historyCount: 0, tools: {}, limit: 2000 }), ContextBudgetError);
+});
+
+test('作答照片进入窗口预留，不将图片字节当成文本编码或按缓存命中扣减', () => {
+  const content = [{ type: 'text' as const, text: '当前题作答' }];
+  const message = { role: 'user' as const, content: [...content, { type: 'image' as const, image: new Uint8Array(100_000), mediaType: 'image/png' }] };
+  assert.equal(messageTokens(message) - messageTokens({ role: 'user', content }), 4096);
+  assert.throws(() => budgetContext({ system: '规则', facts: message, protocol: [], tools: {}, historyCount: 0, limit: 3000 }), ContextBudgetError);
 });
 
 test('中文按 GPT 编码计量，30轮短对话不会触发300k限制', () => {

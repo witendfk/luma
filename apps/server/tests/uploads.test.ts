@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
-import { CreateUploadRequest, MAX_UPLOAD_BYTES } from '@luma/shared';
+import { CreateUploadRequest, MAX_UPLOAD_BYTES, RecognitionRequest } from '@luma/shared';
 import { readUploadForm, validateUploadImage } from '../src/storage/attachments';
 import { parseRecognition } from '../src/jobs/recognition.task';
 import { miniappSandbox, storageMock } from './helpers/miniapp';
@@ -37,6 +37,10 @@ test('识别结构分独立题和小问，拒绝空内容、跨图引用及将�
   assert.throws(() => parseRecognition(JSON.stringify(result), 'process', 1));
   assert.throws(() => parseRecognition(JSON.stringify({ ...result, items: [{ ...item, imageIndexes: [2] }] }), 'question', 1));
   assert.throws(() => parseRecognition(JSON.stringify({ items: [], steps: [], uncertainties: ['模糊'] }), 'question', 1));
+  assert.throws(() => parseRecognition(JSON.stringify(result), 'answer', 1));
+  assert.deepEqual(parseRecognition(JSON.stringify({ items: [], steps: ['a5=4+5*3=19'], uncertainties: ['核对下标'] }), 'answer', 1).steps, ['a5=4+5*3=19']);
+  assert.throws(() => parseRecognition(JSON.stringify({ items: [], steps: Array(5).fill('x'.repeat(1900)), uncertainties: [] }), 'answer', 1));
+  assert.equal(RecognitionRequest.safeParse({ requestId: 'answer-request', attachmentIds: ['photo'], attemptId: 'round' }).success, false);
 });
 
 function uploadFixture(failure?: string) {

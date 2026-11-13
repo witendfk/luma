@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MockLanguageModelV2, convertArrayToReadableStream } from 'ai/test';
 import { assembleSystem } from '../src/agent/context';
-import { loadTeachingTaskPrompt, loadTutoringPolicy } from '../src/agent/prompts';
+import { loadPrompt, loadTeachingReviewPrompt, loadTeachingTaskPrompt, loadTutoringPolicy } from '../src/agent/prompts';
+import { MATH_PROFILE } from '../src/agent/content-profile';
 import { nextAgentStep } from '../src/lib/model';
 import { nativeToolSet } from '../src/agent/tools';
 import type { TurnPolicy } from '../src/agent/policy';
@@ -33,5 +34,16 @@ test('后台任务包含相同教学方法，但任务范围和JSON协议仍由�
     assert.match(prompt, /JSON/);
     assert.match(prompt, name === 'practice' ? /不重新摸底、不创建路线、不等待回答/ : /不与学生现场对话，不等待回答/);
   }
+});
+
+test('讲义生成、局部修订与复核读取同一份图示契约，练习不携带完整绘图协议', async () => {
+  const contract = await loadPrompt('graphics');
+  for (const prompt of [await loadTeachingTaskPrompt('lesson'), await loadTeachingTaskPrompt('lesson-revision'), await loadTeachingReviewPrompt(MATH_PROFILE)]) {
+    assert.ok(prompt.includes(contract));
+    assert.match(prompt, /操作数必须等于节点数减一/);
+    assert.match(prompt, /手机可读/);
+  }
+  assert.equal((await loadTeachingTaskPrompt('practice')).includes(contract), false);
+  assert.equal((await loadTeachingReviewPrompt(MATH_PROFILE, 'practice')).includes(contract), false);
 });
 

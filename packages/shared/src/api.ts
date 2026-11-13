@@ -163,4 +163,6 @@ export interface AttemptView {
 export interface AttemptHistoryItem {
   id: string; artifactId: string; stage: AttemptView['stage']; currentExerciseId: string | null;
   createdAt: string; submittedAt: string | null; completedAt: string | null;
+  exerciseCount: number;
 }
+export type PracticeRedoMode = 'all' | 'needs_practice';

@@ -8,6 +8,7 @@ import { nextAgentStep } from '../src/lib/model';
 import { nativeToolSet } from '../src/agent/tools';
 import type { TurnPolicy } from '../src/agent/policy';
 import { replaceMethod } from './helpers/mock';
+import { uploadService } from '../src/services/upload.service';
 
 const policy: TurnPolicy = { subjectId: 's', subjectRevisionId: 'r', stage: 'guiding', subjectConfirmed: true,
   allowedTools: [], answerPermission: false, allowSolution: false,
@@ -18,7 +19,7 @@ function fixture(stage = 'summary') {
   return { id: 'attempt', stage, submittedAt: viewedAt, completedAt: viewedAt, exerciseIds: ['q1', 'q2'],
     artifact: { exercises: ['q1', 'q2'].map((id, order) => ({ id, order, stem: `${id}题干`, topic: '函数', difficulty: 'basic', answer: `${id}参考答案`, analysis: `${id}解析` })) },
     answers: ['q1', 'q2'].map((exerciseId) => ({ exerciseId, textDraft: `${exerciseId}本人作答`, markedUnknown: exerciseId === 'q2', hintsUsed: 1,
-      selfEval: exerciseId === 'q2' ? 'partial' : 'independent', solutionViewedAt: viewedAt })) };
+      selfEval: exerciseId === 'q2' ? 'partial' : 'independent', solutionViewedAt: viewedAt, photoIds: [] as string[] })) };
 }
 function stub(t: TestContext, attempt = fixture()) {
   replaceMethod(t, db.conversation, 'findFirst', async () => ({ id: 'conversation' }));
@@ -85,8 +86,20 @@ test('首次授权读取解析返回本次暴露记录，重复读取保留首�
   assert.equal(second.attempt.answers[0].solutionViewedAt.getTime(), first.attempt.answers[0].solutionViewedAt.getTime());
 });
 
-test('真实SDK输入装配包含追问题目和自评，规则明确自评不等于掌握度（模型替身，无付费调用）', async (t) => {
-  stub(t);
+test('真实SDK输入装配只附焦点题本人照片、自评和题干，不携带其他题或参考答案（无付费调用）', async (t) => {
+  const attempt = stub(t);
+  attempt.answers[0]!.photoIds = ['other-question'];
+  attempt.answers[1]!.photoIds = ['current-photo', 'missing-photo'];
+  replaceMethod(t, db.attachment, 'findFirst', async ({ where }) => {
+    assert.equal(where.userId, 'student'); assert.equal(where.purpose, 'answer_photo'); assert.equal(where.status, 'ready');
+    assert.notEqual(where.id, 'other-question');
+    return where.id === 'current-photo' ? { scope: { conversationId: 'conversation', subjectRevisionId: 'r', attemptId: 'attempt', exerciseId: 'q2' } } : null;
+  });
+  let imageReads = 0;
+  replaceMethod(t, uploadService, 'read', async (userId, id) => {
+    assert.equal(userId, 'student'); assert.equal(id, 'current-photo'); imageReads++;
+    return { bytes: new Uint8Array([137, 80, 78, 71]), format: 'png' };
+  });
   const revision = { id: 'r', subjectId: 's', version: 1, content: { text: '来源题目' }, tags: [], subquestions: [], activeSubquestionIndex: 0 };
   replaceMethod(t, db.subjectRevision, 'findUnique', async () => revision);
   replaceMethod(t, db.subjectRevision, 'findFirst', async () => revision);
@@ -108,6 +121,11 @@ test('真实SDK输入装配包含追问题目和自评，规则明确自评不�
   assert.match(sent, /student_self_report/);
   assert.match(sent, /partial/);
   assert.match(sent, /solutionViewedAt/);
+  assert.equal(imageReads, 1);
+  assert.match(sent, /attachedCount/);
+  assert.match(sent, /missing-photo/);
+  assert.match(sent, /image\/png/);
+  assert.doesNotMatch(sent, /other-question/);
   assert.match(system, /学生自评，不是客观判分或掌握度/);
   assert.doesNotMatch(sent, /q1|q2参考答案|q2解析/);
 });

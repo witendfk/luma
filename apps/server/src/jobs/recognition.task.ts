@@ -10,10 +10,11 @@ import type { RecognitionPayload } from '../services/recognition.service';
 import { createConversationTitle } from '../lib/conversation-title';
 import { touchJob, JobLeaseLostError, type JobLease } from './shared';
 
-export function parseRecognition(raw: string, type: 'question' | 'process', imageCount: number) {
+export function parseRecognition(raw: string, type: 'question' | 'process' | 'answer', imageCount: number) {
   const result = RecognizedContent.parse(extractJson(raw));
   if (type === 'question' && (!result.items.length || result.steps.length)) throw invalidFormat('未能识别题目，请换一张清晰图片');
-  if (type === 'process' && (!result.steps.length || result.items.length)) throw invalidFormat('未能识别解题步骤，请换一张清晰图片');
+  if (type !== 'question' && (!result.steps.length || result.items.length)) throw invalidFormat('未能识别作答步骤，请换一张清晰图片');
+  if (type === 'answer' && result.steps.join('\n').length > 8000) throw invalidFormat('作答转写过长，请分次选择照片');
   if (result.items.some((item) => item.imageIndexes.some((i) => i >= imageCount))) throw invalidFormat('识别结果的图片来源无效');
   return result;
 }
@@ -53,7 +54,15 @@ export async function publishRecognition(lease: JobLease, result: RecognizedCont
     }
     let transcriptId: string | undefined;
     const subjectIds: string[] = [];
-    if (payload.materialType === 'process') {
+    if (payload.materialType === 'answer') {
+      const attempt = await tx.practiceAttempt.findFirst({ where: { id: payload.attemptId, artifact: { conversationId: job.conversationId, subjectRevisionId: job.subjectRevisionId! } } });
+      const answer = attempt ? await tx.practiceAnswer.findUnique({ where: { attemptId_exerciseId: { attemptId: attempt.id, exerciseId: payload.exerciseId! } } }) : null;
+      if (!attempt || attempt.stage !== 'doing' || !(attempt.exerciseIds as string[]).includes(payload.exerciseId!) ||
+        !payload.attachmentIds.every((id) => (answer?.photoIds as string[] | undefined)?.includes(id))) {
+        await tx.generationJob.update({ where: { id: job.id }, data: { status: 'superseded', step: null, leasedBy: null, leasedUntil: null } }); return;
+      }
+      // Recognition remains a draft. Only a student's explicit apply writes PracticeAnswer.
+    } else if (payload.materialType === 'process') {
       if (!latest?.confirmedAt) throw invalidFormat('请先确认当前题目');
       const transcript = await tx.processTranscript.create({ data: { conversationId: job.conversationId, subjectRevisionId: latest.id,
         attachmentId: payload.attachmentIds[0]!, steps: result.steps, status: 'confirming' } });

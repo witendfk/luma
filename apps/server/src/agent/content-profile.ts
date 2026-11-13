@@ -11,7 +11,7 @@ export async function contentProfileRules(ref: ContentProfileRef): Promise<strin
   ContentProfileRef.parse(ref);
   if (ref.id === 'unconfigured') return '当前内容尚未配置教学能力。可澄清目标、说明范围或回读已有资料；不得套数学规则、生成数学讲义/题组或声称已验证该领域的学习效果。';
   return [await loadPrompt('math'),
-    '内容配置 math@1：图示支持 quadratic/geometry/mapping，有限输入与输出集合优先用mapping展示实际对应关系；正式练习支持2～3题；短验证支持判断、解释、比较与应用。评价关注条件、理由与迁移，不能仅凭最终数值或学生自述判定理解。',
+    '内容配置 math@1：图示支持 quadratic/geometry/mapping/operation_chain；有限输入与输出集合优先用mapping，数列项与间隔或四则变化优先用带逐段操作与方向的operation_chain。关键关系须在图内可读，不靠长图注补齐。正式练习支持2～3题；短验证支持判断、解释、比较与应用。评价关注条件、理由与迁移，不能仅凭最终数值或学生自述判定理解。',
   ].join('\n\n');
 }
 

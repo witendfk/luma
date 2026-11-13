@@ -11,6 +11,13 @@ export const uploadService = {
     if (!conversation) throw notFound('会话');
     if (input.purpose === 'process_photo' && !input.scope.subjectRevisionId) throw invalidFormat('过程照片需要关联当前题目版本');
     if (input.scope.subjectRevisionId && !await db.subjectRevision.findFirst({ where: { id: input.scope.subjectRevisionId, conversationId: conversation.id } })) throw notFound('学习对象版本');
+    if (input.purpose === 'answer_photo') {
+      if (!input.scope.attemptId || !input.scope.exerciseId || !input.scope.subjectRevisionId) throw invalidFormat('作答照片需要关联练习轮次、题目和来源版本');
+      const attempt = await db.practiceAttempt.findFirst({ where: { id: input.scope.attemptId, userId,
+        artifact: { conversationId: conversation.id, subjectRevisionId: input.scope.subjectRevisionId } } });
+      if (!attempt || !(attempt.exerciseIds as string[]).includes(input.scope.exerciseId)) throw notFound('练习题目');
+      if (attempt.stage !== 'doing') throw invalidFormat('提交后不能再添加作答照片');
+    } else if (input.scope.attemptId || input.scope.exerciseId) throw invalidFormat('该上传类型不接受练习轮次引用');
     const objectKey = `${randomUUID()}.original`, expiresAt = new Date(Date.now() + 15 * 60_000);
     const row = await db.attachment.create({ data: { userId, objectKey, purpose: input.purpose, format: input.format,
       size: input.sizeBytes, status: 'pending', storageProvider: 'local', scope: input.scope, uploadExpiresAt: expiresAt } });

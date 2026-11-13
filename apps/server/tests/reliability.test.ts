@@ -6,6 +6,7 @@ import { nativeToolSet } from '../src/agent/tools';
 import { countersFrom, initialCounters } from '../src/agent/limits';
 import { observeToolProgress } from '../src/agent/progress';
 import { sseResponse } from '../src/lib/sse';
+import { TeachingGraphic } from '@luma/shared';
 
 process.env.DATABASE_URL = 'postgresql://unused:unused@localhost:5432/unused';
 
@@ -77,6 +78,22 @@ test('截断材料即使JSON合法也不解析/发布或消耗格式修正额度
     assert.equal(repairBudget.remaining, 1);
     assert.equal(model.doGenerateCalls.length, 1);
   }
+});
+
+test('图示标签格式修正收到具体约束，仍只消耗一次共享修正额度', async () => {
+  const diagram = { kind: 'operation_chain', caption: '相邻项变化', nodes: [{ label: '第1项\n起点' }, { label: '第2项' }],
+    operations: [{ operator: 'add', operand: 2 }] };
+  let count = 0;
+  const model = new MockLanguageModelV2({ doGenerate: async () => ({ content: [{ type: 'text', text: JSON.stringify(
+    count++ ? { ...diagram, nodes: [{ label: '第1项' }, { label: '第2项' }] } : diagram) }],
+    finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 }, warnings: [] }) });
+  const budget = { remaining: 1 };
+  const result = await generateJson({ model, system: 'test', prompt: '生成图示', purpose: 'test', formatCorrections: 1, repairBudget: budget,
+    parse: (raw) => TeachingGraphic.parse(JSON.parse(raw)) });
+  assert.equal(result.kind, 'operation_chain');
+  assert.match(JSON.stringify(model.doGenerateCalls[1]!.prompt), /nodes.0.label:custom:节点使用简短纯文本或Unicode下标/);
+  assert.equal(model.doGenerateCalls.length, 2);
+  assert.equal(budget.remaining, 0);
 });
 
 test('SSE等待时仅发送注释心跳，完成后正常关闭；读取端取消会中断生产者', async () => {

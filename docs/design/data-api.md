@@ -56,7 +56,7 @@
 
 ## 2 接口与事件
 
-接口统一位于 `/api` 下；除登录和不含用户数据的健康检查外，业务接口均校验应用登录态。新运行和任务通过请求标识去重，草稿更新需版本校验。练习普通开始采用题组行锁下的ensure语义，复用最近轮次；显式重做未来需独立命令和请求标识，不共用普通开始命令。
+接口统一位于 `/api` 下；除登录和不含用户数据的健康检查外，业务接口均校验应用登录态。新运行和任务通过请求标识去重，草稿更新需版本校验。练习普通开始采用题组行锁下的ensure语义，复用最近轮次；显式重做使用独立命令及持久化请求标识，不共用普通开始命令。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -73,7 +73,7 @@
 | `POST /conversations/:id/subjects/:subjectId/revisions` | expectedRevision 校验后新增对象版本 |
 | `POST /conversations/:id/subjects/:subjectId/confirm` | 确认指定版本；重复确认幂等 |
 | `PUT /conversations/:id/subjects/:subjectId/progress` | 保存 destination/draft/artifact/section/attempt/exercise；校验 expectedRevision + expectedVersion |
-| `GET /artifacts/:id/attempts` | 本人该题组的历史轮次，不创建轮次、不揭示答案 |
+| `GET /artifacts/:id/attempts` | 本人该题组的历史轮次，含exerciseCount/阶段/时间，按createdAt和id倒序；不创建轮次、不揭示答案 |
 | `POST /conversations/:id/process-transcripts/:transcriptId/confirm` | 确认或修正解题过程步骤 |
 | `GET /artifacts/:id` | 按权限与当前阶段返回讲义或题组 |
 | `GET /artifacts/:id/practice?version=N` | 只读查找该讲义版本的默认整份配套题组，返回none/queued/running/succeeded/failed及对应jobId/artifactId；不生成、不返回答案 |
@@ -86,6 +86,7 @@
 | `PUT /practice-attempts/:id/answers/:exerciseId` | 保存草稿、图片、提示记录或自评 |
 | `POST /practice-attempts/:id/submit` | 提交作答，进入自评 |
 | `POST /practice-attempts/:id/complete` | 校验自评齐全并完成本轮 |
+| `POST /practice-attempts/:id/redo` | `{mode: all / needs_practice, requestId}`；最新完成轮次显式重做，返回新轮次AttemptView |
 | `GET /collections`、`GET/PUT /collections/:subjectId` | 对象级查询/保存；支持 view=all/question/knowledge、keyword、reviewStatus |
 | `DELETE /collections/:subjectId` | 软取消收藏，保留笔记、复习状态、材料和练习 |
 | `POST /feedback` | 记录模型内容错误反馈 |
@@ -134,7 +135,7 @@
 - 消息按 `subjectId` 筛选，省略时取当前焦点；发送带 `subjectId` 与 `expectedRevision`。与当前焦点不符的迟到输入被拒绝。
 - 修改题干只增加当前对象版本并清除该对象的材料定位；旧材料和轮次继续保留。后台发布及运行保护按来源对象内的最新版本检查，不按整段会话最大版本检查。
 - 学习进度并发版本独立于题干版本。材料/章节/轮次/题号必须属于该版本；损坏或过期定位在读取时回退对话入口，不以 GET 改写历史。
-- `PracticeAttempt`共享DTO包含conversationId及`exercises[].myAnswer`，无顶层answers；历史查询接口已提供。普通开始锁定题组并复用最近轮次，不通过重复POST实现重做；显式重做的requestId和redoOfAttemptId另行实现。同版本同内容的草稿重试幂等，不同内容的旧版本拒绝。submit/complete重复调用返回现有结果，不重设完成时间；提交后禁止修改原作答，完成后整轮只读。
+- `PracticeAttempt`共享DTO包含conversationId及`exercises[].myAnswer`，无顶层answers；历史查询接口已提供。普通开始锁定题组并复用最近轮次，不通过重复POST实现重做；显式重做持久化redoRequestId、redoOfAttemptId、redoMode，用户与请求标识联合唯一；题组行锁串行创建，仅允许从本人最新已完成轮次发起。相同请求同来源/模式返回原结果，异内容冲突；不同请求不能从同一个旧轮次重复创建。mode=all选择原题组全题，mode=needs_practice选择来源轮次自评partial/stuck题，空范围拒绝。新轮次doing、答案隐藏且作答/照片/自评为空，旧轮次完整保留。同版本同内容的草稿重试幂等，不同内容的旧版本拒绝。submit/complete重复调用返回现有结果，不重设完成时间；提交后禁止修改原作答，完成后整轮只读。
 - 配套练习的生成与作答轮次分开去重。讲义入口提交`generate_practice + practiceMode=ensure`及准确artifactId/artifactVersion，不接受章节/练习焦点。服务端在会话锁下按`practiceSource={artifactId,artifactVersion,subjectRevisionId,scope:whole_lesson,count:2,difficulty:basic}`查找或创建；复用成功/生成中任务，失败不自动付费重试，停止或失效任务不复用。普通自由输入未带ensure时可请求新一组，不覆盖原题。任务保存来源讲义内容快照供生成/复核，发布再核对来源版本。旧任务只通过已有evidence.focus中的准确整份讲义引用和相同训练参数关联，无法确认来源时不猜测。
 - 取消收藏记录 `removedAt`，重新收藏复用原行。列表只展示未取消项，详情可读回保留的笔记。
 - 归档/恢复/重命名不更新学习时间；真实新消息在创建运行事务内取消归档，前端不预先发恢复请求。
@@ -198,11 +199,15 @@
 
 开发环境使用服务端`.luma/uploads`私有目录，原图与方向校正后的视觉PNG分开保存，不挂静态目录；仅服务端凭附件ID与本人归属读取。生产环境拒绝启用该适配器，COS另行实现/配置。`POST /uploads`签发pending票据；`POST /uploads/:id/file`接收鉴权multipart；`POST /uploads/:id/complete`验证并幂等置ready；`GET /attachments/:id`鉴权返回原图且private/no-store。请求体按实际流限制大小，校验真实格式/解码/像素、拒绝动画。
 
-`POST /conversations/:id/recognitions`创建识别GenerationJob，GET读取状态，`PUT /conversations/:id/recognitions/:jobId`显式取消/重试。相同附件/输入/版本去重，worker使用同一GPT视觉与预算机制；不自动付费重试。独立题分别建立待确认对象，小问留在同一对象；解题过程保存待确认转写，只有确认步骤进入教学上下文。来源修订或取消后拒绝迟到发布。当前接受题目、知识材料、解题过程；正式练习作答照片绑定题目/轮次的协议接线后续完成。
+`POST /conversations/:id/recognitions`创建识别GenerationJob，GET读取状态，`PUT /conversations/:id/recognitions/:jobId`显式取消/重试。相同附件/输入/版本去重，worker使用同一GPT视觉与预算机制；不自动付费重试。独立题分别建立待确认对象，小问留在同一对象；解题过程保存待确认转写，只有确认步骤进入教学上下文。来源修订或取消后拒绝迟到发布。正式练习作答转写复用此任务，额外携带attemptId/exerciseId/subjectRevisionId，类型为answer；只生成待核对steps/uncertainties，不创建学习对象或全局ProcessTranscript，不直接覆盖PracticeAnswer。
 
 上传请求声明 purpose（题目、课堂材料、解题过程、练习作答）及对应会话/对象/轮次引用；全部验证本人归属。签发受限私有对象键，附件先为 pending；complete 按附件 ID 幂等验证真实格式、可解码性及不超过 8 MB 后变为 ready，失败不可引用。临时本机路径不作为正式来源。
 
-识别工具只收 ready 的 attachmentId，不接受任意网络地址；服务端受控读取图片交给 GPT。保存附件引用及结构化识别结果：独立题列表、共享题干小问、公式/图形条件、不确定片段。独立题各建学习对象，核对后才能据其解题；解题过程单独确认步骤，不默认为学生已认可。以请求及附件/来源版本去重，修订后拒绝旧识别结果覆盖当前内容。作答照片仅对所属轮次和题目可见。
+练习照片purpose为`answer_photo`，scope必须含conversationId、subjectRevisionId、attemptId和exerciseId。上传与保存答案都核验所属账号/轮次/题目/doing阶段，每题最多3个不同ready附件。提取任务还要求照片已存入本题PracticeAnswer；提交、移除照片或来源修订后拒绝迟到发布。学生核对后通过现有answers草稿接口写入textDraft，保留photoIds及版本冲突保护；关闭/重开仅查询已有任务，不自动重新付费识别。
+
+携题追问只加载当前焦点题的作答文字与最多3张本人照片，通过私有受控读取交给主Agent视觉；不把其他题照片/隐藏参考答案放入上下文，不另开识别模型调用。标明照片是本人原作答、识别歧义须澄清，无法读取列明缺失，不能假装已看过。图片预算每张保守预留4096 token，非实际计费承诺；不将图片二进制作为文本JSON估算。未应用的转写草稿不作为学生确认事实。
+
+识别工具只收 ready 的 attachmentId，不接受任意网络地址；服务端受控读取图片交给 GPT。保存附件引用及结构化识别结果：独立题列表、共享题干小问、公式/图形条件、不确定片段。独立题各建学习对象，核对后才能据其解题；解题过程单独确认步骤，不默认为学生已认可。识别任务GET额外返回`transcriptConfirmed`与已确认时的`confirmedSteps`，回看采用正式步骤，不用识别初稿覆盖学生修改；确认接口校验活动对象，切题后拒绝确认旧题步骤。以请求及附件/来源版本去重，修订后拒绝旧识别结果覆盖当前内容。作答照片仅对所属轮次和题目可见。
 
 ## 7 总结图解卡（目标契约，B04-S）
 

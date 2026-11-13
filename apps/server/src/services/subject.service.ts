@@ -148,6 +148,8 @@ export const subjectService = {
       const transcript = await tx.processTranscript.findFirst({ where: { id: transcriptId, conversationId } });
       if (!transcript) throw invalidFormat('过程转写不存在');
       const revision = await tx.subjectRevision.findUniqueOrThrow({ where: { id: transcript.subjectRevisionId } });
+      const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: conversationId } });
+      if (conversation.activeSubjectId !== revision.subjectId) throw revisionConflict('当前题目已切换，请回到原题核对过程');
       const latest = await requireRevision(tx, revision.subjectId);
       if (latest.id !== revision.id || !latest.confirmedAt) throw revisionConflict('题目已修改，请重新上传并核对过程');
       await assertIdle(tx, conversationId);

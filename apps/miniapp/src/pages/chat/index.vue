@@ -267,7 +267,10 @@ function upload(): void {
   if (store.generating || switchingTopic.value) return;
   focused.value = false; processOpen.value = true;
 }
-function confirmProcess(text: string): void { rememberChat(); void store.send(`我已核对这些解题步骤：\n${text}\n请先引导我检查过程。`); }
+function confirmProcess(text: string, subjectRevisionId: string): void {
+  if (store.subject?.id !== subjectRevisionId) return;
+  rememberChat(); void store.send(`这是我写的解题步骤，已核对转写与原稿一致（不代表解法正确）：\n${text}\n请先引导我检查过程。`);
+}
 async function save(): Promise<void> {
   if (!store.currentId || !store.subject?.confirmedAt || saving.value) return;
   saving.value = true;

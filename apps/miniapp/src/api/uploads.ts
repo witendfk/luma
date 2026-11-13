@@ -45,7 +45,7 @@ export const startRecognition = (id: string, input: RecognitionRequest) => reque
 export const getRecognition = (id: string, jobId: string) => request<RecognitionView>({ method: 'GET', path: `/api/conversations/${id}/recognitions/${jobId}` });
 export const actOnRecognition = (id: string, jobId: string, action: 'retry' | 'cancel') => request<RecognitionView>({ method: 'PUT', path: `/api/conversations/${id}/recognitions/${jobId}`, data: { action } });
 export const confirmTranscript = (id: string, transcriptId: string, steps: string[]) => request({ method: 'POST', path: `/api/conversations/${id}/process-transcripts/${transcriptId}/confirm`, data: { confirmedSteps: steps } });
-export async function previewRemoteAttachments(ids: string[]): Promise<void> {
+export async function previewRemoteAttachments(ids: string[], index = 0): Promise<void> {
   const session = sessionVersion(), token = getToken();
   if (!token) return;
   try {
@@ -54,6 +54,6 @@ export async function previewRemoteAttachments(ids: string[]): Promise<void> {
       success: (res) => res.statusCode === 200 ? resolve(res.tempFilePath) : reject(new Error('原图暂时无法读取')),
       fail: () => reject(new Error('原图加载失败，请重试')),
     }))));
-    if (session === sessionVersion()) uni.previewImage({ urls: paths, current: paths[0] });
+    if (session === sessionVersion()) uni.previewImage({ urls: paths, current: paths[index] ?? paths[0] });
   } catch (error) { if (session === sessionVersion()) uni.showToast({ title: error instanceof Error ? error.message : '原图加载失败', icon: 'none' }); }
 }

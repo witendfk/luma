@@ -8,6 +8,69 @@ import { parseLesson } from '../src/jobs/lesson.task';
 import { applyLessonRepair } from '../src/jobs/lesson-revision';
 
 const parabola = { kind: 'quadratic' as const, a: 1, b: -4, c: 7, bounds: { xMin: -1, xMax: 5, yMin: -1, yMax: 12 }, caption: '观察抛物线最低点', revealValues: false };
+const sequence = { kind: 'operation_chain' as const, caption: '从第1项走到第5项，共经过四个间隔',
+  nodes: ['a₁', 'a₂', 'a₃', 'a₄', 'a₅'].map((label) => ({ label })),
+  operations: Array.from({ length: 4 }, () => ({ operator: 'add' as const, operand: 2 })) };
+
+test('项与间隔图显示逐段箭头和公差，不自动泄漏省略的数值', async () => {
+  const svg = graphicSvg(sequence);
+  assert.equal((svg.match(/marker-end="url\(#operation-arrow\)"/g) ?? []).length, 4);
+  assert.equal((svg.match(/>\+ 2<\/text>/g) ?? []).length, 4);
+  assert.match(svg, /a₁|a₅/);
+  assert.match(svg, /起点/);
+  assert.match(svg, /位置不代表数值大小/);
+  assert.doesNotMatch(svg, />= |11<\/text>/);
+  const metadata = await sharp(await renderGraphic(sequence)).metadata();
+  assert.equal(metadata.format, 'png');
+  assert.equal(metadata.width! / metadata.height!, 640 / 240);
+  assert.match(graphicSvg({ ...sequence, nodes: sequence.nodes.map((n, i) => i === 0 ? { label: '<起点>', value: 3 } : n) }), /&lt;起点&gt;/);
+});
+
+test('操作链拒绝缺段、重复标签、除零及跨隐藏节点的不一致数值', () => {
+  for (const invalid of [
+    { ...sequence, operations: sequence.operations.slice(1) },
+    { ...sequence, nodes: sequence.nodes.map(() => ({ label: 'a₁' })) },
+    { ...sequence, operations: [{ operator: 'divide', operand: 0 }, ...sequence.operations.slice(1)] },
+    { ...sequence, nodes: sequence.nodes.map((n, i) => ({ ...n, ...(i === 0 ? { value: 3 } : i === 4 ? { value: 13 } : {}) })) },
+    { ...sequence, nodes: [{ label: '$a_1$' }, ...sequence.nodes.slice(1)] },
+    { ...sequence, operations: [{ operator: 'add', operand: Infinity }, ...sequence.operations.slice(1)] },
+  ]) assert.equal(TeachingGraphic.safeParse(invalid).success, false);
+  assert.equal(TeachingGraphic.safeParse({ ...sequence,
+    nodes: sequence.nodes.map((n, i) => ({ ...n, ...(i === 0 ? { value: .1 } : i === 4 ? { value: .5 } : {}) })),
+    operations: sequence.operations.map(() => ({ operator: 'add', operand: .1 })),
+  }).success, true);
+  const mixed = { kind: 'operation_chain', caption: '四则变化',
+    nodes: [{ label: '甲', value: 10 }, { label: '乙' }, { label: '丙' }, { label: '丁', value: 4 }],
+    operations: [{ operator: 'subtract', operand: 2 }, { operator: 'multiply', operand: 3 }, { operator: 'divide', operand: 6 }],
+  };
+  assert.equal(TeachingGraphic.safeParse(mixed).success, true);
+});
+
+test('操作链支持边界节点数，局部替换图时保留其他章节和历史输入', async () => {
+  for (const count of [2, 8]) {
+    const graphic = { ...sequence, nodes: Array.from({ length: count }, (_, i) => ({ label: `第${i + 1}项`, value: 3 + i * 2 })),
+      operations: Array.from({ length: count - 1 }, () => ({ operator: 'add' as const, operand: 2 })) };
+    const metadata = await sharp(await renderGraphic(graphic)).metadata();
+    assert.equal(metadata.format, 'png');
+    assert.equal(metadata.width! / metadata.height!, count === 2 ? 640 / 280 : 640 / 1140);
+  }
+  const original = Lesson.parse({ title: '项与间隔', sections: ['s1', 's2', 's3'].map((id) => ({ id, heading: id, body: '保持正文' })),
+    diagrams: [{ sectionId: 's2', content: { title: '旧图', graphic: parabola, steps: [{ label: '看', detail: '观察' }, { label: '想', detail: '思考' }] } }] });
+  const replacement = { ...original.diagrams[0]!.content, graphic: sequence };
+  const revised = applyLessonRepair(original, JSON.stringify({ diagrams: [{ sectionId: 's2', content: replacement }] }), 's2');
+  assert.equal(revised.diagrams[0]!.content.graphic!.kind, 'operation_chain');
+  assert.equal(original.diagrams[0]!.content.graphic!.kind, 'quadratic');
+  assert.deepEqual(revised.sections, original.sections);
+});
+
+test('操作链按标注宽度选择布局，不挤压长标签或长运算', () => {
+  assert.match(graphicSvg(sequence), /height="240"/);
+  const longNodes = { ...sequence, nodes: sequence.nodes.map((_, i) => ({ label: `第${i + 1}项的当前状态` })) };
+  assert.match(graphicSvg(longNodes), /height="592"/);
+  const longOperation = { ...sequence, operations: sequence.operations.map(() => ({ operator: 'multiply' as const, operand: -1234.1234 })) };
+  assert.match(graphicSvg(longOperation), /height="592"/);
+});
+
 test('有限输入映射显示每条对应关系，相同输出去重，允许多对一但拒绝重复输入', async () => {
   const mapping = TeachingGraphic.parse({ kind: 'mapping', caption: '允许的输入与实际输出',
     inputLabel: '输入 <x>', pairs: [-2, -1, 0, 1, 2].map((input) => ({ input, output: input * input })) });
@@ -149,4 +212,14 @@ test('选图识别的题干和小问排版保留条件，标题预览不展示�
   assert.equal(children.filter((node) => node.name === 'img').length, 3);
   assert.match(children.filter((node) => node.type === 'text').map((node) => node.text).join(''), /已知等差数列.*公差.*通项公式/s);
   assert.doesNotMatch(JSON.stringify(nodes), /\$/);
+});
+
+test('消息属性尚未到达时正文不崩溃，随后可正常显示步骤', async () => {
+  const { miniappSandbox } = await import('./helpers/miniapp');
+  const { pendingContentNodes } = miniappSandbox().load('@/utils/study-content');
+  assert.deepEqual(JSON.parse(JSON.stringify(pendingContentNodes(undefined))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(pendingContentNodes(null))), []);
+  const text = 'a5=3+(5-1)*2=11\n从第1项到第5项只有4个间隔';
+  assert.match(JSON.stringify(pendingContentNodes(text)), /a5=3\+\(5-1\)\*2=11/);
+  assert.match(JSON.stringify(pendingContentNodes(text)), /4个间隔/);
 });

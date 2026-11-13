@@ -3,12 +3,24 @@ import { computed, ref } from 'vue';
 import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app';
 import LumaIcon from '@/components/LumaIcon.vue';
 import StudyText from '@/components/StudyText.vue';
+import AttachmentStrip from '@/components/AttachmentStrip.vue';
+import AnswerTranscriptSheet from '@/components/AnswerTranscriptSheet.vue';
+import { previewRemoteAttachments } from '@/api/uploads';
 import { usePracticeStore } from '@/stores/practice';
-import type { SelfEval } from '@luma/shared';
+import type { SelfEval, PracticeRedoMode } from '@luma/shared';
 
 const study = usePracticeStore();
 const pageHeight = uni.getSystemInfoSync().windowHeight;
 const keyboard = ref(0), scrollTop = ref(0), reviewTarget = ref(''), fullReview = ref(false);
+const transcriptOpen = ref(false), applyingTranscript = ref(false);
+const answerEditing = ref(false), historyOpen = ref(false);
+const roundStatus = (stage: string) => ({ doing: '作答中', review: '待自评', summary: '已完成', intro: '未开始' }[stage] ?? '练习');
+const roundDate = (value: string) => { const date = new Date(value); return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`; };
+async function showHistory(): Promise<void> { await run(async () => { await study.refreshHistory(); historyOpen.value = true; }); }
+async function switchRound(id: string): Promise<void> { await run(async () => { await study.switchAttempt(id); historyOpen.value = false; fullReview.value = false; answerEditing.value = false; transcriptOpen.value = false; keyboard.value = 0; goTop(); }); }
+function redo(mode: PracticeRedoMode): void {
+  uni.showModal({ title: mode === 'all' ? '全部重做' : '重做需巩固题', content: '将开始新一轮空白作答，原轮次的作答、照片和自评会完整保留，可在历史轮次中查看。', confirmText: '开始重做', confirmColor: '#4f6652', success: (res) => { if (res.confirm) void run(async () => { await study.redo(mode); fullReview.value = false; answerEditing.value = false; goTop(); }); } });
+}
 let artifactId = '', attemptId: string | undefined, loaded = false;
 const draft = computed({ get: () => study.current?.myAnswer?.textDraft ?? '', set: (text: string) => study.edit({ textDraft: text }) });
 const difficultyLabel = (value: string) => ({ basic: '基础理解', variant: '同类变式', transfer: '综合应用', review: '复测' }[value] ?? '对点练习');
@@ -21,10 +33,18 @@ async function load(): Promise<void> { if (!artifactId) { study.error = '缺少�
 async function run(action: () => Promise<unknown>): Promise<void> { try { await action(); } catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '操作未完成，请重试', icon: 'none', duration: 2500 }); } }
 function goTop(): void { scrollTop.value = scrollTop.value === 0 ? 1 : 0; }
 async function back(): Promise<void> {
+  if (study.busy) return;
   try { await study.flush(); } catch { uni.showToast({ title: '草稿未同步，请先重试保存', icon: 'none' }); return; }
   if (getCurrentPages().length > 1) uni.navigateBack(); else if (study.material) uni.redirectTo({ url: `/pages/chat/index?id=${encodeURIComponent(study.material.conversationId)}&topic=${encodeURIComponent(study.material.subjectId)}` }); else uni.switchTab({ url: '/pages/home/index' });
 }
-async function jump(index: number): Promise<void> { await run(async () => { await study.jump(index); goTop(); }); }
+async function jump(index: number): Promise<void> { transcriptOpen.value = false; await run(async () => { await study.jump(index); answerEditing.value = false; keyboard.value = 0; goTop(); }); }
+async function applyTranscript(text: string, mode: 'append' | 'replace'): Promise<void> {
+  if (applyingTranscript.value || !study.current) return;
+  applyingTranscript.value = true;
+  try { await study.applyTranscript(text, mode, study.current.id); transcriptOpen.value = false; answerEditing.value = false; keyboard.value = 0; }
+  catch (err) { uni.showToast({ title: err instanceof Error ? err.message : '保存未完成，转写仍保留', icon: 'none' }); }
+  finally { applyingTranscript.value = false; }
+}
 function submit(): void {
   const send = () => void run(async () => { await study.submit(); goTop(); });
   if (study.answered < study.exercises.length) uni.showModal({ title: '还有未作答的题', content: '可以回去补充，也可以按未完成提交，接下来对照解析自评。', confirmText: '仍然提交', cancelText: '继续作答', confirmColor: '#4f6652', success: (res) => { if (res.confirm) send(); } });
@@ -38,6 +58,7 @@ function finish(): void {
 async function ask(id: string, hint = false): Promise<void> {
   await run(async () => {
     await study.flush();
+    if (study.pendingPhotos.length) throw new Error('请先上传或移除本题待上传照片，再追问');
     const doc = study.material, attempt = study.attempt;
     if (!doc || !attempt) return;
     await study.jump(attempt.exercises.findIndex((ex) => ex.id === id));
@@ -53,6 +74,7 @@ async function ask(id: string, hint = false): Promise<void> {
     <view v-if="study.loading" class="unavailable"><text>正在打开练习…</text></view>
     <view v-else-if="study.error" class="unavailable"><text>{{ study.error }}</text><button @tap="load">重新加载</button></view>
     <template v-else-if="study.material">
+      <view v-if="study.attempt" class="round-tools"><text>第 {{ study.roundNumber }} 轮 · {{ study.isHistorical ? '历史记录 · 只读' : roundStatus(study.stage) }}</text><button :disabled="study.busy" @tap="showHistory">历史轮次 · {{ study.history.length }}</button></view>
       <view v-if="study.saveError" class="save-warning"><text>{{ study.saveError }}</text><button v-if="study.hasConflict" @tap="study.recoverDraft()">恢复本机草稿</button><button v-else @tap="run(() => study.flush())">重试同步</button></view>
       <scroll-view class="content-scroll" scroll-y :scroll-top="scrollTop" :scroll-into-view="reviewTarget">
         <view class="sheet">
@@ -65,10 +87,18 @@ async function ask(id: string, hint = false): Promise<void> {
           <template v-else-if="study.stage === 'doing' && study.current">
             <view class="progress"><text>第 {{ study.index + 1 }} / {{ study.exercises.length }} 题</text><text>{{ study.answered }} 题已有记录</text></view>
             <view class="progress-line"><view :style="{ width: (study.index + 1) / study.exercises.length * 100 + '%' }" /></view>
-            <view class="question-nav"><button v-for="(ex, i) in study.exercises" :key="ex.id" :disabled="study.busy" :class="{ active: study.index === i, recorded: study.attempt?.exercises[i]?.myAnswer?.textDraft || study.attempt?.exercises[i]?.myAnswer?.markedUnknown }" :aria-label="`跳到第 ${i + 1} 题`" @tap="jump(i)">{{ i + 1 }}</button></view>
+            <view class="question-nav"><button v-for="(ex, i) in study.exercises" :key="ex.id" :disabled="study.busy" :class="{ active: study.index === i, recorded: study.attempt?.exercises[i]?.myAnswer?.textDraft || study.attempt?.exercises[i]?.myAnswer?.photoIds.length || study.attempt?.exercises[i]?.myAnswer?.markedUnknown }" :aria-label="`跳到第 ${i + 1} 题`" @tap="jump(i)">{{ i + 1 }}</button></view>
             <text class="eyebrow">{{ study.current.topic }} · {{ difficultyLabel(study.current.difficulty) }}</text><view class="exercise-stem"><StudyText :text="study.current.stem" /></view><text class="purpose">{{ study.current.purpose }}</text>
-            <view class="answer-heading"><text>我的思路与答案</text><text class="saved">{{ study.saving ? '正在保存…' : study.dirty.length ? '待同步' : '已保存' }}</text></view>
-            <textarea :key="study.current.id" v-model="draft" :disabled="study.busy" class="draft" :maxlength="8000" placeholder="写下第一步，或试着完整推一遍…" :adjust-position="false" :show-confirm-bar="false" @keyboardheightchange="keyboard = $event.detail.height" />
+            <view class="answer-heading"><text>我的思路与答案</text><view class="answer-heading-tools"><button v-if="draft.trim()" :disabled="study.busy" @tap="answerEditing = !answerEditing; keyboard = 0">{{ answerEditing ? '查看排版' : '修改作答' }}</button><text class="saved">{{ study.saving ? '正在保存…' : study.dirty.length ? '待同步' : '已保存' }}</text></view></view>
+            <textarea v-if="answerEditing || !draft.trim()" :key="study.current.id" v-model="draft" :disabled="study.busy" class="draft" :maxlength="8000" placeholder="写下第一步，或试着完整推一遍…" :adjust-position="false" :show-confirm-bar="false" @focus="answerEditing = true" @keyboardheightchange="keyboard = $event.detail.height" />
+            <view v-else class="answer-preview"><StudyText :text="draft" /></view>
+            <text v-if="answerEditing || !draft.trim()" class="input-note">普通写法就好：x^2、1/(x+1)、a5、3*2，也可以直接描述思路。</text>
+            <view class="answer-photos">
+              <button class="photo-add" :disabled="study.busy" @tap="run(() => study.addPhotos())"><LumaIcon name="photo" :size="15" />{{ study.busy ? '正在处理…' : '添加作答照片' }}<text class="photo-count">{{ study.current.myAnswer?.photoIds.length ?? 0 }}/3</text></button>
+              <view v-for="(id, i) in study.current.myAnswer?.photoIds ?? []" :key="id" class="photo-row"><button :disabled="study.busy" @tap="previewRemoteAttachments(study.current!.myAnswer!.photoIds, i)"><LumaIcon name="photo" :size="14" />作答照片 {{ i + 1 }} · 查看</button><button :disabled="study.busy" :aria-label="`移除作答照片${i + 1}`" @tap="study.edit({ photoIds: study.current!.myAnswer!.photoIds.filter((p) => p !== id) })"><LumaIcon name="close" :size="13" /></button></view>
+              <button v-if="study.current.myAnswer?.photoIds.length && !study.pendingPhotos.length" class="photo-add" :disabled="study.busy || study.saving || !!study.dirty.length" @tap="transcriptOpen = true">提取作答文字<LumaIcon name="arrow-diagonal" :size="12" /></button>
+              <template v-if="study.pendingPhotos.length"><AttachmentStrip :images="study.pendingPhotos" :readonly="study.busy" :replaceable="false" @remove="study.removePendingPhoto" /><text class="pending-note">{{ study.busy ? '正在上传照片，请稍候…' : '照片尚未同步，可重新上传或移除；切题后仍会保留。' }}</text><button v-if="!study.busy" class="photo-add" @tap="run(() => study.addPhotos(true))">重新上传照片</button></template>
+            </view>
             <view class="answer-tools"><button :disabled="study.busy" @tap="ask(study.current!.id, true)">给我一点提示</button><button :disabled="study.busy" class="ask-link" @tap="ask(study.current!.id)">围绕这题追问<LumaIcon name="arrow-diagonal" :size="12" /></button></view>
             <button class="unknown" :disabled="study.busy" :class="{ marked: study.current.myAnswer?.markedUnknown }" @tap="study.edit({ markedUnknown: !study.current?.myAnswer?.markedUnknown })"><text class="check">{{ study.current.myAnswer?.markedUnknown ? '✓' : '' }}</text><text>这题暂时不会，先记下来</text></button>
           </template>
@@ -76,10 +106,10 @@ async function ask(id: string, hint = false): Promise<void> {
             <text class="eyebrow">{{ fullReview ? 'MY PRACTICE' : 'SELF REVIEW' }}</text><text class="page-title">对照过程，再判断。</text><text class="intro">{{ fullReview ? '本轮已完成，作答和自评只读保留。' : '参考解析已经展开，请按自己的实际过程自评。' }}</text>
             <view v-for="(exercise, i) in study.attempt?.exercises" :id="`review-${exercise.id}`" :key="exercise.id" class="review-section">
               <text class="task-title">{{ String(i + 1).padStart(2, '0') }} · {{ exercise.topic }}</text><view class="review-stem"><StudyText :text="exercise.stem" /></view>
-              <view class="my-answer"><text class="small-label">我的作答</text><StudyText :text="exercise.myAnswer?.textDraft || (exercise.myAnswer?.markedUnknown ? '暂时不会，待讲解' : '未填写作答')" /></view>
+              <view class="my-answer"><text class="small-label">我的作答</text><StudyText :text="exercise.myAnswer?.textDraft || (exercise.myAnswer?.photoIds.length ? '已添加作答照片' : exercise.myAnswer?.markedUnknown ? '暂时不会，待讲解' : '未填写作答')" /><button v-if="exercise.myAnswer?.photoIds.length" class="photo-add" @tap="previewRemoteAttachments(exercise.myAnswer.photoIds)"><LumaIcon name="photo" :size="14" />查看 {{ exercise.myAnswer.photoIds.length }} 张作答照片</button></view>
               <view class="reference"><text class="small-label">参考答案与解析</text><StudyText :text="exercise.answer ?? ''" /><StudyText :text="exercise.analysis ?? ''" /></view>
               <text v-if="exercise.myAnswer?.hintsUsed || exercise.myAnswer?.solutionViewedAt" class="help-note">本题曾请求{{ exercise.myAnswer?.solutionViewedAt ? '解析' : '提示' }}，请结合实际过程自评。</text>
-              <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :disabled="study.busy || study.stage === 'summary'" :class="{ selected: exercise.myAnswer?.selfEval === rating.value }" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ exercise.myAnswer?.selfEval === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
+              <view class="rating-row"><button v-for="rating in ratings" :key="rating.value" :disabled="study.busy || study.isHistorical || study.stage === 'summary'" :class="{ selected: exercise.myAnswer?.selfEval === rating.value }" @tap="study.rate(exercise.id, rating.value)"><text class="rating-dot">{{ exercise.myAnswer?.selfEval === rating.value ? '●' : '○' }}</text>{{ rating.label }}</button></view>
               <button class="ask-link" :disabled="study.busy" @tap="ask(exercise.id)">没看懂解析？围绕这题问问<LumaIcon name="arrow-diagonal" :size="12" /></button>
             </view>
           </template>
@@ -90,18 +120,22 @@ async function ask(id: string, hint = false): Promise<void> {
             <view class="hint"><text class="hint-label">下一步建议</text><text>{{ study.needsPractice.length ? '先回顾还没理解的步骤，再试着独立推一遍。' : '本轮完成了，可以回到对话继续探索。' }}</text></view>
             <text v-if="study.usedHelp" class="help-note">本轮有借助提示或解析的记录，已保留在对应题目中。</text>
             <view class="result-links"><button @tap="fullReview = true; goTop()">查看本轮完整作答</button><button v-if="study.needsPractice.length" @tap="ask(study.needsPractice[0]!.id)">追问不会的题<LumaIcon name="arrow-diagonal" :size="12" /></button></view>
+            <view v-if="!study.isHistorical" class="result-links redo-links"><button v-if="study.needsPractice.length" :disabled="study.busy" @tap="redo('needs_practice')">重做需巩固题 · {{ study.needsPractice.length }}</button><button :disabled="study.busy" @tap="redo('all')">全部重做</button></view>
             <text class="footnote">这是本轮自评，不代表考试得分率或知识点掌握率。</text>
           </template>
         </view>
       </scroll-view>
       <view class="action-dock">
-        <template v-if="study.stage === 'intro'"><text class="dock-note">先给自己一点思考时间</text><button class="primary" :disabled="study.busy" @tap="study.start()"><text>{{ study.busy ? '正在开始…' : '开始作答' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
+        <template v-if="study.isHistorical"><text class="dock-note">历史作答 · 只读保留</text><button class="primary" :disabled="study.busy" @tap="switchRound(study.history[0]!.id)">回到当前轮次</button></template>
+        <template v-else-if="study.stage === 'intro'"><text class="dock-note">先给自己一点思考时间</text><button class="primary" :disabled="study.busy" @tap="study.start()"><text>{{ study.busy ? '正在开始…' : '开始作答' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
         <template v-else-if="study.stage === 'doing'"><button v-if="study.index" class="secondary" :disabled="study.busy" @tap="jump(study.index - 1)">上一题</button><text v-else class="dock-note">作答自动保存</text><button class="primary" :disabled="study.busy" @tap="study.index < study.exercises.length - 1 ? jump(study.index + 1) : submit()"><text>{{ study.busy ? '正在保存…' : study.index < study.exercises.length - 1 ? '下一题' : '提交并自评' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
         <template v-else-if="study.stage === 'review'"><text class="dock-note">{{ study.rated }} / {{ study.exercises.length }} 题已自评</text><button class="primary" :disabled="study.busy" @tap="finish"><text>{{ study.busy ? '正在保存…' : '完成自评' }}</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
         <template v-else-if="fullReview"><text class="dock-note">本轮记录 · 只读</text><button class="primary" @tap="fullReview = false; goTop()">返回反馈</button></template>
         <template v-else><text class="dock-note">本轮已完成</text><button class="primary" @tap="back"><text>返回继续学习</text><LumaIcon name="arrow-diagonal" :size="14" /></button></template>
       </view>
     </template>
+    <view v-if="historyOpen" class="history-layer"><view class="scrim" @tap="historyOpen = false" /><view class="history-sheet"><view class="history-heading"><text>练习轮次</text><button aria-label="关闭历史轮次" @tap="historyOpen = false"><LumaIcon name="close" :size="18" /></button></view><text class="history-note">旧作答与自评完整保留，查看不会改变当前进度。</text><scroll-view class="history-list" scroll-y><button v-for="(round, i) in study.history" :key="round.id" :disabled="study.busy" @tap="switchRound(round.id)"><view><text class="history-title">第 {{ study.history.length - i }} 轮 · {{ round.exerciseCount }} 题{{ i === 0 ? ' · 当前' : '' }}</text><text class="history-date">{{ roundDate(round.createdAt) }}</text></view><text>{{ round.id === study.attempt?.id ? '正在查看' : roundStatus(round.stage) }}</text></button></scroll-view></view></view>
+    <AnswerTranscriptSheet v-if="study.material && study.attempt && study.current && study.stage === 'doing'" :open="transcriptOpen" :conversation-id="study.material.conversationId" :subject-revision-id="study.material.subjectRevisionId" :attempt-id="study.attempt.id" :exercise-id="study.current.id" :photo-ids="study.current.myAnswer?.photoIds ?? []" :existing-text="draft" :applying="applyingTranscript" @close="transcriptOpen = false" @apply="applyTranscript" />
   </view>
 </template>
 <style scoped>
@@ -137,8 +171,18 @@ async function ask(id: string, hint = false): Promise<void> {
 .purpose { display:block; color:#9daa92; font-size:22rpx; line-height:1.8; }
 .answer-heading { display:flex; justify-content:space-between; gap:20rpx; margin:38rpx 0 18rpx; font-size:24rpx; color:#718568; }
 .saved { color:#a2ad95; font-size:19rpx; }
+.answer-heading-tools { display:flex; align-items:center; gap:24rpx; }
+.answer-heading-tools button { font-size:21rpx; color:#7e916e; }
+.answer-preview { min-height:280rpx; box-sizing:border-box; padding:24rpx; border:1rpx solid #dce4d1; border-radius:20rpx; background:#fffefa; font-size:28rpx; line-height:1.9; color:#40543c; }
+.input-note { display:block; margin-top:12rpx; color:#a1ab96; font-size:20rpx; line-height:1.8; }
 .draft { width:100%; height:280rpx; box-sizing:border-box; padding:24rpx; border:1rpx solid #dce4d1; border-radius:20rpx; background:#fffefa; font-size:28rpx; line-height:1.9; color:#40543c; }
 .answer-tools { display:flex; justify-content:space-between; gap:20rpx; }
+.answer-photos { margin-top:12rpx; }
+.photo-add,.photo-row button { display:flex; align-items:center; gap:12rpx; min-height:76rpx; font-size:23rpx; color:#859675; }
+.photo-count { color:#a4ad99; font-size:20rpx; }
+.photo-row { display:flex; align-items:center; justify-content:space-between; border-bottom:1rpx solid #e6eadf; }
+.photo-row button:last-child { min-width:72rpx; justify-content:center; }
+.pending-note { display:block; color:#a28b6a; font-size:21rpx; line-height:1.8; }
 .answer-tools button,.ask-link { display:flex; align-items:center; gap:10rpx; min-height:88rpx; color:#8a9c7b; font-size:23rpx; }
 .hint { padding:24rpx; margin:20rpx 0; border-radius:16rpx; background:#eef2e7; color:#6d815f; font-size:25rpx; line-height:1.9; white-space:pre-wrap; }
 .hint-label { display:block; margin-bottom:10rpx; color:#8d9e7f; font-size:20rpx; }
@@ -174,6 +218,10 @@ async function ask(id: string, hint = false): Promise<void> {
 .history-heading { display:flex; align-items:center; justify-content:space-between; font-size:30rpx; color:#4b6344; }
 .history-heading button { display:flex; align-items:center; justify-content:center; width:80rpx; height:80rpx; }
 .history-list { max-height:50vh; }
+.history-note { display:block; margin:4rpx 0 26rpx; color:#99a38d; font-size:22rpx; line-height:1.8; }
+.history-title { display:block; color:#718967; font-size:25rpx; }
+.history-date { display:block; margin-top:8rpx; color:#a4ad98; font-size:21rpx; }
+.redo-links { border-top:1rpx solid #e1e7d8; margin-top:18rpx; }
 .history-list button { display:flex; justify-content:space-between; gap:20rpx; padding:28rpx 0; border-top:1rpx solid #e3e9da; color:#718967; font-size:25rpx; text-align:left; }
 .history-list button text:last-child { color:#a4ad98; font-size:22rpx; }
 .save-warning { display:flex; align-items:center; gap:20rpx; padding:16rpx 30rpx; background:#f4eee5; color:#a08464; font-size:22rpx; line-height:1.7; }

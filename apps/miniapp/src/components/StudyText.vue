@@ -5,7 +5,7 @@ import { UI_MOCK } from '@/config';
 import { pendingContentNodes } from '@/utils/study-content';
 import { request } from '@/utils/request';
 import { onSessionCleared, sessionVersion } from '@/utils/token';
-const props = defineProps<{ text: string; content?: TeachingReply; streaming?: boolean }>();
+const props = withDefaults(defineProps<{ text?: string; content?: TeachingReply; streaming?: boolean }>(), { text: '' });
 const blocks = ref<ContentBlock[]>([]);
 const failed = ref(false);
 let revision = 0;

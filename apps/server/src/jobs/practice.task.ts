@@ -93,7 +93,7 @@ export async function practiceTask(lease: JobLease): Promise<void> {
         trace: { jobId: lease.jobId, workerId: lease.workerId },
         purpose: 'practice_review',
         abortSignal: AbortSignal.timeout(Math.max(1, (job.deadlineAt?.getTime() ?? Date.now() + env().JOB_TOTAL_MS) - Date.now())),
-        system: await loadTeachingReviewPrompt(profile),
+        system: await loadTeachingReviewPrompt(profile, 'practice'),
         prompt: [
           '独立复核以下题组：每题条件完整可解，题干、参考答案与解析一致，不超出学生已确认范围。',
           `学习对象：\n${payload.subjectText ?? ''}`,
